@@ -134,12 +134,13 @@ export default function LandingPage({ onCreateRoom, onJoinRoom, connected }: Pro
           <div className="flex flex-col gap-12">
             <p className="text-xs text-muted text-center" style={{ fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>How to play</p>
             {[
-              ['🕵️', 'Hidden Pair share a secret code but don\'t know each other'],
-              ['📡', 'Everyone submits a signal word each round'],
-              ['🎯', 'Pair: find your partner · Neutrals: expose the pair'],
-              ['🏆', '3 rounds — most points wins!'],
+              ['🕵️', '2 players are the Hidden Pair sharing a hidden signal (they don\'t know who each other are)'],
+              ['⚡', 'Anyone can vote at any time to immediately end the round'],
+              ['🤝', 'Pair: Guess partner → +1 pt each (+1 to both) | Wrong → -1 pt penalty'],
+              ['🎯', 'Neutrals: Expose pair → +1 pt per correct pick | Wrong picks → -1 pt penalty'],
+              ['🏆', 'Highest total score after 3 rounds wins!'],
             ].map(([icon, text], i) => (
-              <div key={i} className="flex items-center gap-12">
+              <div key={i} className="flex items-start gap-12">
                 <span style={{ fontSize: '1.1rem', flexShrink: 0 }}>{icon}</span>
                 <span className="text-sm text-muted">{text}</span>
               </div>

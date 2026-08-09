@@ -78,36 +78,63 @@ export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: P
           </h1>
           <p className="text-muted text-sm mt-8">
             {isHidden
-              ? 'Select the player you think shares your secret code. Any vote immediately ends the round!'
+              ? 'Select the player you think shares your hidden signal. Any vote immediately ends the round!'
               : 'Select 2 players you think are the hidden pair. Any vote immediately ends the round!'}
           </p>
         </div>
 
-        {/* Signals Reference (collapsed view) */}
-        <div className="glass" style={{ padding: '14px 20px', borderRadius: 'var(--radius-lg)', marginBottom: 24 }}>
-          <div className="text-xs text-muted mb-10" style={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            Signal Reference
+        {/* Role & Hidden Signal Reminder Card */}
+        <div
+          className="glass"
+          style={{
+            padding: '20px 24px',
+            borderRadius: 'var(--radius-xl)',
+            marginBottom: 24,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: isHidden ? 'linear-gradient(135deg, rgba(251,191,36,0.12), rgba(251,113,133,0.06))' : 'rgba(139,92,246,0.08)',
+            border: `1px solid ${isHidden ? 'rgba(251,191,36,0.35)' : 'rgba(139,92,246,0.25)'}`,
+          }}
+        >
+          <div className="flex items-center gap-16">
+            <div style={{ fontSize: '2.5rem' }}>{isHidden ? '🕵️' : '🎯'}</div>
+            <div>
+              <div className="text-xs text-muted" style={{ letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 700 }}>
+                Your Role
+              </div>
+              <div className="heading-md" style={{ color: isHidden ? 'var(--amber-400)' : 'var(--purple-400)' }}>
+                {isHidden ? 'Hidden Pair' : 'Neutral Player'}
+              </div>
+              <div className="text-xs text-muted">
+                {isHidden ? 'Find your partner who has the exact same shared hidden signal!' : 'Deduce who the two hidden players are!'}
+              </div>
+            </div>
           </div>
-          <div className="flex flex-col gap-8">
-            {roomState.signals.map(sig => {
-              const player = roomState.players.find(p => p.id === sig.playerId);
-              const pIdx = playerIndex(sig.playerId);
-              return (
-                <div key={sig.playerId} className="flex items-center gap-12">
-                  <div
-                    className="player-avatar"
-                    style={{ width: 24, height: 24, fontSize: '0.65rem', background: AVATAR_COLORS[pIdx % AVATAR_COLORS.length], flexShrink: 0 }}
-                  >
-                    {player?.name?.[0]?.toUpperCase()}
-                  </div>
-                  <span className="text-sm text-muted" style={{ minWidth: 80 }}>{player?.name}</span>
-                  <span className="text-mono" style={{ color: 'var(--cyan-400)', fontWeight: 700, fontSize: '0.9rem' }}>
-                    {sig.signal || '—'}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
+
+          {isHidden && myRole.secretCode && (
+            <div className="flex flex-col items-center">
+              <div className="text-xs text-muted mb-4" style={{ letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 700 }}>
+                Shared Hidden Signal
+              </div>
+              <div
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '2.2rem',
+                  fontWeight: 800,
+                  color: 'var(--amber-400)',
+                  background: 'rgba(251,191,36,0.15)',
+                  padding: '4px 20px',
+                  borderRadius: 'var(--radius-lg)',
+                  border: '1px solid rgba(251,191,36,0.4)',
+                  letterSpacing: '0.1em',
+                  boxShadow: '0 0 20px rgba(251,191,36,0.2)'
+                }}
+              >
+                {myRole.secretCode}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Main Guess UI */}

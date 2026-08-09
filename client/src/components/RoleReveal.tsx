@@ -52,7 +52,7 @@ export default function RoleReveal({ myRole, roomState, myId }: Props) {
               </div>
               <p className="text-muted text-sm">
                 {isHidden
-                  ? 'You share a secret code with one other player. Find them!'
+                  ? 'You share a hidden signal with one other player. Find them!'
                   : 'Expose the hidden pair to earn points!'}
               </p>
             </div>
@@ -60,7 +60,7 @@ export default function RoleReveal({ myRole, roomState, myId }: Props) {
             {isHidden && myRole.secretCode && (
               <div className="flex flex-col items-center gap-12">
                 <div className="text-xs text-muted" style={{ letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 600 }}>
-                  Your secret code
+                  Your shared hidden signal
                 </div>
                 <div className="secret-code-display">
                   {myRole.secretCode}

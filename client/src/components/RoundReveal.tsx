@@ -75,7 +75,7 @@ export default function RoundReveal({ revealData, roomState, myId, isHost, isLas
           </h1>
         </div>
 
-        {/* Secret Code Reveal */}
+        {/* Shared Hidden Signal Reveal */}
         <div
           className="glass text-center"
           style={{
@@ -87,7 +87,7 @@ export default function RoundReveal({ revealData, roomState, myId, isHost, isLas
           }}
         >
           <div className="text-xs text-muted mb-12" style={{ textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600 }}>
-            The Secret Code Was
+            The Shared Hidden Signal Was
           </div>
           <div
             style={{
@@ -181,9 +181,6 @@ export default function RoundReveal({ revealData, roomState, myId, isHost, isLas
                       <span className={`badge ${isHiddenP ? 'badge-amber' : 'badge-muted'}`} style={{ fontSize: '0.55rem' }}>
                         {isHiddenP ? 'Hidden' : 'Neutral'}
                       </span>
-                    </div>
-                    <div className="text-xs text-muted text-mono">
-                      Signal: <span style={{ color: 'var(--cyan-400)' }}>"{sig?.signal ?? '—'}"</span>
                     </div>
                   </div>
                   <div style={{ textAlign: 'right', flexShrink: 0 }}>

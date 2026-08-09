@@ -93,29 +93,9 @@ function broadcastRoomState(room) {
 }
 
 function startSignalPhase(code) {
-  const room = advanceToSignal(code);
-  if (!room) return;
-  broadcastRoomState(room);
-}
-
-function autoAdvanceToDiscuss(code) {
   const room = advanceToGuess(code);
   if (!room) return;
   broadcastRoomState(room);
-}
-
-function autoAdvanceToGuess(code) {
-  const room = advanceToGuess(code);
-  if (!room) return;
-  broadcastRoomState(room);
-}
-
-function checkAllSubmitted(room, phase) {
-  if (phase === 'signal' && room.signals.length >= room.players.length) {
-    autoAdvanceToGuess(room.code);
-    return true;
-  }
-  return false;
 }
 
 function autoResolveRound(code) {

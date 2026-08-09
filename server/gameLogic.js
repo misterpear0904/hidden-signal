@@ -40,10 +40,13 @@ export function calculateScores(guesses, hiddenPairIds, roleMap) {
     const role = roleMap.get(guess.playerId);
 
     if (role === 'hidden') {
-      // Hidden pair: earn 2 points if they correctly guessed their partner, lose 1 point if wrong
+      // Hidden pair: earn 1 point each (guesser & partner) if guessed correctly, lose 1 point for wrong guess
       const partner = hiddenPairIds.find(id => id !== guess.playerId);
       if (guess.guessedPartnerId === partner) {
-        scores.set(guess.playerId, (scores.get(guess.playerId) || 0) + 2);
+        scores.set(guess.playerId, (scores.get(guess.playerId) || 0) + 1);
+        if (partner) {
+          scores.set(partner, (scores.get(partner) || 0) + 1);
+        }
       } else if (guess.guessedPartnerId) {
         scores.set(guess.playerId, (scores.get(guess.playerId) || 0) - 1);
       } else {
