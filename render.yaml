@@ -3,6 +3,7 @@ services:
   - type: web
     name: hidden-signal-server
     runtime: node
+    plan: free
     rootDir: server
     buildCommand: npm install
     startCommand: npm start
@@ -10,7 +11,7 @@ services:
       - key: NODE_ENV
         value: production
       # Set CLIENT_ORIGIN to your Render static site URL after first deploy.
-      # Example: https://hidden-signal.onrender.com
+      # Example: https://hidden-signal-client.onrender.com
       - key: CLIENT_ORIGIN
         sync: false          # fill in manually in Render dashboard
 
@@ -18,6 +19,7 @@ services:
   - type: web
     name: hidden-signal-client
     runtime: static
+    plan: free
     rootDir: client
     buildCommand: npm install && npm run build
     staticPublishPath: dist
