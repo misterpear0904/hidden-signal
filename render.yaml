@@ -1,0 +1,32 @@
+services:
+  # ── Backend – Express + Socket.io ─────────────────────────────────────────
+  - type: web
+    name: hidden-signal-server
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Set CLIENT_ORIGIN to your Render static site URL after first deploy.
+      # Example: https://hidden-signal.onrender.com
+      - key: CLIENT_ORIGIN
+        sync: false          # fill in manually in Render dashboard
+
+  # ── Frontend – Vite / React static site ───────────────────────────────────
+  - type: web
+    name: hidden-signal-client
+    runtime: static
+    rootDir: client
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      # Set this to your Render backend URL after first deploy.
+      # Example: https://hidden-signal-server.onrender.com
+      - key: VITE_SERVER_URL
+        sync: false          # fill in manually in Render dashboard

@@ -24,14 +24,16 @@ import {
   GUESS_TIME_SEC,
 } from './gameManager.js';
 
+const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || '*';
+
 const app = express();
-app.use(cors());
+app.use(cors({ origin: CLIENT_ORIGIN }));
 app.use(express.json());
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: '*',
+    origin: CLIENT_ORIGIN,
     methods: ['GET', 'POST'],
   },
 });
@@ -239,5 +241,5 @@ io.on('connection', (socket) => {
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`🎮 Hidden Signal server running on http://localhost:${PORT}`);
+  console.log(`🎮 Hidden Signal server running on port ${PORT}`);
 });
