@@ -308,6 +308,16 @@ a { color: inherit; text-decoration: none; }
 }
 .player-name { font-size: 0.82rem; font-weight: 600; text-align: center; }
 
+/* Game selection cards */
+.game-card-btn:not(:disabled):hover {
+  transform: translateY(-2px);
+  filter: brightness(1.08);
+}
+.game-card-btn:not(:disabled):active {
+  transform: translateY(0);
+}
+
+
 /* ─── Secret Code Display ──────────────────────────────────────── */
 .secret-code-display {
   display: flex; align-items: center; justify-content: center;
