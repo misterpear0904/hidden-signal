@@ -22,7 +22,7 @@ const AVATAR_COLORS = [
 
 export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: Props) {
   const [selectedPartner, setSelectedPartner] = useState<string>('');
-  const [selectedPair, setSelectedPair] = useState<string[]>([]);
+  const [selectedSuspect, setSelectedSuspect] = useState<string>('');
   const [submitted, setSubmitted] = useState(false);
 
   const isHidden = myRole.role === 'hidden';
@@ -31,16 +31,8 @@ export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: P
 
   const otherPlayers = roomState.players.filter(p => p.id !== myId);
 
-  const handleNeutralToggle = useCallback((playerId: string) => {
-    setSelectedPair(prev => {
-      if (prev.includes(playerId)) return prev.filter(id => id !== playerId);
-      if (prev.length >= 2) return prev; // max 2
-      return [...prev, playerId];
-    });
-  }, []);
-
   const canSubmitHidden = selectedPartner !== '';
-  const canSubmitNeutral = selectedPair.length === 2;
+  const canSubmitNeutral = selectedSuspect !== '';
 
   const handleSubmit = useCallback(() => {
     if (effectivelySubmitted) return;
@@ -49,10 +41,10 @@ export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: P
       onSubmitGuess({ guessedPartnerId: selectedPartner });
     } else {
       if (!canSubmitNeutral) return;
-      onSubmitGuess({ guessedPairIds: selectedPair });
+      onSubmitGuess({ guessedPlayerId: selectedSuspect });
     }
     setSubmitted(true);
-  }, [effectivelySubmitted, isHidden, canSubmitHidden, canSubmitNeutral, selectedPartner, selectedPair, onSubmitGuess]);
+  }, [effectivelySubmitted, isHidden, canSubmitHidden, canSubmitNeutral, selectedPartner, selectedSuspect, onSubmitGuess]);
 
   const playerIndex = (id: string) => roomState.players.findIndex(p => p.id === id);
 
@@ -78,8 +70,8 @@ export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: P
           </h1>
           <p className="text-muted text-sm mt-8">
             {isHidden
-              ? 'Select the player you think shares your hidden signal. Any vote immediately ends the round!'
-              : 'Select 2 players you think are the hidden pair. Any vote immediately ends the round!'}
+              ? 'Select the player you think shares your hidden signal. First vote immediately ends the round!'
+              : 'Pick one player you think is part of the hidden pair. Correct = +1 pt. Wrong = -3 pts!'}
           </p>
         </div>
 
@@ -107,7 +99,7 @@ export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: P
                 {isHidden ? 'Hidden Pair' : 'Neutral Player'}
               </div>
               <div className="text-xs text-muted">
-                {isHidden ? 'Find your partner who has the exact same shared hidden signal!' : 'Deduce who the two hidden players are!'}
+                {isHidden ? 'Find your partner who has the exact same shared hidden signal!' : 'Pick one player you think is in the hidden pair!'}
               </div>
             </div>
           </div>
@@ -141,7 +133,7 @@ export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: P
         {!effectivelySubmitted ? (
           <div className="glass p-32" style={{ borderRadius: 'var(--radius-xl)', marginBottom: 16 }}>
             <div className="heading-md mb-20">
-              {isHidden ? '🕵️ Who is your partner?' : '🎯 Who are the hidden pair?'}
+              {isHidden ? '🕵️ Who is your partner?' : '🎯 Who is in the hidden pair?'}
             </div>
 
             {isHidden ? (
@@ -172,22 +164,21 @@ export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: P
                 })}
               </div>
             ) : (
-              /* Neutral: select 2 */
+              /* Neutral: pick exactly 1 suspect */
               <div>
                 <div className="text-xs text-muted mb-12">
-                  Select 2 players ({selectedPair.length}/2 selected)
+                  Pick one player you suspect is hidden {selectedSuspect ? '— selected!' : ''}
                 </div>
                 <div className="guess-player-list">
                   {otherPlayers.map(player => {
                     const pIdx = playerIndex(player.id);
-                    const isSelected = selectedPair.includes(player.id);
-                    const isDisabled = !isSelected && selectedPair.length >= 2;
+                    const isSelected = selectedSuspect === player.id;
                     return (
                       <button
                         key={player.id}
-                        className={`guess-player-option ${isSelected ? 'selected' : ''} ${isDisabled ? 'disabled-opt' : ''}`}
-                        onClick={() => !isDisabled && handleNeutralToggle(player.id)}
-                        id={`guess-pair-${player.id}`}
+                        className={`guess-player-option ${isSelected ? 'selected' : ''}`}
+                        onClick={() => setSelectedSuspect(player.id)}
+                        id={`guess-suspect-${player.id}`}
                       >
                         <div
                           className="player-avatar"
@@ -196,8 +187,8 @@ export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: P
                           {player.name[0]?.toUpperCase()}
                         </div>
                         <span style={{ fontWeight: 600 }}>{player.name}</span>
-                        <div className={`check-circle ${isSelected ? 'checked' : ''}`} style={{ marginLeft: 'auto' }}>
-                          {isSelected && <span style={{ color: '#fff', fontSize: '0.7rem' }}>✓</span>}
+                        <div className="check-circle checked" style={{ marginLeft: 'auto', opacity: isSelected ? 1 : 0 }}>
+                          <span style={{ color: '#fff', fontSize: '0.7rem' }}>✓</span>
                         </div>
                       </button>
                     );
@@ -207,9 +198,8 @@ export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: P
             )}
 
             <button
-              className={`btn btn-lg btn-full mt-24 ${
-                (isHidden ? canSubmitHidden : canSubmitNeutral) ? 'btn-primary' : 'btn-secondary'
-              }`}
+              className={`btn btn-lg btn-full mt-24 ${(isHidden ? canSubmitHidden : canSubmitNeutral) ? 'btn-primary' : 'btn-secondary'
+                }`}
               disabled={isHidden ? !canSubmitHidden : !canSubmitNeutral}
               onClick={handleSubmit}
               id="submit-guess-btn"

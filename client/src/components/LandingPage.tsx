@@ -136,9 +136,9 @@ export default function LandingPage({ onCreateRoom, onJoinRoom, connected }: Pro
             {[
               ['🕵️', '2 players are the Hidden Pair sharing a hidden signal (they don\'t know who each other are)'],
               ['⚡', 'Anyone can vote at any time to immediately end the round'],
-              ['🤝', 'Pair: Guess partner → +1 pt each (+1 to both) | Wrong → -1 pt penalty'],
-              ['🎯', 'Neutrals: Expose pair → +1 pt per correct pick | Wrong picks → -1 pt penalty'],
-              ['🏆', 'Highest total score after 3 rounds wins!'],
+              ['🤝', 'Pair: Guess partner → +1 pt each (+1 to both) | Wrong → -3 pt penalty'],
+              ['🎯', 'Neutrals: Pick 1 hidden player → +1 pt if correct | Wrong pick → -3 pt penalty'],
+              ['🏆', 'Highest total score after 5 rounds wins!'],
             ].map(([icon, text], i) => (
               <div key={i} className="flex items-start gap-12">
                 <span style={{ fontSize: '1.1rem', flexShrink: 0 }}>{icon}</span>

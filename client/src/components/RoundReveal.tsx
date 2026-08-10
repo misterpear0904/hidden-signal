@@ -47,17 +47,21 @@ export default function RoundReveal({ revealData, roomState, myId, isHost, isLas
   } else if (isHidden) {
     const correctPartner = hiddenPairIds.find(id => id !== myId);
     const guessedOk = guesses.find(g => g.playerId === myId)?.guessedPartnerId === correctPartner;
-    myOutcomeLabel = guessedOk ? 'Found your partner! (+2 pts)' : 'Wrong partner choice (-1 pt)';
+    myOutcomeLabel = guessedOk ? 'Found your partner! (+2 pts)' : 'Wrong partner choice (-3 pts)';
     myOutcomeIcon = guessedOk ? '🎉' : '😬';
   } else {
     const myGuess = guesses.find(g => g.playerId === myId);
-    const guessedIds = new Set(myGuess?.guessedPairIds ?? []);
-    const correctIds = new Set(hiddenPairIds);
-    const hitCount = [...guessedIds].filter(id => correctIds.has(id)).length;
-    const missCount = guessedIds.size - hitCount;
-    if (hitCount === 2) { myOutcomeLabel = 'Perfect! Exposed both! (+2 pts)'; myOutcomeIcon = '🎯'; }
-    else if (hitCount === 1) { myOutcomeLabel = 'Caught one (+1 pt), missed one (-1 pt)'; myOutcomeIcon = '🔍'; }
-    else { myOutcomeLabel = 'Incorrect guess (-2 pts)'; myOutcomeIcon = '💨'; }
+    const guessedId = myGuess?.guessedPlayerId;
+    if (guessedId && hiddenPairIds.includes(guessedId)) {
+      myOutcomeLabel = 'Correct! You spotted a hidden player (+1 pt)';
+      myOutcomeIcon = '🎯';
+    } else if (guessedId) {
+      myOutcomeLabel = 'Wrong pick! That wasn\'t a hidden player (-3 pts)';
+      myOutcomeIcon = '💨';
+    } else {
+      myOutcomeLabel = 'No vote submitted (-0 pts)';
+      myOutcomeIcon = '⏸️';
+    }
   }
 
   const myDelta = scoreDeltas[myId] ?? 0;

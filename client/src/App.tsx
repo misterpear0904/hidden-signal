@@ -50,7 +50,7 @@ export default function App() {
 
   const me = roomState?.players.find(p => p.id === myId);
   const isHost = me?.isHost ?? false;
-  const isLastRound = (roomState?.round ?? 0) >= 3;
+  const isLastRound = (roomState?.round ?? 0) >= 5;
 
   const handleCreate = useCallback((name: string) => createRoom(name), [createRoom]);
   const handleJoin = useCallback((code: string, name: string) => joinRoom(code, name), [joinRoom]);

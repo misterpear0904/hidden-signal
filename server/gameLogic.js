@@ -40,7 +40,7 @@ export function calculateScores(guesses, hiddenPairIds, roleMap) {
     const role = roleMap.get(guess.playerId);
 
     if (role === 'hidden') {
-      // Hidden pair: earn 1 point each (guesser & partner) if guessed correctly, lose 1 point for wrong guess
+      // Hidden pair: earn 1 point each (guesser & partner) if guessed correctly, lose 3 points for wrong guess
       const partner = hiddenPairIds.find(id => id !== guess.playerId);
       if (guess.guessedPartnerId === partner) {
         scores.set(guess.playerId, (scores.get(guess.playerId) || 0) + 1);
@@ -48,23 +48,23 @@ export function calculateScores(guesses, hiddenPairIds, roleMap) {
           scores.set(partner, (scores.get(partner) || 0) + 1);
         }
       } else if (guess.guessedPartnerId) {
-        scores.set(guess.playerId, (scores.get(guess.playerId) || 0) - 1);
+        scores.set(guess.playerId, (scores.get(guess.playerId) || 0) - 3);
       } else {
         scores.set(guess.playerId, scores.get(guess.playerId) || 0);
       }
     } else if (role === 'neutral') {
-      // Neutral: +1 point per correct hidden pair member, -1 point per incorrect pick
-      const correctIds = new Set(hiddenPairIds);
-      const guessedIds = new Set(guess.guessedPairIds || []);
-      let pts = 0;
-      for (const id of guessedIds) {
-        if (correctIds.has(id)) {
-          pts += 1;
+      // Neutral: guess a single hidden pair member.
+      // +1 pt if the guessed player is in the hidden pair, -3 pts if wrong.
+      const guessedId = guess.guessedPlayerId;
+      if (guessedId) {
+        if (hiddenPairIds.includes(guessedId)) {
+          scores.set(guess.playerId, (scores.get(guess.playerId) || 0) + 1);
         } else {
-          pts -= 1;
+          scores.set(guess.playerId, (scores.get(guess.playerId) || 0) - 3);
         }
+      } else {
+        scores.set(guess.playerId, scores.get(guess.playerId) || 0);
       }
-      scores.set(guess.playerId, (scores.get(guess.playerId) || 0) + pts);
     }
   }
 

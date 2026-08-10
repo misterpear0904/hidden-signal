@@ -35,7 +35,7 @@ export default function SignalPhase({ myRole, roomState, myId, onSubmitSignal }:
         <div className="text-center mb-32">
           <div className="flex items-center justify-center gap-12 mb-16">
             <div className="round-dots">
-              {Array.from({ length: 3 }).map((_, i) => (
+              {Array.from({ length: 5 }).map((_, i) => (
                 <div key={i} className={`round-dot ${i + 1 === roomState.round ? 'active' : i + 1 < roomState.round ? 'done' : ''}`} />
               ))}
             </div>

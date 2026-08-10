@@ -5,7 +5,7 @@ import { assignRoles, calculateScores, generateRoomCode } from './gameLogic.js';
 // rooms: Map<roomCode, RoomState>
 const rooms = new Map();
 
-const TOTAL_ROUNDS = 3;
+const TOTAL_ROUNDS = 5;
 const SIGNAL_TIME = 60;    // seconds
 const DISCUSS_TIME = 60;   // seconds
 const GUESS_TIME = 45;     // seconds
