@@ -32,7 +32,7 @@ export interface Signal {
 export interface Guess {
   playerId: string;
   guessedPartnerId?: string;       // for hidden pair
-  guessedPairIds?: string[];        // for neutral players
+  guessedPlayerId?: string;        // for neutral players (single pick)
 }
 
 export interface RoomState {
