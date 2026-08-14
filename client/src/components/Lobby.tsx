@@ -266,11 +266,11 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', background: chromaOptions.extremeMode ? 'rgba(239,68,68,0.1)' : 'rgba(255,255,255,0.03)', borderRadius: 'var(--radius-lg)', border: `1px solid ${chromaOptions.extremeMode ? 'rgba(239,68,68,0.4)' : 'var(--border)'}`, transition: 'all 0.2s' }}>
               <div>
                 <div style={{ fontWeight: 600, fontSize: '0.9rem', color: chromaOptions.extremeMode ? 'var(--rose-400)' : 'var(--text-primary)' }}>
-                  🔥 Extreme Mode (15x15 Grid)
+                  🔥 Extreme Mode (10x10 Grid)
                 </div>
                 <div className="text-xs text-muted" style={{ marginTop: 2 }}>
                   {chromaOptions.extremeMode
-                    ? 'ON: Massive 15x15 Grid (225 Tiles total!)'
+                    ? 'ON: Extreme 10x10 Grid (100 Tiles total!)'
                     : 'OFF: Standard 5x5 Grid (25 Tiles)'}
                 </div>
               </div>
@@ -293,11 +293,11 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
                     boxShadow: chromaOptions.extremeMode ? '0 0 16px rgba(239,68,68,0.4)' : 'none',
                   }}
                 >
-                  {chromaOptions.extremeMode ? '15x15 ON 🔥' : 'OFF'}
+                  {chromaOptions.extremeMode ? '10x10 ON 🔥' : 'OFF'}
                 </button>
               ) : (
                 <span className="badge" style={{ background: chromaOptions.extremeMode ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.05)', color: chromaOptions.extremeMode ? 'var(--rose-400)' : 'var(--text-muted)' }}>
-                  {chromaOptions.extremeMode ? '15x15 🔥' : '5x5'} (Host Setting)
+                  {chromaOptions.extremeMode ? '10x10 🔥' : '5x5'} (Host Setting)
                 </span>
               )}
             </div>

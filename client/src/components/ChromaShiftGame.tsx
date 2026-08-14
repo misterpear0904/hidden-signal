@@ -42,9 +42,9 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
   const { chromaState, chromaOptions, round } = roomState;
   const difficulty = chromaOptions?.playerDifficulties?.[myId] || 'easy';
   const isExtreme = chromaOptions?.extremeMode ?? false;
-  const gridDim = isExtreme ? 15 : 5;
+  const gridDim = isExtreme ? 10 : 5;
   const totalTiles = gridDim * gridDim;
-  const tileSizePx = isExtreme ? 22 : 64;
+  const tileSizePx = isExtreme ? 36 : 64;
 
   const isReveal = roomState.phase === 'chroma-reveal';
 
@@ -149,7 +149,7 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
         }
 
         // 2. Soft anti-overlap repulsion between tiles
-        const minDistBase = isExtreme ? 4.5 : 14;
+        const minDistBase = isExtreme ? 6.5 : 14;
         for (let i = 0; i < totalTiles; i++) {
           for (let j = i + 1; j < totalTiles; j++) {
             const dx = next[j].x - next[i].x;
@@ -274,7 +274,7 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
 
               {isExtreme && (
                 <span className="badge" style={{ fontSize: '0.7rem', background: 'rgba(239,68,68,0.15)', color: 'var(--rose-400)', border: '1px solid rgba(239,68,68,0.3)', whiteSpace: 'nowrap' }}>
-                  🔥 15x15 (225 Tiles)
+                  🔥 10x10 (100 Tiles)
                 </span>
               )}
 
