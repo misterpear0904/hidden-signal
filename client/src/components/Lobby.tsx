@@ -7,6 +7,7 @@ interface Props {
   myId: string;
   onSelectGame: (gameId: string) => void;
   onUpdateChromaOptions: (options: Partial<import('../types/game').ChromaOptions>) => void;
+  onSetPlayerDifficulty: (difficulty: 'easy' | 'medium' | 'hard') => void;
   onStartGame: () => void;
 }
 
@@ -21,7 +22,7 @@ const AVATAR_COLORS = [
   'linear-gradient(135deg,#f472b6,#be185d)',
 ];
 
-export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOptions, onStartGame }: Props) {
+export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOptions, onSetPlayerDifficulty, onStartGame }: Props) {
   const me = roomState.players.find(p => p.id === myId);
   const isHost = me?.isHost ?? false;
   const playerCount = roomState.players.length;
@@ -36,7 +37,8 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
     ? `Need at least ${selectedGame.minPlayers - playerCount} more player${selectedGame.minPlayers - playerCount !== 1 ? 's' : ''} for ${selectedGame.name}`
     : null;
 
-  const chromaOptions = roomState.chromaOptions || { difficulty: 'easy', fairPoints: true };
+  const chromaOptions = roomState.chromaOptions || { difficulty: 'easy', playerDifficulties: {}, fairPoints: true };
+  const myDifficulty = chromaOptions.playerDifficulties?.[myId] || 'easy';
 
   return (
     <div className="page-top">
@@ -100,25 +102,40 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
           </div>
 
           <div className="player-grid stagger">
-            {roomState.players.map((p, i) => (
-              <div
-                key={p.id}
-                className={`player-card animate-fade-up ${!p.connected ? 'disconnected' : ''}`}
-                id={`player-card-${p.id}`}
-              >
+            {roomState.players.map((p, i) => {
+              const pDiff = chromaOptions.playerDifficulties?.[p.id] || 'easy';
+              return (
                 <div
-                  className="player-avatar"
-                  style={{ background: AVATAR_COLORS[i % AVATAR_COLORS.length] }}
+                  key={p.id}
+                  className={`player-card animate-fade-up ${!p.connected ? 'disconnected' : ''}`}
+                  id={`player-card-${p.id}`}
                 >
-                  {p.name[0]?.toUpperCase()}
+                  <div
+                    className="player-avatar"
+                    style={{ background: AVATAR_COLORS[i % AVATAR_COLORS.length] }}
+                  >
+                    {p.name[0]?.toUpperCase()}
+                  </div>
+                  <div className="player-name">{p.name}</div>
+                  <div className="flex flex-wrap gap-4 justify-center">
+                    {p.isHost && <div className="badge badge-amber" style={{ fontSize: '0.6rem' }}>Host</div>}
+                    {p.id === myId && <div className="badge badge-cyan" style={{ fontSize: '0.6rem' }}>You</div>}
+                    {selectedGameId === 'chroma-shift' && (
+                      <div
+                        className="badge"
+                        style={{
+                          fontSize: '0.6rem',
+                          background: pDiff === 'easy' ? 'rgba(74,222,128,0.15)' : pDiff === 'medium' ? 'rgba(251,191,36,0.15)' : 'rgba(239,68,68,0.15)',
+                          color: pDiff === 'easy' ? 'var(--green-400)' : pDiff === 'medium' ? 'var(--amber-400)' : 'var(--rose-400)',
+                        }}
+                      >
+                        {pDiff === 'easy' ? '🟢 Easy' : pDiff === 'medium' ? '🟡 Medium' : '🔴 Hard'}
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className="player-name">{p.name}</div>
-                <div className="flex gap-4">
-                  {p.isHost && <div className="badge badge-amber" style={{ fontSize: '0.6rem' }}>Host</div>}
-                  {p.id === myId && <div className="badge badge-cyan" style={{ fontSize: '0.6rem' }}>You</div>}
-                </div>
-              </div>
-            ))}
+              );
+            })}
 
             {/* Empty slots hint relative to selected game min */}
             {playerCount < (selectedGame?.minPlayers ?? 2) && Array.from({ length: (selectedGame?.minPlayers ?? 2) - playerCount }).map((_, i) => (
@@ -157,18 +174,18 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
               <span style={{ fontSize: '1.4rem' }}>🎨</span>
               <div>
                 <h3 className="heading-md" style={{ fontSize: '1.1rem', margin: 0 }}>Chroma Shift Settings</h3>
-                <p className="text-xs text-muted">Configure difficulty & scoring before starting</p>
+                <p className="text-xs text-muted">Each player can select their own difficulty mode!</p>
               </div>
             </div>
 
-            {/* Difficulty Selector */}
+            {/* Per-Player Difficulty Selector */}
             <div style={{ marginBottom: 20 }}>
               <label className="text-xs text-muted" style={{ fontWeight: 700, letterSpacing: '0.05em', display: 'block', marginBottom: 8, textTransform: 'uppercase' }}>
-                Difficulty Mode
+                Your Difficulty Mode
               </label>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
                 {(['easy', 'medium', 'hard'] as const).map((diff) => {
-                  const isActive = chromaOptions.difficulty === diff;
+                  const isActive = myDifficulty === diff;
                   const ptsText = chromaOptions.fairPoints
                     ? diff === 'easy' ? '1 pt/rnd' : diff === 'medium' ? '2 pts/rnd' : '3 pts/rnd'
                     : '1 pt/rnd';
@@ -178,7 +195,7 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
                       key={diff}
                       type="button"
                       id={`diff-btn-${diff}`}
-                      onClick={() => onUpdateChromaOptions({ difficulty: diff })}
+                      onClick={() => onSetPlayerDifficulty(diff)}
                       style={{
                         padding: '12px 10px',
                         borderRadius: 'var(--radius-lg)',

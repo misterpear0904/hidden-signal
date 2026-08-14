@@ -33,7 +33,7 @@ export function createRoom(hostId, hostName) {
   const room = {
     code,
     selectedGameId: 'hidden-signal',
-    chromaOptions: { difficulty: 'easy', fairPoints: true },
+    chromaOptions: { difficulty: 'easy', playerDifficulties: {}, fairPoints: true },
     chromaState: null,
     phase: 'lobby',          // lobby | role-reveal | signal | discuss | guess | reveal | end | chroma-play | chroma-reveal
     round: 0,
@@ -87,6 +87,17 @@ export function updateChromaOptions(code, options) {
   return room;
 }
 
+export function setPlayerDifficulty(code, playerId, difficulty) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'lobby') return null;
+  if (!['easy', 'medium', 'hard'].includes(difficulty)) return null;
+  if (!room.chromaOptions.playerDifficulties) {
+    room.chromaOptions.playerDifficulties = {};
+  }
+  room.chromaOptions.playerDifficulties[playerId] = difficulty;
+  return room;
+}
+
 export function startGame(code) {
   const room = rooms.get(code);
   if (!room) return null;
@@ -132,9 +143,10 @@ export function submitChromaGuess(code, playerId, tileIndex) {
   if (tileIndex === room.chromaState.targetTileIndex) {
     // Correct!
     let points = 1;
+    const playerDiff = room.chromaOptions.playerDifficulties?.[playerId] || 'easy';
     if (room.chromaOptions.fairPoints) {
-      if (room.chromaOptions.difficulty === 'medium') points = 2;
-      else if (room.chromaOptions.difficulty === 'hard') points = 3;
+      if (playerDiff === 'medium') points = 2;
+      else if (playerDiff === 'hard') points = 3;
     }
     player.score += points;
     room.chromaState.roundWinnerId = playerId;

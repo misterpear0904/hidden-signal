@@ -20,6 +20,7 @@ export interface SocketHookReturn {
   startGame: (roomCode: string) => void;
   selectGame: (roomCode: string, gameId: string) => void;
   updateChromaOptions: (roomCode: string, options: Partial<import('../types/game').ChromaOptions>) => void;
+  setPlayerDifficulty: (roomCode: string, difficulty: 'easy' | 'medium' | 'hard') => void;
   submitChromaGuess: (roomCode: string, tileIndex: number) => void;
   nextChromaRound: (roomCode: string) => void;
   submitSignal: (roomCode: string, signal: string) => void;
@@ -116,6 +117,10 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('update-chroma-options', { roomCode: code, options });
   }, []);
 
+  const setPlayerDifficulty = useCallback((code: string, difficulty: 'easy' | 'medium' | 'hard') => {
+    socketRef.current?.emit('set-player-difficulty', { roomCode: code, difficulty });
+  }, []);
+
   const submitChromaGuess = useCallback((code: string, tileIndex: number) => {
     socketRef.current?.emit('submit-chroma-guess', { roomCode: code, tileIndex });
   }, []);
@@ -140,6 +145,7 @@ export function useSocket(): SocketHookReturn {
     startGame,
     selectGame,
     updateChromaOptions,
+    setPlayerDifficulty,
     submitChromaGuess,
     nextChromaRound,
     submitSignal,

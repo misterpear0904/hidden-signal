@@ -40,7 +40,7 @@ function interpolateColor(c1: string, c2: string, factor: number): string {
 
 export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, onNextRound }: Props) {
   const { chromaState, chromaOptions, round } = roomState;
-  const difficulty = chromaOptions?.difficulty || 'easy';
+  const difficulty = chromaOptions?.playerDifficulties?.[myId] || 'easy';
   const isReveal = roomState.phase === 'chroma-reveal';
 
   const [wrongFlash, setWrongFlash] = useState(false);
@@ -246,25 +246,31 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
 
           {/* Scores */}
           <div className="flex items-center gap-12">
-            {roomState.players.map((p) => (
-              <div
-                key={p.id}
-                style={{
-                  padding: '6px 12px',
-                  borderRadius: 'var(--radius-md)',
-                  background: p.id === myId ? 'rgba(6,182,212,0.15)' : 'rgba(255,255,255,0.04)',
-                  border: `1px solid ${p.id === myId ? 'var(--cyan-400)' : 'var(--border)'}`,
-                  textAlign: 'center',
-                }}
-              >
-                <div className="text-xs text-muted" style={{ fontSize: '0.65rem' }}>
-                  {p.name} {p.id === myId && '(You)'}
+            {roomState.players.map((p) => {
+              const pDiff = chromaOptions?.playerDifficulties?.[p.id] || 'easy';
+              return (
+                <div
+                  key={p.id}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: 'var(--radius-md)',
+                    background: p.id === myId ? 'rgba(6,182,212,0.15)' : 'rgba(255,255,255,0.04)',
+                    border: `1px solid ${p.id === myId ? 'var(--cyan-400)' : 'var(--border)'}`,
+                    textAlign: 'center',
+                  }}
+                >
+                  <div className="text-xs text-muted" style={{ fontSize: '0.65rem', display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'center' }}>
+                    <span>{p.name} {p.id === myId && '(You)'}</span>
+                    <span style={{ fontSize: '0.6rem' }}>
+                      {pDiff === 'easy' ? '🟢' : pDiff === 'medium' ? '🟡' : '🔴'}
+                    </span>
+                  </div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '1.1rem', color: 'var(--amber-400)' }}>
+                    {p.score} pts
+                  </div>
                 </div>
-                <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '1.1rem', color: 'var(--amber-400)' }}>
-                  {p.score} pts
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 

@@ -12,6 +12,7 @@ import {
   startGame,
   selectGame,
   updateChromaOptions,
+  setPlayerDifficulty,
   submitChromaGuess,
   nextChromaRound,
   advanceToSignal,
@@ -159,6 +160,11 @@ io.on('connection', (socket) => {
 
   socket.on('update-chroma-options', ({ roomCode, options }) => {
     const room = updateChromaOptions(roomCode, options);
+    if (room) broadcastRoomState(room);
+  });
+
+  socket.on('set-player-difficulty', ({ roomCode, difficulty }) => {
+    const room = setPlayerDifficulty(roomCode, socket.id, difficulty);
     if (room) broadcastRoomState(room);
   });
 
