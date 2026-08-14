@@ -19,11 +19,11 @@ const BASE_GRADIENT_PALETTES = [
 ];
 
 const TARGET_GRADIENT_PALETTES = [
-  ['#ec4899', '#f59e0b'], // Pink to Amber
-  ['#22d3ee', '#3b82f6'], // Cyan to Blue
-  ['#a855f7', '#ec4899'], // Purple to Pink
-  ['#10b981', '#06b6d4'], // Emerald to Cyan
-  ['#f97316', '#e11d48'], // Orange to Rose
+  ['#2e1065', '#4c1d95'], // Subtle Deep Purple
+  ['#022c22', '#0f766e'], // Subtle Deep Teal
+  ['#3f1d0b', '#92400e'], // Subtle Deep Warm Gold
+  ['#3b0764', '#6b21a8'], // Subtle Deep Violet
+  ['#0f172a', '#1e293b'], // Subtle Deep Slate
 ];
 
 export function createRoom(hostId, hostName) {
@@ -118,6 +118,7 @@ function startChromaRound(room) {
   const targetTileIndex = Math.floor(Math.random() * 25);
   const baseIndex = (room.round - 1) % BASE_GRADIENT_PALETTES.length;
   const targetIndex = (room.round * 2 + 1) % TARGET_GRADIENT_PALETTES.length;
+  const shiftDurationSec = 60 + Math.floor(Math.random() * 61); // 60s to 120s
 
   room.chromaState = {
     targetTileIndex,
@@ -126,6 +127,7 @@ function startChromaRound(room) {
     roundWinnerId: null,
     roundWinnerName: null,
     pointsAwarded: 0,
+    shiftDurationSec,
     seed: Date.now() + Math.random(),
   };
 

@@ -24,6 +24,7 @@ export interface ChromaRoundState {
   roundWinnerId: string | null;
   roundWinnerName: string | null;
   pointsAwarded: number;
+  shiftDurationSec: number;
   seed: number;
 }
 
