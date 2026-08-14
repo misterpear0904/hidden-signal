@@ -244,53 +244,71 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
     <div className="page-top" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <div className="container animate-fade-up" style={{ maxWidth: 760, width: '100%' }}>
         {/* Header HUD */}
-        <div className="glass p-16" style={{ borderRadius: 'var(--radius-xl)', marginBottom: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div>
-            <div className="flex items-center gap-8 mb-4">
-              <span className="badge badge-purple" style={{ fontSize: '0.75rem' }}>
+        <div
+          className="glass p-16"
+          style={{
+            borderRadius: 'var(--radius-xl)',
+            marginBottom: 20,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 16,
+            flexWrap: 'wrap',
+          }}
+        >
+          {/* Game Title & Status Badges */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <h2 className="heading-md" style={{ margin: 0, fontSize: '1.25rem', whiteSpace: 'nowrap' }}>
+                🎨 Chroma Shift
+              </h2>
+              <span className="badge badge-purple" style={{ fontSize: '0.75rem', fontWeight: 700, whiteSpace: 'nowrap' }}>
                 Round {round} / 5
               </span>
-              <span className="badge badge-cyan" style={{ fontSize: '0.75rem' }}>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <span className="badge badge-cyan" style={{ fontSize: '0.7rem', whiteSpace: 'nowrap' }}>
                 {difficulty === 'easy' ? '🟢 Easy' : difficulty === 'medium' ? '🟡 Medium' : '🔴 Hard'}
               </span>
+
               {isExtreme && (
-                <span className="badge" style={{ fontSize: '0.75rem', background: 'rgba(239,68,68,0.15)', color: 'var(--rose-400)', border: '1px solid rgba(239,68,68,0.3)' }}>
-                  🔥 15x15 Extreme ({totalTiles} Tiles)
+                <span className="badge" style={{ fontSize: '0.7rem', background: 'rgba(239,68,68,0.15)', color: 'var(--rose-400)', border: '1px solid rgba(239,68,68,0.3)', whiteSpace: 'nowrap' }}>
+                  🔥 15x15 (225 Tiles)
                 </span>
               )}
+
               {chromaOptions.fairPoints && (
-                <span className="badge badge-amber" style={{ fontSize: '0.7rem' }}>
-                  ⚖️ Fair Points (+{difficulty === 'easy' ? 1 : difficulty === 'medium' ? 2 : 3} pts)
+                <span className="badge badge-amber" style={{ fontSize: '0.7rem', whiteSpace: 'nowrap' }}>
+                  ⚖️ Fair Pts (+{difficulty === 'easy' ? 1 : difficulty === 'medium' ? 2 : 3})
                 </span>
               )}
             </div>
-            <h2 className="heading-md" style={{ margin: 0, fontSize: '1.2rem' }}>
-              🎨 Chroma Shift
-            </h2>
           </div>
 
-          {/* Scores */}
-          <div className="flex items-center gap-12">
+          {/* Player Score Cards */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             {roomState.players.map((p) => {
               const pDiff = chromaOptions?.playerDifficulties?.[p.id] || 'easy';
               return (
                 <div
                   key={p.id}
                   style={{
-                    padding: '6px 12px',
+                    padding: '5px 10px',
                     borderRadius: 'var(--radius-md)',
                     background: p.id === myId ? 'rgba(6,182,212,0.15)' : 'rgba(255,255,255,0.04)',
                     border: `1px solid ${p.id === myId ? 'var(--cyan-400)' : 'var(--border)'}`,
                     textAlign: 'center',
+                    minWidth: 80,
                   }}
                 >
-                  <div className="text-xs text-muted" style={{ fontSize: '0.65rem', display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'center' }}>
-                    <span>{p.name} {p.id === myId && '(You)'}</span>
+                  <div className="text-xs text-muted" style={{ fontSize: '0.65rem', display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'center', whiteSpace: 'nowrap' }}>
+                    <span style={{ fontWeight: p.id === myId ? 700 : 400 }}>{p.name} {p.id === myId && '(You)'}</span>
                     <span style={{ fontSize: '0.6rem' }}>
                       {pDiff === 'easy' ? '🟢' : pDiff === 'medium' ? '🟡' : '🔴'}
                     </span>
                   </div>
-                  <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '1.1rem', color: 'var(--amber-400)' }}>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '1rem', color: 'var(--amber-400)', marginTop: 1 }}>
                     {p.score} pts
                   </div>
                 </div>
