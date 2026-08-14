@@ -33,7 +33,7 @@ export function createRoom(hostId, hostName) {
   const room = {
     code,
     selectedGameId: 'hidden-signal',
-    chromaOptions: { difficulty: 'easy', playerDifficulties: {}, fairPoints: true },
+    chromaOptions: { difficulty: 'easy', playerDifficulties: {}, fairPoints: true, extremeMode: false },
     chromaState: null,
     phase: 'lobby',          // lobby | role-reveal | signal | discuss | guess | reveal | end | chroma-play | chroma-reveal
     round: 0,
@@ -115,7 +115,8 @@ export function startGame(code) {
 }
 
 function startChromaRound(room) {
-  const targetTileIndex = Math.floor(Math.random() * 25);
+  const totalTiles = room.chromaOptions.extremeMode ? 225 : 25;
+  const targetTileIndex = Math.floor(Math.random() * totalTiles);
   const baseIndex = (room.round - 1) % BASE_GRADIENT_PALETTES.length;
   const targetIndex = (room.round * 2 + 1) % TARGET_GRADIENT_PALETTES.length;
   const shiftDurationSec = 60 + Math.floor(Math.random() * 61); // 60s to 120s

@@ -224,7 +224,7 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
             </div>
 
             {/* Fair Points Host Toggle */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', background: 'rgba(255,255,255,0.03)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', background: 'rgba(255,255,255,0.03)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)', marginBottom: 12 }}>
               <div>
                 <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
                   ⚖️ Fair Points Mode
@@ -258,6 +258,46 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
               ) : (
                 <span className="badge" style={{ background: chromaOptions.fairPoints ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.05)', color: chromaOptions.fairPoints ? 'var(--green-400)' : 'var(--text-muted)' }}>
                   {chromaOptions.fairPoints ? 'ON' : 'OFF'} (Host Setting)
+                </span>
+              )}
+            </div>
+
+            {/* Extreme Mode Host Toggle */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', background: chromaOptions.extremeMode ? 'rgba(239,68,68,0.1)' : 'rgba(255,255,255,0.03)', borderRadius: 'var(--radius-lg)', border: `1px solid ${chromaOptions.extremeMode ? 'rgba(239,68,68,0.4)' : 'var(--border)'}`, transition: 'all 0.2s' }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.9rem', color: chromaOptions.extremeMode ? 'var(--rose-400)' : 'var(--text-primary)' }}>
+                  🔥 Extreme Mode (15x15 Grid)
+                </div>
+                <div className="text-xs text-muted" style={{ marginTop: 2 }}>
+                  {chromaOptions.extremeMode
+                    ? 'ON: Massive 15x15 Grid (225 Tiles total!)'
+                    : 'OFF: Standard 5x5 Grid (25 Tiles)'}
+                </div>
+              </div>
+
+              {isHost ? (
+                <button
+                  type="button"
+                  id="extreme-mode-toggle"
+                  onClick={() => onUpdateChromaOptions({ extremeMode: !chromaOptions.extremeMode })}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: 'var(--radius-full)',
+                    background: chromaOptions.extremeMode ? 'var(--rose-400)' : 'rgba(255,255,255,0.1)',
+                    color: chromaOptions.extremeMode ? '#fff' : 'var(--text-muted)',
+                    fontWeight: 700,
+                    fontSize: '0.8rem',
+                    border: 'none',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    boxShadow: chromaOptions.extremeMode ? '0 0 16px rgba(239,68,68,0.4)' : 'none',
+                  }}
+                >
+                  {chromaOptions.extremeMode ? '15x15 ON 🔥' : 'OFF'}
+                </button>
+              ) : (
+                <span className="badge" style={{ background: chromaOptions.extremeMode ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.05)', color: chromaOptions.extremeMode ? 'var(--rose-400)' : 'var(--text-muted)' }}>
+                  {chromaOptions.extremeMode ? '15x15 🔥' : '5x5'} (Host Setting)
                 </span>
               )}
             </div>

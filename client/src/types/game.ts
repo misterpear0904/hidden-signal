@@ -15,6 +15,7 @@ export interface ChromaOptions {
   difficulty: 'easy' | 'medium' | 'hard';
   playerDifficulties: Record<string, 'easy' | 'medium' | 'hard'>;
   fairPoints: boolean;
+  extremeMode: boolean;
 }
 
 export interface ChromaRoundState {

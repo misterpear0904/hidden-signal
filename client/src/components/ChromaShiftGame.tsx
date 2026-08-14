@@ -41,6 +41,11 @@ function interpolateColor(c1: string, c2: string, factor: number): string {
 export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, onNextRound }: Props) {
   const { chromaState, chromaOptions, round } = roomState;
   const difficulty = chromaOptions?.playerDifficulties?.[myId] || 'easy';
+  const isExtreme = chromaOptions?.extremeMode ?? false;
+  const gridDim = isExtreme ? 15 : 5;
+  const totalTiles = gridDim * gridDim;
+  const tileSizePx = isExtreme ? 22 : 64;
+
   const isReveal = roomState.phase === 'chroma-reveal';
 
   const [wrongFlash, setWrongFlash] = useState(false);
@@ -52,15 +57,16 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
   const [tilesPhysics, setTilesPhysics] = useState<TilePhysics[]>([]);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  // Initialize tile physics positions based on 5x5 grid coordinates
+  // Initialize tile physics positions based on grid coordinates
   useEffect(() => {
     const initial: TilePhysics[] = [];
-    for (let i = 0; i < 25; i++) {
-      const row = Math.floor(i / 5);
-      const col = i % 5;
-      // Grid percentage positions with margin (10% to 90%)
-      const x = 10 + col * 18;
-      const y = 10 + row * 18;
+    const step = 80 / gridDim;
+
+    for (let i = 0; i < totalTiles; i++) {
+      const row = Math.floor(i / gridDim);
+      const col = i % gridDim;
+      const x = 5 + col * step;
+      const y = 5 + row * step;
 
       // Tile movement speed (Medium = 0.09, Hard = 0.13)
       const speedMult = difficulty === 'hard' ? 0.13 : 0.09;
@@ -79,7 +85,7 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
     }
     setTilesPhysics(initial);
     setShiftProgress(0);
-  }, [round, chromaState?.seed, difficulty]);
+  }, [round, chromaState?.seed, difficulty, gridDim, totalTiles]);
 
   // High-FPS requestAnimationFrame color shift loop for ultra-smooth micro-incremental steps
   useEffect(() => {
@@ -116,22 +122,22 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
       lastTime = now;
 
       setTilesPhysics(prev => {
-        if (!prev || prev.length !== 25) return prev;
+        if (!prev || prev.length !== totalTiles) return prev;
         const next = prev.map(t => ({ ...t }));
 
         const targetSpeed = difficulty === 'hard' ? 0.13 : 0.09;
 
-        // 1. Move and bounce off container walls (5% to 85% range to keep inside)
-        for (let i = 0; i < 25; i++) {
+        // 1. Move and bounce off container walls
+        for (let i = 0; i < totalTiles; i++) {
           const t = next[i];
           t.x += t.vx * dt;
           t.y += t.vy * dt;
 
           // Wall bounces
-          if (t.x < 5) { t.x = 5; t.vx = Math.abs(t.vx); }
-          if (t.x > 85) { t.x = 85; t.vx = -Math.abs(t.vx); }
-          if (t.y < 5) { t.y = 5; t.vy = Math.abs(t.vy); }
-          if (t.y > 85) { t.y = 85; t.vy = -Math.abs(t.vy); }
+          if (t.x < 2) { t.x = 2; t.vx = Math.abs(t.vx); }
+          if (t.x > 88) { t.x = 88; t.vx = -Math.abs(t.vx); }
+          if (t.y < 2) { t.y = 2; t.vy = Math.abs(t.vy); }
+          if (t.y > 88) { t.y = 88; t.vy = -Math.abs(t.vy); }
 
           // Hard mode: dynamic scale pulsation (0.5x to 1.5x)
           if (difficulty === 'hard') {
@@ -142,13 +148,14 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
           }
         }
 
-        // 2. Soft anti-overlap repulsion between tiles without energy damping
-        for (let i = 0; i < 25; i++) {
-          for (let j = i + 1; j < 25; j++) {
+        // 2. Soft anti-overlap repulsion between tiles
+        const minDistBase = isExtreme ? 4.5 : 14;
+        for (let i = 0; i < totalTiles; i++) {
+          for (let j = i + 1; j < totalTiles; j++) {
             const dx = next[j].x - next[i].x;
             const dy = next[j].y - next[i].y;
             const dist = Math.sqrt(dx * dx + dy * dy);
-            const minDist = 14 * Math.max(next[i].scale, next[j].scale) * 0.75;
+            const minDist = minDistBase * Math.max(next[i].scale, next[j].scale) * 0.75;
 
             if (dist < minDist && dist > 0.01) {
               const overlap = (minDist - dist) / 2;
@@ -160,7 +167,7 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
               next[j].x += nx * overlap * 0.2;
               next[j].y += ny * overlap * 0.2;
 
-              // Elastic bounce swap without speed decay
+              // Elastic bounce swap
               const tempVx = next[i].vx;
               const tempVy = next[i].vy;
               next[i].vx = next[j].vx;
@@ -172,7 +179,7 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
         }
 
         // 3. Normalize velocity to maintain constant target speed
-        for (let i = 0; i < 25; i++) {
+        for (let i = 0; i < totalTiles; i++) {
           const t = next[i];
           const currentSpeed = Math.sqrt(t.vx * t.vx + t.vy * t.vy);
           if (currentSpeed > 0.0001) {
@@ -189,7 +196,7 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
 
     animId = requestAnimationFrame(updatePhysics);
     return () => cancelAnimationFrame(animId);
-  }, [difficulty, isReveal]);
+  }, [difficulty, isReveal, totalTiles, isExtreme]);
 
   // Click handler
   const handleTileClick = (index: number) => {
@@ -246,6 +253,11 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
               <span className="badge badge-cyan" style={{ fontSize: '0.75rem' }}>
                 {difficulty === 'easy' ? '🟢 Easy' : difficulty === 'medium' ? '🟡 Medium' : '🔴 Hard'}
               </span>
+              {isExtreme && (
+                <span className="badge" style={{ fontSize: '0.75rem', background: 'rgba(239,68,68,0.15)', color: 'var(--rose-400)', border: '1px solid rgba(239,68,68,0.3)' }}>
+                  🔥 15x15 Extreme ({totalTiles} Tiles)
+                </span>
+              )}
               {chromaOptions.fairPoints && (
                 <span className="badge badge-amber" style={{ fontSize: '0.7rem' }}>
                   ⚖️ Fair Points (+{difficulty === 'easy' ? 1 : difficulty === 'medium' ? 2 : 3} pts)
@@ -321,7 +333,7 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
           <p className="text-center text-xs text-muted" style={{ marginBottom: 16 }}>
             {isReveal
               ? '🎉 Round Finished!'
-              : 'Spot the single tile that is slowly changing color and click it first!'}
+              : `Spot the single tile (among ${totalTiles} tiles) that is slowly changing color and click it first!`}
           </p>
 
           {/* Grid vs Floating Container */}
@@ -330,20 +342,20 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
             style={{
               width: '100%',
               aspectRatio: '1 / 1',
-              maxWidth: 520,
+              maxWidth: 540,
               margin: '0 auto',
               position: 'relative',
               display: difficulty === 'easy' ? 'grid' : 'block',
-              gridTemplateColumns: difficulty === 'easy' ? 'repeat(5, 1fr)' : undefined,
-              gridTemplateRows: difficulty === 'easy' ? 'repeat(5, 1fr)' : undefined,
-              gap: difficulty === 'easy' ? 12 : undefined,
+              gridTemplateColumns: difficulty === 'easy' ? `repeat(${gridDim}, 1fr)` : undefined,
+              gridTemplateRows: difficulty === 'easy' ? `repeat(${gridDim}, 1fr)` : undefined,
+              gap: difficulty === 'easy' ? (isExtreme ? 3 : 12) : undefined,
               overflow: 'hidden',
               borderRadius: 'var(--radius-xl)',
               background: 'rgba(0,0,0,0.25)',
-              padding: 12,
+              padding: isExtreme ? 6 : 12,
             }}
           >
-            {Array.from({ length: 25 }).map((_, i) => {
+            {Array.from({ length: totalTiles }).map((_, i) => {
               const isTargetWinner = isReveal && chromaState?.targetTileIndex === i;
               const isTargetTile = chromaState?.targetTileIndex === i;
 
@@ -354,9 +366,9 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
                   onClick={() => handleTileClick(i)}
                   disabled={isReveal}
                   style={{
-                    width: difficulty === 'easy' ? '100%' : '64px',
-                    height: difficulty === 'easy' ? '100%' : '64px',
-                    borderRadius: 'var(--radius-lg)',
+                    width: difficulty === 'easy' ? '100%' : `${tileSizePx}px`,
+                    height: difficulty === 'easy' ? '100%' : `${tileSizePx}px`,
+                    borderRadius: isExtreme ? '4px' : 'var(--radius-lg)',
                     cursor: isReveal ? 'default' : 'pointer',
                     outline: 'none',
                     position: difficulty === 'easy' ? 'relative' : undefined,
@@ -382,7 +394,7 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
                   )}
 
                   {isTargetWinner && (
-                    <span style={{ position: 'relative', zIndex: 10, fontSize: '1.5rem', filter: 'drop-shadow(0 0 8px rgba(0,0,0,0.8))' }}>
+                    <span style={{ position: 'relative', zIndex: 10, fontSize: isExtreme ? '0.75rem' : '1.5rem', filter: 'drop-shadow(0 0 8px rgba(0,0,0,0.8))' }}>
                       🎯
                     </span>
                   )}
