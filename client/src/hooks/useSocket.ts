@@ -18,6 +18,10 @@ export interface SocketHookReturn {
   createRoom: (playerName: string) => void;
   joinRoom: (roomCode: string, playerName: string) => void;
   startGame: (roomCode: string) => void;
+  selectGame: (roomCode: string, gameId: string) => void;
+  updateChromaOptions: (roomCode: string, options: Partial<import('../types/game').ChromaOptions>) => void;
+  submitChromaGuess: (roomCode: string, tileIndex: number) => void;
+  nextChromaRound: (roomCode: string) => void;
   submitSignal: (roomCode: string, signal: string) => void;
   submitGuess: (roomCode: string, guessData: object) => void;
   nextRound: (roomCode: string) => void;
@@ -104,6 +108,22 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('play-again', { roomCode: code });
   }, []);
 
+  const selectGame = useCallback((code: string, gameId: string) => {
+    socketRef.current?.emit('select-game', { roomCode: code, gameId });
+  }, []);
+
+  const updateChromaOptions = useCallback((code: string, options: Partial<import('../types/game').ChromaOptions>) => {
+    socketRef.current?.emit('update-chroma-options', { roomCode: code, options });
+  }, []);
+
+  const submitChromaGuess = useCallback((code: string, tileIndex: number) => {
+    socketRef.current?.emit('submit-chroma-guess', { roomCode: code, tileIndex });
+  }, []);
+
+  const nextChromaRound = useCallback((code: string) => {
+    socketRef.current?.emit('next-chroma-round', { roomCode: code });
+  }, []);
+
   return {
     socket: socketRef.current,
     connected,
@@ -118,6 +138,10 @@ export function useSocket(): SocketHookReturn {
     createRoom,
     joinRoom,
     startGame,
+    selectGame,
+    updateChromaOptions,
+    submitChromaGuess,
+    nextChromaRound,
     submitSignal,
     submitGuess,
     nextRound,

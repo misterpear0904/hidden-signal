@@ -10,6 +10,8 @@ import GuessPhase from './components/GuessPhase';
 import RoundReveal from './components/RoundReveal';
 import FinalLeaderboard from './components/FinalLeaderboard';
 
+import ChromaShiftGame from './components/ChromaShiftGame';
+
 function LoadingScreen({ text }: { text: string }) {
   return (
     <div className="page">
@@ -35,6 +37,10 @@ export default function App() {
     createRoom,
     joinRoom,
     startGame,
+    selectGame,
+    updateChromaOptions,
+    submitChromaGuess,
+    nextChromaRound,
     submitSignal,
     submitGuess,
     nextRound,
@@ -54,7 +60,11 @@ export default function App() {
 
   const handleCreate = useCallback((name: string) => createRoom(name), [createRoom]);
   const handleJoin = useCallback((code: string, name: string) => joinRoom(code, name), [joinRoom]);
+  const handleSelectGame = useCallback((gameId: string) => { if (roomCode) selectGame(roomCode, gameId); }, [roomCode, selectGame]);
+  const handleUpdateChromaOptions = useCallback((options: Partial<import('./types/game').ChromaOptions>) => { if (roomCode) updateChromaOptions(roomCode, options); }, [roomCode, updateChromaOptions]);
   const handleStartGame = useCallback(() => { if (roomCode) startGame(roomCode); }, [roomCode, startGame]);
+  const handleGuessChromaTile = useCallback((tileIndex: number) => { if (roomCode) submitChromaGuess(roomCode, tileIndex); }, [roomCode, submitChromaGuess]);
+  const handleNextChromaRound = useCallback(() => { if (roomCode) nextChromaRound(roomCode); }, [roomCode, nextChromaRound]);
   const handleSubmitSignal = useCallback((signal: string) => { if (roomCode) submitSignal(roomCode, signal); }, [roomCode, submitSignal]);
   const handleSubmitGuess = useCallback((guessData: object) => { if (roomCode) submitGuess(roomCode, guessData); }, [roomCode, submitGuess]);
   const handleNextRound = useCallback(() => { if (roomCode) nextRound(roomCode); }, [roomCode, nextRound]);
@@ -68,7 +78,27 @@ export default function App() {
 
     switch (roomState.phase) {
       case 'lobby':
-        return <Lobby roomState={roomState} myId={myId} onStartGame={handleStartGame} />;
+        return (
+          <Lobby
+            roomState={roomState}
+            myId={myId}
+            onSelectGame={handleSelectGame}
+            onUpdateChromaOptions={handleUpdateChromaOptions}
+            onStartGame={handleStartGame}
+          />
+        );
+
+      case 'chroma-play':
+      case 'chroma-reveal':
+        return (
+          <ChromaShiftGame
+            roomState={roomState}
+            myId={myId}
+            isHost={isHost}
+            onGuessTile={handleGuessChromaTile}
+            onNextRound={handleNextChromaRound}
+          />
+        );
 
       case 'role-reveal':
         if (!myRole) return <LoadingScreen text="Loading your role..." />;

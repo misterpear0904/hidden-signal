@@ -45,6 +45,29 @@ export const GAME_CATALOGUE: GameDefinition[] = [
       { icon: '🏆', text: 'Highest total score after 5 rounds wins!' },
     ],
   },
+  {
+    id: 'chroma-shift',
+    name: 'Chroma Shift',
+    emoji: '🎨',
+    tagline: 'Race to spot the single tile slowly shifting color!',
+    minPlayers: 2,
+    maxPlayers: 12,
+    rounds: 5,
+    tags: ['Perception', 'Reaction', '2+ Players'],
+    accentColor: 'var(--cyan-400)',
+    bgGradient: 'linear-gradient(135deg, rgba(6,182,212,0.12), rgba(14,165,233,0.06))',
+    borderColor: 'rgba(6,182,212,0.35)',
+    available: true,
+    rules: [
+      { icon: '🧩', text: '25 tiles on screen starting with the same initial gradient' },
+      { icon: '👁️', text: 'Exactly ONE tile slowly changes its gradient over time — watch closely!' },
+      { icon: '⚡', text: 'First player to click the correct changing tile wins the round!' },
+      { icon: '⚠️', text: 'Clicking the wrong tile costs 1 point (-1 pt penalty) and round continues' },
+      { icon: '⚙️', text: 'Easy (Static grid) | Medium (Floating movement) | Hard (Faster drift + dynamic tile sizes 0.5x-2x)' },
+      { icon: '⚖️', text: 'Fair Points mode: Easy wins +1 pt, Medium wins +2 pts, Hard wins +3 pts per round' },
+      { icon: '🏆', text: '5 total rounds — highest overall score wins!' },
+    ],
+  },
 ];
 
 interface Props {

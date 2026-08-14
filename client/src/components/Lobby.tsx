@@ -5,6 +5,8 @@ import GameSelect, { GAME_CATALOGUE } from './GameSelect';
 interface Props {
   roomState: RoomState;
   myId: string;
+  onSelectGame: (gameId: string) => void;
+  onUpdateChromaOptions: (options: Partial<import('../types/game').ChromaOptions>) => void;
   onStartGame: () => void;
 }
 
@@ -19,21 +21,22 @@ const AVATAR_COLORS = [
   'linear-gradient(135deg,#f472b6,#be185d)',
 ];
 
-export default function Lobby({ roomState, myId, onStartGame }: Props) {
-  const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
-
+export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOptions, onStartGame }: Props) {
   const me = roomState.players.find(p => p.id === myId);
   const isHost = me?.isHost ?? false;
   const playerCount = roomState.players.length;
 
+  const selectedGameId = roomState.selectedGameId || null;
   const selectedGame = GAME_CATALOGUE.find(g => g.id === selectedGameId) ?? null;
-  const canStart = selectedGame !== null && playerCount >= (selectedGame?.minPlayers ?? 4);
+  const canStart = selectedGame !== null && playerCount >= (selectedGame?.minPlayers ?? 2);
 
   const startBlockedReason = !selectedGame
     ? 'Choose a game above to continue'
     : playerCount < (selectedGame.minPlayers)
     ? `Need at least ${selectedGame.minPlayers - playerCount} more player${selectedGame.minPlayers - playerCount !== 1 ? 's' : ''} for ${selectedGame.name}`
     : null;
+
+  const chromaOptions = roomState.chromaOptions || { difficulty: 'easy', fairPoints: true };
 
   return (
     <div className="page-top">
@@ -85,7 +88,7 @@ export default function Lobby({ roomState, myId, onStartGame }: Props) {
                   fontFamily: 'var(--font-mono)',
                   fontSize: '1.1rem',
                   fontWeight: 700,
-                  color: playerCount >= 4 ? 'var(--green-400)' : 'var(--text-secondary)',
+                  color: playerCount >= (selectedGame?.minPlayers ?? 2) ? 'var(--green-400)' : 'var(--text-secondary)',
                 }}
               >
                 {playerCount}
@@ -117,8 +120,8 @@ export default function Lobby({ roomState, myId, onStartGame }: Props) {
               </div>
             ))}
 
-            {/* Empty slots hint relative to selected game min, or 4 */}
-            {playerCount < 4 && Array.from({ length: 4 - playerCount }).map((_, i) => (
+            {/* Empty slots hint relative to selected game min */}
+            {playerCount < (selectedGame?.minPlayers ?? 2) && Array.from({ length: (selectedGame?.minPlayers ?? 2) - playerCount }).map((_, i) => (
               <div
                 key={`empty-${i}`}
                 className="player-card"
@@ -143,9 +146,106 @@ export default function Lobby({ roomState, myId, onStartGame }: Props) {
             selectedGameId={selectedGameId}
             playerCount={playerCount}
             isHost={isHost}
-            onSelect={setSelectedGameId}
+            onSelect={onSelectGame}
           />
         </div>
+
+        {/* ── Chroma Shift Game Options Panel ── */}
+        {selectedGameId === 'chroma-shift' && (
+          <div className="glass p-24 animate-fade-up" style={{ borderRadius: 'var(--radius-xl)', marginBottom: 24, border: '1px solid rgba(6,182,212,0.3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+              <span style={{ fontSize: '1.4rem' }}>🎨</span>
+              <div>
+                <h3 className="heading-md" style={{ fontSize: '1.1rem', margin: 0 }}>Chroma Shift Settings</h3>
+                <p className="text-xs text-muted">Configure difficulty & scoring before starting</p>
+              </div>
+            </div>
+
+            {/* Difficulty Selector */}
+            <div style={{ marginBottom: 20 }}>
+              <label className="text-xs text-muted" style={{ fontWeight: 700, letterSpacing: '0.05em', display: 'block', marginBottom: 8, textTransform: 'uppercase' }}>
+                Difficulty Mode
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                {(['easy', 'medium', 'hard'] as const).map((diff) => {
+                  const isActive = chromaOptions.difficulty === diff;
+                  const ptsText = chromaOptions.fairPoints
+                    ? diff === 'easy' ? '1 pt/rnd' : diff === 'medium' ? '2 pts/rnd' : '3 pts/rnd'
+                    : '1 pt/rnd';
+
+                  return (
+                    <button
+                      key={diff}
+                      type="button"
+                      id={`diff-btn-${diff}`}
+                      onClick={() => onUpdateChromaOptions({ difficulty: diff })}
+                      style={{
+                        padding: '12px 10px',
+                        borderRadius: 'var(--radius-lg)',
+                        background: isActive ? 'rgba(6,182,212,0.15)' : 'rgba(255,255,255,0.03)',
+                        border: `2px solid ${isActive ? 'var(--cyan-400)' : 'var(--border)'}`,
+                        color: isActive ? '#fff' : 'var(--text-muted)',
+                        fontWeight: isActive ? 700 : 500,
+                        cursor: 'pointer',
+                        textAlign: 'center',
+                        transition: 'all 0.2s',
+                      }}
+                    >
+                      <div style={{ fontSize: '0.95rem', textTransform: 'capitalize', marginBottom: 2 }}>
+                        {diff === 'easy' ? '🟢 Easy' : diff === 'medium' ? '🟡 Medium' : '🔴 Hard'}
+                      </div>
+                      <div className="text-xs text-muted" style={{ fontSize: '0.7rem' }}>
+                        {diff === 'easy' ? 'Static grid' : diff === 'medium' ? 'Slow drift' : 'Fast + Resizing'}
+                      </div>
+                      <div style={{ fontSize: '0.65rem', color: isActive ? 'var(--cyan-400)' : 'var(--text-muted)', marginTop: 4, fontWeight: 700 }}>
+                        {ptsText}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Fair Points Host Toggle */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', background: 'rgba(255,255,255,0.03)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)' }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                  ⚖️ Fair Points Mode
+                </div>
+                <div className="text-xs text-muted" style={{ marginTop: 2 }}>
+                  {chromaOptions.fairPoints
+                    ? 'ON: Easy = 1 pt, Medium = 2 pts, Hard = 3 pts'
+                    : 'OFF: All difficulty modes award 1 pt per round'}
+                </div>
+              </div>
+
+              {isHost ? (
+                <button
+                  type="button"
+                  id="fair-points-toggle"
+                  onClick={() => onUpdateChromaOptions({ fairPoints: !chromaOptions.fairPoints })}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: 'var(--radius-full)',
+                    background: chromaOptions.fairPoints ? 'var(--green-400)' : 'rgba(255,255,255,0.1)',
+                    color: chromaOptions.fairPoints ? '#000' : 'var(--text-muted)',
+                    fontWeight: 700,
+                    fontSize: '0.8rem',
+                    border: 'none',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  {chromaOptions.fairPoints ? 'ON ✓' : 'OFF'}
+                </button>
+              ) : (
+                <span className="badge" style={{ background: chromaOptions.fairPoints ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.05)', color: chromaOptions.fairPoints ? 'var(--green-400)' : 'var(--text-muted)' }}>
+                  {chromaOptions.fairPoints ? 'ON' : 'OFF'} (Host Setting)
+                </span>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Start / Waiting */}
         {isHost ? (

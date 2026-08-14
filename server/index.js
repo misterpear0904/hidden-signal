@@ -10,6 +10,10 @@ import {
   getRoom,
   getRoomByPlayerId,
   startGame,
+  selectGame,
+  updateChromaOptions,
+  submitChromaGuess,
+  nextChromaRound,
   advanceToSignal,
   advanceToDiscuss,
   advanceToGuess,
@@ -60,6 +64,9 @@ function setRoomTimer(code, ms, cb) {
 function roomPublicState(room) {
   return {
     code: room.code,
+    selectedGameId: room.selectedGameId || 'hidden-signal',
+    chromaOptions: room.chromaOptions || { difficulty: 'easy', fairPoints: true },
+    chromaState: room.chromaState || null,
     phase: room.phase,
     round: room.round,
     players: room.players.map(p => ({
@@ -145,24 +152,60 @@ io.on('connection', (socket) => {
     broadcastRoomState(result.room);
   });
 
+  socket.on('select-game', ({ roomCode, gameId }) => {
+    const room = selectGame(roomCode, gameId);
+    if (room) broadcastRoomState(room);
+  });
+
+  socket.on('update-chroma-options', ({ roomCode, options }) => {
+    const room = updateChromaOptions(roomCode, options);
+    if (room) broadcastRoomState(room);
+  });
+
   socket.on('start-game', ({ roomCode }) => {
     const room = getRoom(roomCode);
     if (!room) return socket.emit('error', 'Room not found');
     if (room.players[0].id !== socket.id) return socket.emit('error', 'Only the host can start');
-    if (room.players.length < 4) return socket.emit('error', 'Need at least 4 players');
 
+    const gameId = room.selectedGameId || 'hidden-signal';
+
+    if (gameId === 'chroma-shift') {
+      if (room.players.length < 2) return socket.emit('error', 'Need at least 2 players for Chroma Shift');
+      const started = startGame(roomCode);
+      if (!started) return socket.emit('error', 'Could not start Chroma Shift');
+      broadcastRoomState(started);
+      return;
+    }
+
+    if (room.players.length < 4) return socket.emit('error', 'Need at least 4 players for Hidden Signal');
     const started = startGame(roomCode);
     if (!started) return socket.emit('error', 'Could not start game');
 
     broadcastRoomState(started);
 
-    // Send each player their private role
     for (const player of started.players) {
       const playerSocket = io.sockets.sockets.get(player.id);
       if (playerSocket) sendPrivateRole(playerSocket, started);
     }
 
     startSignalPhase(roomCode);
+  });
+
+  socket.on('submit-chroma-guess', ({ roomCode, tileIndex }) => {
+    const result = submitChromaGuess(roomCode, socket.id, tileIndex);
+    if (!result) return;
+
+    if (!result.correct) {
+      socket.emit('chroma-wrong-click');
+    }
+    broadcastRoomState(result.room);
+  });
+
+  socket.on('next-chroma-round', ({ roomCode }) => {
+    const room = getRoom(roomCode);
+    if (!room || room.players[0].id !== socket.id) return;
+    const next = nextChromaRound(roomCode);
+    if (next) broadcastRoomState(next);
   });
 
   socket.on('submit-signal', ({ roomCode, signal }) => {

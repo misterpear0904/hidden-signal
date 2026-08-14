@@ -7,7 +7,24 @@ export type GamePhase =
   | 'discuss'
   | 'guess'
   | 'reveal'
-  | 'end';
+  | 'end'
+  | 'chroma-play'
+  | 'chroma-reveal';
+
+export interface ChromaOptions {
+  difficulty: 'easy' | 'medium' | 'hard';
+  fairPoints: boolean;
+}
+
+export interface ChromaRoundState {
+  targetTileIndex: number;
+  baseGradient: [string, string];
+  targetGradient: [string, string];
+  roundWinnerId: string | null;
+  roundWinnerName: string | null;
+  pointsAwarded: number;
+  seed: number;
+}
 
 export interface Player {
   id: string;
@@ -37,6 +54,9 @@ export interface Guess {
 
 export interface RoomState {
   code: string;
+  selectedGameId: string;
+  chromaOptions: ChromaOptions;
+  chromaState: ChromaRoundState | null;
   phase: GamePhase;
   round: number;
   players: Player[];
