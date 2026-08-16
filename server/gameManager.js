@@ -115,7 +115,7 @@ export function startGame(code) {
 }
 
 function startChromaRound(room) {
-  const totalTiles = room.chromaOptions.extremeMode ? 100 : 25;
+  const totalTiles = room.chromaOptions.extremeMode ? 64 : 25;
   const targetTileIndex = Math.floor(Math.random() * totalTiles);
   const baseIndex = (room.round - 1) % BASE_GRADIENT_PALETTES.length;
   const targetIndex = (room.round * 2 + 1) % TARGET_GRADIENT_PALETTES.length;
