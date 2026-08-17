@@ -9,7 +9,9 @@ export type GamePhase =
   | 'reveal'
   | 'end'
   | 'chroma-play'
-  | 'chroma-reveal';
+  | 'chroma-reveal'
+  | 'territory-turn'
+  | 'territory-reveal';
 
 export interface ChromaOptions {
   difficulty: 'easy' | 'medium' | 'hard';
@@ -27,6 +29,29 @@ export interface ChromaRoundState {
   pointsAwarded: number;
   shiftDurationSec: number;
   seed: number;
+}
+
+export interface TerritoryColumnResolution {
+  col: number;
+  redPicks: string[];   // player names
+  bluePicks: string[];  // player names
+  oldFrontier: number;
+  newFrontier: number;
+  defenderAdvantageApplied: 'red' | 'blue' | null;
+  clashResult: string;  // descriptive message
+}
+
+export interface TerritoryGameState {
+  teams: {
+    red: string[];  // player IDs
+    blue: string[]; // player IDs
+  };
+  board: number[]; // 10 elements: frontier row index for Red (0 to 9). Initial 4 for all.
+  submittedPicks: Record<string, number>; // playerId -> col (0..9)
+  lastResolutions: TerritoryColumnResolution[] | null;
+  turnHistory: Array<{ turn: number; resolutions: TerritoryColumnResolution[] }>;
+  winnerTeam: 'red' | 'blue' | null;
+  turn: number;
 }
 
 export interface Player {
@@ -60,6 +85,7 @@ export interface RoomState {
   selectedGameId: string;
   chromaOptions: ChromaOptions;
   chromaState: ChromaRoundState | null;
+  territoryState: TerritoryGameState | null;
   phase: GamePhase;
   round: number;
   players: Player[];

@@ -23,6 +23,8 @@ export interface SocketHookReturn {
   setPlayerDifficulty: (roomCode: string, difficulty: 'easy' | 'medium' | 'hard') => void;
   submitChromaGuess: (roomCode: string, tileIndex: number) => void;
   nextChromaRound: (roomCode: string) => void;
+  submitTerritoryPick: (roomCode: string, colIndex: number) => void;
+  nextTerritoryTurn: (roomCode: string) => void;
   submitSignal: (roomCode: string, signal: string) => void;
   submitGuess: (roomCode: string, guessData: object) => void;
   nextRound: (roomCode: string) => void;
@@ -129,6 +131,14 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('next-chroma-round', { roomCode: code });
   }, []);
 
+  const submitTerritoryPick = useCallback((code: string, colIndex: number) => {
+    socketRef.current?.emit('submit-territory-pick', { roomCode: code, colIndex });
+  }, []);
+
+  const nextTerritoryTurn = useCallback((code: string) => {
+    socketRef.current?.emit('next-territory-turn', { roomCode: code });
+  }, []);
+
   return {
     socket: socketRef.current,
     connected,
@@ -148,6 +158,8 @@ export function useSocket(): SocketHookReturn {
     setPlayerDifficulty,
     submitChromaGuess,
     nextChromaRound,
+    submitTerritoryPick,
+    nextTerritoryTurn,
     submitSignal,
     submitGuess,
     nextRound,

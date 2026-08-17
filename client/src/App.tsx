@@ -11,6 +11,7 @@ import RoundReveal from './components/RoundReveal';
 import FinalLeaderboard from './components/FinalLeaderboard';
 
 import ChromaShiftGame from './components/ChromaShiftGame';
+import TerritoryPushGame from './components/TerritoryPushGame';
 
 function LoadingScreen({ text }: { text: string }) {
   return (
@@ -42,6 +43,8 @@ export default function App() {
     setPlayerDifficulty,
     submitChromaGuess,
     nextChromaRound,
+    submitTerritoryPick,
+    nextTerritoryTurn,
     submitSignal,
     submitGuess,
     nextRound,
@@ -67,6 +70,8 @@ export default function App() {
   const handleStartGame = useCallback(() => { if (roomCode) startGame(roomCode); }, [roomCode, startGame]);
   const handleGuessChromaTile = useCallback((tileIndex: number) => { if (roomCode) submitChromaGuess(roomCode, tileIndex); }, [roomCode, submitChromaGuess]);
   const handleNextChromaRound = useCallback(() => { if (roomCode) nextChromaRound(roomCode); }, [roomCode, nextChromaRound]);
+  const handleSubmitTerritoryPick = useCallback((colIndex: number) => { if (roomCode) submitTerritoryPick(roomCode, colIndex); }, [roomCode, submitTerritoryPick]);
+  const handleNextTerritoryTurn = useCallback(() => { if (roomCode) nextTerritoryTurn(roomCode); }, [roomCode, nextTerritoryTurn]);
   const handleSubmitSignal = useCallback((signal: string) => { if (roomCode) submitSignal(roomCode, signal); }, [roomCode, submitSignal]);
   const handleSubmitGuess = useCallback((guessData: object) => { if (roomCode) submitGuess(roomCode, guessData); }, [roomCode, submitGuess]);
   const handleNextRound = useCallback(() => { if (roomCode) nextRound(roomCode); }, [roomCode, nextRound]);
@@ -100,6 +105,18 @@ export default function App() {
             isHost={isHost}
             onGuessTile={handleGuessChromaTile}
             onNextRound={handleNextChromaRound}
+          />
+        );
+
+      case 'territory-turn':
+      case 'territory-reveal':
+        return (
+          <TerritoryPushGame
+            roomState={roomState}
+            myId={myId}
+            isHost={isHost}
+            onSubmitPick={handleSubmitTerritoryPick}
+            onNextTurn={handleNextTerritoryTurn}
           />
         );
 

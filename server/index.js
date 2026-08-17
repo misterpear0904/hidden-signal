@@ -15,6 +15,8 @@ import {
   setPlayerDifficulty,
   submitChromaGuess,
   nextChromaRound,
+  submitTerritoryPick,
+  nextTerritoryTurn,
   advanceToSignal,
   advanceToDiscuss,
   advanceToGuess,
@@ -63,11 +65,28 @@ function setRoomTimer(code, ms, cb) {
 
 // Sanitize room data for broadcast (strip secrets by player)
 function roomPublicState(room) {
+  let publicTerritoryState = null;
+  if (room.territoryState) {
+    if (room.phase === 'territory-turn') {
+      const maskedPicks = {};
+      for (const [pid, _col] of Object.entries(room.territoryState.submittedPicks)) {
+        maskedPicks[pid] = true;
+      }
+      publicTerritoryState = {
+        ...room.territoryState,
+        submittedPicks: maskedPicks,
+      };
+    } else {
+      publicTerritoryState = room.territoryState;
+    }
+  }
+
   return {
     code: room.code,
     selectedGameId: room.selectedGameId || 'hidden-signal',
     chromaOptions: room.chromaOptions || { difficulty: 'easy', fairPoints: true },
     chromaState: room.chromaState || null,
+    territoryState: publicTerritoryState,
     phase: room.phase,
     round: room.round,
     players: room.players.map(p => ({
@@ -183,6 +202,15 @@ io.on('connection', (socket) => {
       return;
     }
 
+    if (gameId === 'territory-push') {
+      if (room.players.length < 2) return socket.emit('error', 'Need at least 2 players for Territory Push');
+      if (room.players.length % 2 !== 0) return socket.emit('error', 'Territory Push requires an EVEN number of players');
+      const started = startGame(roomCode);
+      if (!started) return socket.emit('error', 'Could not start Territory Push');
+      broadcastRoomState(started);
+      return;
+    }
+
     if (room.players.length < 4) return socket.emit('error', 'Need at least 4 players for Hidden Signal');
     const started = startGame(roomCode);
     if (!started) return socket.emit('error', 'Could not start game');
@@ -212,6 +240,19 @@ io.on('connection', (socket) => {
     if (!room || room.players[0].id !== socket.id) return;
     const next = nextChromaRound(roomCode);
     if (next) broadcastRoomState(next);
+  });
+
+  socket.on('submit-territory-pick', ({ roomCode, colIndex }) => {
+    const result = submitTerritoryPick(roomCode, socket.id, colIndex);
+    if (!result) return socket.emit('error', 'Cannot submit pick now');
+    broadcastRoomState(result.room);
+  });
+
+  socket.on('next-territory-turn', ({ roomCode }) => {
+    const next = nextTerritoryTurn(roomCode);
+    if (next) {
+      broadcastRoomState(next);
+    }
   });
 
   socket.on('submit-signal', ({ roomCode, signal }) => {

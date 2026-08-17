@@ -68,6 +68,29 @@ export const GAME_CATALOGUE: GameDefinition[] = [
       { icon: '🏆', text: '5 total rounds — highest overall score wins!' },
     ],
   },
+  {
+    id: 'territory-push',
+    name: 'Territory Push',
+    emoji: '⚔️',
+    tagline: 'Tactical 10x10 territory push for even player teams!',
+    minPlayers: 2,
+    maxPlayers: 12,
+    rounds: 20,
+    tags: ['Even Players', 'Simultaneous', 'Tactical'],
+    accentColor: 'var(--rose-400)',
+    bgGradient: 'linear-gradient(135deg, rgba(244,63,94,0.12), rgba(225,29,72,0.06))',
+    borderColor: 'rgba(244,63,94,0.35)',
+    available: true,
+    rules: [
+      { icon: '👥', text: 'Requires an EVEN number of players (2, 4, 6, 8...). Players are randomly split into Team Red (Top) and Team Blue (Bottom)' },
+      { icon: '🗺️', text: '10x10 Grid: Goal is to push your team\'s territory to the opponent\'s back row (Row 9 for Red, Row 0 for Blue)' },
+      { icon: '🔒', text: 'Simultaneous Turns: Each player secretly selects 1 column to push. Choices are hidden until all players locked in' },
+      { icon: '⚡', text: 'Team Stacking: Multiple teammates picking the same column multiply your push force!' },
+      { icon: '🛡️', text: 'Defender Advantage: Clashes in your home half give your team +2 Defender Bonus force to repel invaders!' },
+      { icon: '⚖️', text: 'Center Clash: Equal opposing picks at center cancel out with no movement' },
+      { icon: '🏆', text: 'First team to reach the opposing last row wins!' },
+    ],
+  },
 ];
 
 interface Props {

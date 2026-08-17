@@ -35,7 +35,8 @@ export function createRoom(hostId, hostName) {
     selectedGameId: 'hidden-signal',
     chromaOptions: { difficulty: 'easy', playerDifficulties: {}, fairPoints: true, extremeMode: false },
     chromaState: null,
-    phase: 'lobby',          // lobby | role-reveal | signal | discuss | guess | reveal | end | chroma-play | chroma-reveal
+    territoryState: null,
+    phase: 'lobby',          // lobby | role-reveal | signal | discuss | guess | reveal | end | chroma-play | chroma-reveal | territory-turn | territory-reveal
     round: 0,
     players: [{ id: hostId, name: hostName, score: 0, isHost: true, connected: true }],
     roles: [],
@@ -109,6 +110,31 @@ export function startGame(code) {
     return startChromaRound(room);
   }
 
+  if (room.selectedGameId === 'territory-push') {
+    if (room.players.length < 2 || room.players.length % 2 !== 0) return null;
+    room.round = 1;
+    for (const p of room.players) p.score = 0;
+    
+    // Shuffle players randomly into two teams
+    const shuffled = [...room.players.map(p => p.id)].sort(() => Math.random() - 0.5);
+    const half = Math.floor(shuffled.length / 2);
+    
+    room.territoryState = {
+      teams: {
+        red: shuffled.slice(0, half),
+        blue: shuffled.slice(half),
+      },
+      board: [4, 4, 4, 4, 4, 4, 4, 4, 4, 4], // Initial frontier row for Red (0..9)
+      submittedPicks: {},
+      lastResolutions: null,
+      turnHistory: [],
+      winnerTeam: null,
+      turn: 1,
+    };
+    room.phase = 'territory-turn';
+    return room;
+  }
+
   if (room.players.length < 4) return null;
   room.round = 1;
   return startRound(room);
@@ -176,6 +202,166 @@ export function nextChromaRound(code) {
 
   room.round += 1;
   return startChromaRound(room);
+}
+
+export function submitTerritoryPick(code, playerId, colIndex) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'territory-turn' || !room.territoryState) return null;
+  if (typeof colIndex !== 'number' || colIndex < 0 || colIndex > 9) return null;
+
+  room.territoryState.submittedPicks[playerId] = colIndex;
+
+  const connectedPlayers = room.players.filter(p => p.connected);
+  const allSubmitted = connectedPlayers.every(p => room.territoryState.submittedPicks[p.id] !== undefined);
+
+  if (allSubmitted) {
+    resolveTerritoryTurn(room);
+    return { room, resolved: true };
+  }
+
+  return { room, resolved: false };
+}
+
+export function resolveTerritoryTurn(room) {
+  if (!room.territoryState) return;
+
+  const { teams, board, submittedPicks } = room.territoryState;
+  const resolutions = [];
+
+  const playerMap = new Map(room.players.map(p => [p.id, p.name]));
+
+  // Resolve column by column
+  for (let c = 0; c < 10; c++) {
+    const redPickers = teams.red.filter(pid => submittedPicks[pid] === c).map(pid => playerMap.get(pid) || 'Red');
+    const bluePickers = teams.blue.filter(pid => submittedPicks[pid] === c).map(pid => playerMap.get(pid) || 'Blue');
+
+    const N = redPickers.length;
+    const M = bluePickers.length;
+    const oldFrontier = board[c]; // Red owns 0..oldFrontier, Blue owns oldFrontier+1..9
+
+    let newFrontier = oldFrontier;
+    let defenderAdvantageApplied = null;
+    let clashResult = '';
+
+    if (N > 0 && M === 0) {
+      newFrontier = Math.min(9, oldFrontier + N);
+      clashResult = `Red pushed column ${c + 1} by ${N} square(s)`;
+    } else if (N === 0 && M > 0) {
+      newFrontier = Math.max(-1, oldFrontier - M);
+      clashResult = `Blue pushed column ${c + 1} by ${M} square(s)`;
+    } else if (N > 0 && M > 0) {
+      // Both sides pushed column c
+      if (oldFrontier === 4) {
+        // Center boundary (row 4 vs row 5)
+        const net = N - M;
+        newFrontier = Math.min(9, Math.max(-1, oldFrontier + net));
+        if (net === 0) {
+          clashResult = `Center clash on col ${c + 1}! Forces equal — no change`;
+        } else if (net > 0) {
+          clashResult = `Center clash on col ${c + 1}! Red overpowered Blue (+${net})`;
+        } else {
+          clashResult = `Center clash on col ${c + 1}! Blue overpowered Red (+${-net})`;
+        }
+      } else if (oldFrontier > 4) {
+        // Boundary in Blue's half: Red is attacking, Blue is defending
+        defenderAdvantageApplied = 'blue';
+        const effectiveBlue = M + 2; // +2 defender bonus
+        const netRed = N - effectiveBlue;
+        newFrontier = Math.min(9, Math.max(-1, oldFrontier + netRed));
+
+        if (netRed > 0) {
+          clashResult = `Clash in Blue territory (Col ${c + 1})! Red broke through defender bonus (+${netRed})`;
+        } else if (netRed === 0) {
+          clashResult = `Clash in Blue territory (Col ${c + 1})! Blue defender bonus held the line (No change)`;
+        } else {
+          clashResult = `Clash in Blue territory (Col ${c + 1})! Blue defender bonus repelled Red (+${-netRed})`;
+        }
+      } else {
+        // Boundary in Red's half (oldFrontier < 4): Blue is attacking, Red is defending
+        defenderAdvantageApplied = 'red';
+        const effectiveRed = N + 2; // +2 defender bonus
+        const netRed = effectiveRed - M;
+        newFrontier = Math.min(9, Math.max(-1, oldFrontier + netRed));
+
+        if (netRed > 0) {
+          clashResult = `Clash in Red territory (Col ${c + 1})! Red defender bonus repelled Blue (+${netRed})`;
+        } else if (netRed === 0) {
+          clashResult = `Clash in Red territory (Col ${c + 1})! Red defender bonus held the line (No change)`;
+        } else {
+          clashResult = `Clash in Red territory (Col ${c + 1})! Blue broke through defender bonus (+${-netRed})`;
+        }
+      }
+    } else {
+      clashResult = `No activity on col ${c + 1}`;
+    }
+
+    board[c] = newFrontier;
+
+    resolutions.push({
+      col: c,
+      redPicks: redPickers,
+      bluePicks: bluePickers,
+      oldFrontier,
+      newFrontier,
+      defenderAdvantageApplied,
+      clashResult,
+    });
+  }
+
+  // Save to turn history
+  if (!room.territoryState.turnHistory) {
+    room.territoryState.turnHistory = [];
+  }
+  room.territoryState.turnHistory.push({
+    turn: room.territoryState.turn,
+    resolutions,
+  });
+  room.territoryState.lastResolutions = resolutions;
+
+  // Check victory condition
+  let redWins = board.some(f => f >= 9);
+  let blueWins = board.some(f => f <= -1);
+
+  if (redWins && !blueWins) {
+    room.territoryState.winnerTeam = 'red';
+    for (const p of room.players) {
+      if (teams.red.includes(p.id)) p.score += 5;
+    }
+    room.phase = 'end';
+  } else if (blueWins && !redWins) {
+    room.territoryState.winnerTeam = 'blue';
+    for (const p of room.players) {
+      if (teams.blue.includes(p.id)) p.score += 5;
+    }
+    room.phase = 'end';
+  } else if (redWins && blueWins) {
+    const maxRedPen = Math.max(...board);
+    const minBluePen = Math.min(...board);
+    if (maxRedPen >= 9 && minBluePen <= -1) {
+      room.territoryState.winnerTeam = 'red'; // tie break
+    }
+    room.phase = 'end';
+  } else {
+    // Immediately start next turn without delay
+    room.territoryState.submittedPicks = {};
+    room.territoryState.turn += 1;
+    room.phase = 'territory-turn';
+  }
+}
+
+export function nextTerritoryTurn(code) {
+  const room = rooms.get(code);
+  if (!room || !room.territoryState) return null;
+
+  if (room.territoryState.winnerTeam) {
+    room.phase = 'end';
+    return room;
+  }
+
+  room.territoryState.submittedPicks = {};
+  room.territoryState.turn += 1;
+  room.phase = 'territory-turn';
+  return room;
 }
 
 function startRound(room) {

@@ -29,12 +29,20 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
 
   const selectedGameId = roomState.selectedGameId || null;
   const selectedGame = GAME_CATALOGUE.find(g => g.id === selectedGameId) ?? null;
-  const canStart = selectedGame !== null && playerCount >= (selectedGame?.minPlayers ?? 2);
+  
+  const isTerritoryPush = selectedGameId === 'territory-push';
+  const isEvenPlayers = playerCount % 2 === 0;
+
+  const canStart = selectedGame !== null &&
+    playerCount >= (selectedGame?.minPlayers ?? 2) &&
+    (!isTerritoryPush || isEvenPlayers);
 
   const startBlockedReason = !selectedGame
     ? 'Choose a game above to continue'
     : playerCount < (selectedGame.minPlayers)
     ? `Need at least ${selectedGame.minPlayers - playerCount} more player${selectedGame.minPlayers - playerCount !== 1 ? 's' : ''} for ${selectedGame.name}`
+    : isTerritoryPush && !isEvenPlayers
+    ? 'Territory Push requires an EVEN number of players (e.g. 2, 4, 6, 8...)'
     : null;
 
   const chromaOptions = roomState.chromaOptions || { difficulty: 'easy', playerDifficulties: {}, fairPoints: true };
