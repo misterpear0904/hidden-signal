@@ -39,12 +39,12 @@ export default function LandingPage({ onCreateRoom, onJoinRoom, connected }: Pro
       <div className="container animate-fade-up">
         {/* Logo / Title */}
         <div className="text-center" style={{ marginBottom: 40 }}>
-          <div style={{ fontSize: '3rem', marginBottom: 8 }}>🕵️</div>
+          <div style={{ fontSize: '3rem', marginBottom: 8 }}>🕵️ 🎨 ⚔️</div>
           <h1 className="heading-hero" style={{ marginBottom: 8 }}>
             Hidden <span className="gradient-purple">Signal</span>
           </h1>
           <p className="text-muted text-sm">
-            A social deduction game of secrets, signals, and strategy
+            A multiplayer party lounge for deception, hidden knowledge, and bluffing games
           </p>
           <div className="flex items-center justify-center gap-8 mt-12">
             <div className={`conn-dot ${connected ? 'online' : 'offline'}`} />
@@ -130,15 +130,15 @@ export default function LandingPage({ onCreateRoom, onJoinRoom, connected }: Pro
 
           <div className="divider" />
 
-          {/* How to play */}
+          {/* How It Works */}
           <div className="flex flex-col gap-12">
-            <p className="text-xs text-muted text-center" style={{ fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>How to play</p>
+            <p className="text-xs text-muted text-center" style={{ fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>How It Works</p>
             {[
-              ['🕵️', '2 players are the Hidden Pair sharing a hidden signal (they don\'t know who each other are)'],
-              ['⚡', 'Anyone can vote at any time to immediately end the round'],
-              ['🤝', 'Pair: Guess partner → +1 pt each (+1 to both) | Wrong → -3 pt penalty'],
-              ['🎯', 'Neutrals: Pick 1 hidden player → +1 pt if correct | Wrong pick → -3 pt penalty'],
-              ['🏆', 'Highest total score after 5 rounds wins!'],
+              ['🎭', 'Multiplayer Mind Games: A collection of games testing deception, perception, hidden signals, and tactical bluffing.'],
+              ['👥', 'Gather in the Lobby: Create or join a private room with 2–12 players using a simple room code.'],
+              ['👑', 'Host Chooses the Game: The host picks from available game modes (Hidden Signal, Chroma Shift, Territory Push, etc.).'],
+              ['🤫', 'Hidden Information: Outsmart your friends using secret identities, concealed moves, and psychological reads.'],
+              ['🏆', 'Compete & Score: Earn points across multiple rounds to top the final leaderboard!'],
             ].map(([icon, text], i) => (
               <div key={i} className="flex items-start gap-12">
                 <span style={{ fontSize: '1.1rem', flexShrink: 0 }}>{icon}</span>
@@ -148,7 +148,7 @@ export default function LandingPage({ onCreateRoom, onJoinRoom, connected }: Pro
           </div>
         </div>
 
-        <p className="text-center text-xs text-muted mt-16">Minimum 4 players required to start</p>
+        <p className="text-center text-xs text-muted mt-16">Supports 2 to 12 players across multiple game modes</p>
       </div>
     </div>
   );

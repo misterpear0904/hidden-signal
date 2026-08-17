@@ -12,13 +12,35 @@ interface Props {
 export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPick, onNextTurn }: Props) {
   const [selectedCol, setSelectedCol] = useState<number | null>(null);
   const [lockedCol, setLockedCol] = useState<number | null>(null);
-  const territory = roomState.territoryState;
+  const [firedCol, setFiredCol] = useState<number | null>(null);
+  const [now, setNow] = useState<number>(Date.now());
 
-  // Reset local selection ONLY when the turn changes
+  const territory = roomState.territoryState;
+  const isExtreme = territory?.extremeMode === true;
+  const boardHeight = territory?.boardHeight || (isExtreme ? 20 : 10);
+  const midRow = isExtreme ? 9 : 4;
+
+  // Real-time clock for extreme mode charge progress animation
   useEffect(() => {
-    setSelectedCol(null);
-    setLockedCol(null);
-  }, [territory?.turn]);
+    if (!isExtreme) return;
+    const interval = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(interval);
+  }, [isExtreme]);
+
+  // Reset standard turn selection ONLY when turn changes in turn-based mode
+  useEffect(() => {
+    if (!isExtreme) {
+      setSelectedCol(null);
+      setLockedCol(null);
+    }
+  }, [territory?.turn, isExtreme]);
+
+  // Clear fire ripple
+  useEffect(() => {
+    if (firedCol === null) return;
+    const t = setTimeout(() => setFiredCol(null), 350);
+    return () => clearTimeout(t);
+  }, [firedCol]);
 
   if (!territory) {
     return (
@@ -33,22 +55,39 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
   const isBlueTeam = territory.teams.blue.includes(myId);
   const myTeamName = isRedTeam ? 'Red' : isBlueTeam ? 'Blue' : 'Spectator';
 
+  // Energy & Shot calculations in Extreme Mode
+  const myEnergy = territory.energy?.[myId] || { shots: 1, lastChargeMs: now };
+  const elapsed = Math.max(0, now - myEnergy.lastChargeMs);
+  const earned = Math.floor(elapsed / 5000);
+  const availableShots = Math.min(3, myEnergy.shots + earned);
+  const remainderMs = elapsed % 5000;
+  const chargePercent = availableShots >= 3 ? 100 : Math.min(100, Math.floor((remainderMs / 5000) * 100));
+  const secondsUntilNext = availableShots >= 3 ? 0 : ((5000 - remainderMs) / 1000).toFixed(1);
+
+  // Standard mode lock-in state
   const hasSubmitted = lockedCol !== null || territory.submittedPicks[myId] !== undefined;
   const displayLockedCol = lockedCol ?? (typeof territory.submittedPicks[myId] === 'number' ? territory.submittedPicks[myId] : selectedCol);
 
   const redPlayers = roomState.players.filter(p => territory.teams.red.includes(p.id));
   const bluePlayers = roomState.players.filter(p => territory.teams.blue.includes(p.id));
 
-  function handleLockIn() {
+  function handleStandardLockIn() {
     if (selectedCol !== null && !hasSubmitted) {
       setLockedCol(selectedCol);
       onSubmitPick(selectedCol);
     }
   }
 
+  function handleExtremeFire(c: number) {
+    if (availableShots > 0 && !territory?.winnerTeam) {
+      setFiredCol(c);
+      onSubmitPick(c);
+    }
+  }
+
   return (
     <div className="page-top">
-      <div className="container-wide animate-fade-up" style={{ maxWidth: 1000 }}>
+      <div className="container-wide animate-fade-up" style={{ maxWidth: 1060 }}>
         {/* Header */}
         <div className="glass p-20" style={{ borderRadius: 'var(--radius-xl)', marginBottom: 20 }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
@@ -56,10 +95,14 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
                 <span style={{ fontSize: '1.6rem' }}>⚔️</span>
                 <h1 className="heading-md" style={{ margin: 0 }}>Territory Push</h1>
-                <span className="badge badge-purple">Turn {territory.turn}</span>
+                {isExtreme ? (
+                  <span className="badge badge-rose" style={{ animation: 'pulse 2s infinite' }}>🔥 Extreme Real-Time (10x20)</span>
+                ) : (
+                  <span className="badge badge-purple">Turn {territory.turn}</span>
+                )}
               </div>
               <p className="text-xs text-muted" style={{ margin: 0 }}>
-                Room: <strong style={{ color: 'var(--amber-400)' }}>{roomState.code}</strong> | Grid 10x10 | Simultaneous Push
+                Room: <strong style={{ color: 'var(--amber-400)' }}>{roomState.code}</strong> | {boardHeight}x10 Grid | {isExtreme ? '⚡ Real-Time Energy Charging (+1 / 5s)' : 'Simultaneous Push'}
               </p>
             </div>
 
@@ -83,21 +126,114 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
               <div>
                 <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>You Are On</div>
                 <div style={{ fontWeight: 800, fontSize: '1rem', color: isRedTeam ? 'var(--rose-400)' : isBlueTeam ? 'var(--cyan-400)' : '#fff' }}>
-                  Team {myTeamName} {isRedTeam ? '(Top → Row 9)' : isBlueTeam ? '(Bottom → Row 0)' : ''}
+                  Team {myTeamName} {isRedTeam ? `(Top → Row ${boardHeight - 1})` : isBlueTeam ? '(Bottom → Row 0)' : ''}
                 </div>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Main Content Layout: Grid + Side Panel */}
+        {/* Extreme Mode Real-Time Energy HUD */}
+        {isExtreme && (
+          <div
+            className="glass p-16 animate-fade-up"
+            style={{
+              borderRadius: 'var(--radius-xl)',
+              marginBottom: 20,
+              background: 'linear-gradient(135deg, rgba(244,63,94,0.12), rgba(6,182,212,0.08))',
+              border: '1px solid rgba(244,63,94,0.3)',
+            }}
+          >
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 14 }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: '1.2rem' }}>⚡</span>
+                  <span style={{ fontWeight: 800, fontSize: '0.95rem', color: '#fff' }}>
+                    Stored Push Charges: <span style={{ color: availableShots > 0 ? (isRedTeam ? 'var(--rose-400)' : 'var(--cyan-400)') : 'var(--text-muted)', fontSize: '1.15rem' }}>{availableShots} / 3</span>
+                  </span>
+                </div>
+                <p className="text-xs text-muted" style={{ margin: '3px 0 0' }}>
+                  {availableShots >= 3
+                    ? '⚡ Maximum charge reached! Click any column C1–C10 below to fire immediately.'
+                    : `🔋 Next shot ready in ${secondsUntilNext}s (+1 charge every 5 seconds)`}
+                </p>
+              </div>
+
+              {/* 3 Charge Pods & Bar */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {[0, 1, 2].map((slotIdx) => {
+                    const isCharged = slotIdx < availableShots;
+                    const isCurrentlyCharging = slotIdx === availableShots && availableShots < 3;
+
+                    return (
+                      <div
+                        key={slotIdx}
+                        style={{
+                          width: 40,
+                          height: 40,
+                          borderRadius: 'var(--radius-md)',
+                          background: isCharged
+                            ? (isRedTeam ? 'rgba(239,68,68,0.25)' : 'rgba(6,182,212,0.25)')
+                            : 'rgba(0,0,0,0.35)',
+                          border: `2px solid ${isCharged ? (isRedTeam ? 'var(--rose-400)' : 'var(--cyan-400)') : isCurrentlyCharging ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.1)'}`,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          position: 'relative',
+                          overflow: 'hidden',
+                          boxShadow: isCharged ? `0 0 12px ${isRedTeam ? 'rgba(239,68,68,0.4)' : 'rgba(6,182,212,0.4)'}` : 'none',
+                        }}
+                      >
+                        {isCurrentlyCharging && (
+                          <div
+                            style={{
+                              position: 'absolute',
+                              bottom: 0,
+                              left: 0,
+                              right: 0,
+                              height: `${chargePercent}%`,
+                              background: isRedTeam ? 'rgba(239,68,68,0.3)' : 'rgba(6,182,212,0.3)',
+                              transition: 'height 0.1s linear',
+                              zIndex: 0,
+                            }}
+                          />
+                        )}
+                        <span style={{ fontSize: '1.1rem', zIndex: 1, opacity: isCharged ? 1 : 0.4 }}>
+                          {isCharged ? '⚡' : isCurrentlyCharging ? '⏳' : '⚪'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Smooth Charge Bar */}
+            {availableShots < 3 && (
+              <div style={{ width: '100%', height: 4, background: 'rgba(255,255,255,0.1)', borderRadius: 2, marginTop: 12, overflow: 'hidden' }}>
+                <div
+                  style={{
+                    height: '100%',
+                    width: `${chargePercent}%`,
+                    background: isRedTeam ? 'linear-gradient(90deg, #f43f5e, #ef4444)' : 'linear-gradient(90deg, #06b6d4, #38bdf8)',
+                    transition: 'width 0.1s linear',
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Main Content Layout: Board + Side Panel */}
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1fr) 340px', gap: 20 }} className="responsive-grid">
-          {/* 10x10 Board Section */}
+          {/* Board Section */}
           <div className="glass p-20" style={{ borderRadius: 'var(--radius-xl)', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-            {/* Top Column Labels & Previous Move Indicators */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(10, 1fr)', width: '100%', maxWidth: 440, gap: 4, marginBottom: 6, textAlign: 'center' }}>
+            {/* Top Column Labels & Shift Indicators */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(10, 1fr)', width: '100%', maxWidth: 460, gap: 4, marginBottom: 6, textAlign: 'center' }}>
               {Array.from({ length: 10 }).map((_, c) => {
-                const isSelected = selectedCol === c;
+                const isSelected = selectedCol === c || firedCol === c;
                 const lastRes = territory.lastResolutions?.[c];
                 const delta = lastRes ? lastRes.newFrontier - lastRes.oldFrontier : 0;
                 const hadAction = lastRes ? (lastRes.redPicks.length > 0 || lastRes.bluePicks.length > 0) : false;
@@ -113,8 +249,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                     >
                       C{c + 1}
                     </span>
-                    {/* Previous turn shift indicator badge */}
-                    {lastRes && hadAction ? (
+                    {!isExtreme && lastRes && hadAction ? (
                       <span
                         style={{
                           fontSize: '0.58rem',
@@ -139,43 +274,44 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
               })}
             </div>
 
-            {/* 10x10 Grid */}
+            {/* Grid Container (10x10 or 10x20) */}
             <div
               style={{
                 display: 'grid',
-                gridTemplateRows: 'repeat(10, 1fr)',
-                gap: 4,
+                gridTemplateRows: `repeat(${boardHeight}, 1fr)`,
+                gap: isExtreme ? 2 : 4,
                 width: '100%',
-                maxWidth: 440,
-                aspectRatio: '1/1',
-                background: 'rgba(0, 0, 0, 0.4)',
+                maxWidth: 460,
+                maxHeight: isExtreme ? '620px' : undefined,
+                aspectRatio: isExtreme ? '10/16' : '1/1',
+                background: 'rgba(0, 0, 0, 0.45)',
                 padding: 6,
                 borderRadius: 'var(--radius-lg)',
                 border: '1px solid var(--border)',
                 position: 'relative',
               }}
             >
-              {Array.from({ length: 10 }).map((_, r) => (
+              {Array.from({ length: boardHeight }).map((_, r) => (
                 <div
                   key={r}
                   style={{
                     display: 'grid',
                     gridTemplateColumns: 'repeat(10, 1fr)',
-                    gap: 4,
-                    borderBottom: r === 4 ? '2px dashed rgba(255, 255, 255, 0.35)' : undefined,
-                    paddingBottom: r === 4 ? 2 : 0,
+                    gap: isExtreme ? 2 : 4,
+                    borderBottom: r === midRow ? '2px dashed rgba(255, 255, 255, 0.45)' : undefined,
+                    paddingBottom: r === midRow ? (isExtreme ? 1 : 2) : 0,
                   }}
                 >
                   {Array.from({ length: 10 }).map((_, c) => {
                     const redFrontier = territory.board[c]; // Red owns rows 0..redFrontier
                     const isRedTile = r <= redFrontier;
                     const isBoundaryTile = r === redFrontier;
-                    const isSelectedColumn = selectedCol === c;
+                    const isSelectedColumn = selectedCol === c || firedCol === c;
 
-                    // Compute if this specific tile was captured in the last turn
+                    // Standard turn shift calculation
                     const lastRes = territory.lastResolutions?.[c];
                     let tileShiftType: 'red-capture' | 'blue-capture' | 'held' | null = null;
-                    if (lastRes) {
+                    if (!isExtreme && lastRes) {
                       const delta = lastRes.newFrontier - lastRes.oldFrontier;
                       if (delta > 0 && r > lastRes.oldFrontier && r <= lastRes.newFrontier) {
                         tileShiftType = 'red-capture';
@@ -191,7 +327,9 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                         key={c}
                         type="button"
                         onClick={() => {
-                          if (roomState.phase === 'territory-turn' && !hasSubmitted) {
+                          if (isExtreme) {
+                            handleExtremeFire(c);
+                          } else if (roomState.phase === 'territory-turn' && !hasSubmitted) {
                             setSelectedCol(c);
                           }
                         }}
@@ -214,24 +352,24 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                             : tileShiftType === 'blue-capture'
                             ? '2px solid rgba(186, 230, 253, 0.9)'
                             : isBoundaryTile
-                            ? '1px solid rgba(255,255,255,0.7)'
-                            : '1px solid rgba(255,255,255,0.05)',
-                          borderRadius: 4,
-                          cursor: !hasSubmitted && roomState.phase === 'territory-turn' ? 'pointer' : 'default',
-                          transition: 'all 0.15s ease',
+                            ? '1px solid rgba(255,255,255,0.8)'
+                            : '1px solid rgba(255,255,255,0.04)',
+                          borderRadius: isExtreme ? 2 : 4,
+                          cursor: isExtreme
+                            ? availableShots > 0 ? 'pointer' : 'not-allowed'
+                            : !hasSubmitted && roomState.phase === 'territory-turn' ? 'pointer' : 'default',
+                          transition: 'all 0.1s ease',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
                           position: 'relative',
                           boxShadow: isSelectedColumn
-                            ? '0 0 12px rgba(255,255,255,0.5)'
-                            : tileShiftType === 'red-capture'
-                            ? '0 0 8px rgba(239,68,68,0.7)'
-                            : tileShiftType === 'blue-capture'
-                            ? '0 0 8px rgba(6,182,212,0.7)'
+                            ? '0 0 14px rgba(255,255,255,0.6)'
+                            : isBoundaryTile
+                            ? `0 0 8px ${isRedTile ? 'rgba(239,68,68,0.5)' : 'rgba(6,182,212,0.5)'}`
                             : 'none',
                         }}
-                        title={`Col ${c + 1}, Row ${r} | ${isRedTile ? 'Red Territory' : 'Blue Territory'}${tileShiftType ? ` (${tileShiftType})` : ''}`}
+                        title={`Col ${c + 1}, Row ${r} | ${isRedTile ? 'Red Territory' : 'Blue Territory'}`}
                       >
                         {tileShiftType === 'red-capture' && (
                           <span style={{ fontSize: '0.65rem', fontWeight: 900, color: '#fff', textShadow: '0 1px 3px rgba(0,0,0,0.8)' }}>
@@ -246,8 +384,8 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                         {tileShiftType === 'held' && (
                           <span style={{ fontSize: '0.55rem' }}>🛡️</span>
                         )}
-                        {!tileShiftType && isBoundaryTile && r === 0 && <span style={{ fontSize: '0.55rem' }}>🚩</span>}
-                        {!tileShiftType && isBoundaryTile && r === 9 && <span style={{ fontSize: '0.55rem' }}>🚩</span>}
+                        {!tileShiftType && isBoundaryTile && r === 0 && <span style={{ fontSize: isExtreme ? '0.45rem' : '0.55rem' }}>🚩</span>}
+                        {!tileShiftType && isBoundaryTile && r === boardHeight - 1 && <span style={{ fontSize: isExtreme ? '0.45rem' : '0.55rem' }}>🚩</span>}
                       </button>
                     );
                   })}
@@ -255,79 +393,97 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
               ))}
             </div>
 
-            {/* Column Target Buttons */}
-            {roomState.phase === 'territory-turn' && (
-              <div style={{ width: '100%', maxWidth: 440, marginTop: 16 }}>
-                <label className="text-xs text-muted" style={{ display: 'block', textAlign: 'center', marginBottom: 8, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
-                  {hasSubmitted ? '✓ Column Locked In' : 'Select Column to Push'}
-                </label>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(10, 1fr)', gap: 4 }}>
-                  {Array.from({ length: 10 }).map((_, c) => {
-                    const isSelected = selectedCol === c;
-                    const frontier = territory.board[c];
-                    // Defender status for my team
-                    const isDefendingCol = (isRedTeam && frontier < 4) || (isBlueTeam && frontier > 4);
+            {/* Column Trigger Action Buttons */}
+            <div style={{ width: '100%', maxWidth: 460, marginTop: 14 }}>
+              <label className="text-xs text-muted" style={{ display: 'block', textAlign: 'center', marginBottom: 8, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                {isExtreme
+                  ? availableShots > 0
+                    ? `⚡ CLICK COLUMN TO PUSH (${availableShots} SHOT${availableShots !== 1 ? 'S' : ''} READY)`
+                    : '⏳ CHARGING NEXT SHOT...'
+                  : hasSubmitted ? '✓ Column Locked In' : 'Select Column to Push'}
+              </label>
 
-                    return (
-                      <button
-                        key={c}
-                        type="button"
-                        id={`col-select-btn-${c}`}
-                        disabled={hasSubmitted}
-                        onClick={() => setSelectedCol(c)}
-                        style={{
-                          padding: '8px 0',
-                          borderRadius: 'var(--radius-md)',
-                          background: isSelected
-                            ? isRedTeam ? 'var(--rose-400)' : 'var(--cyan-400)'
-                            : 'rgba(255,255,255,0.05)',
-                          color: isSelected ? '#fff' : 'var(--text-primary)',
-                          border: `1px solid ${isSelected ? '#fff' : 'var(--border)'}`,
-                          fontWeight: 700,
-                          fontSize: '0.8rem',
-                          cursor: hasSubmitted ? 'not-allowed' : 'pointer',
-                          transition: 'all 0.15s',
-                          position: 'relative',
-                        }}
-                      >
-                        {c + 1}
-                        {isDefendingCol && (
-                          <span style={{ position: 'absolute', top: -4, right: -2, fontSize: '0.6rem' }} title="Defender Advantage Active!">
-                            🛡️
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(10, 1fr)', gap: 4 }}>
+                {Array.from({ length: 10 }).map((_, c) => {
+                  const isSelected = selectedCol === c || firedCol === c;
+                  const frontier = territory.board[c];
+                  const isDefendingCol = !isExtreme && ((isRedTeam && frontier < 4) || (isBlueTeam && frontier > 4));
 
-                {!hasSubmitted ? (
-                  <button
-                    type="button"
-                    id="lock-in-column-btn"
-                    disabled={selectedCol === null}
-                    onClick={handleLockIn}
-                    className={`btn btn-lg btn-full ${selectedCol !== null ? 'btn-primary' : 'btn-secondary'}`}
-                    style={{ marginTop: 14 }}
-                  >
-                    {selectedCol !== null ? `🚀 Lock In Column ${selectedCol + 1}` : 'Select a Column above'}
-                  </button>
-                ) : (
-                  <div
-                    className="glass text-center"
-                    style={{ padding: '12px', borderRadius: 'var(--radius-lg)', marginTop: 14, background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.3)' }}
-                  >
-                    <span style={{ color: 'var(--green-400)', fontWeight: 700 }}>
-                      ✓ Locked in Column {displayLockedCol !== null ? displayLockedCol + 1 : ''}!
-                    </span>
-                    <p className="text-xs text-muted" style={{ margin: '4px 0 0' }}>Waiting for all players to submit...</p>
-                  </div>
-                )}
+                  return (
+                    <button
+                      key={c}
+                      type="button"
+                      id={`col-select-btn-${c}`}
+                      disabled={isExtreme ? availableShots < 1 : hasSubmitted}
+                      onClick={() => {
+                        if (isExtreme) {
+                          handleExtremeFire(c);
+                        } else {
+                          setSelectedCol(c);
+                        }
+                      }}
+                      style={{
+                        padding: isExtreme ? '10px 0' : '8px 0',
+                        borderRadius: 'var(--radius-md)',
+                        background: isSelected
+                          ? isRedTeam ? 'var(--rose-400)' : 'var(--cyan-400)'
+                          : 'rgba(255,255,255,0.06)',
+                        color: isSelected ? '#fff' : 'var(--text-primary)',
+                        border: `1px solid ${isSelected ? '#fff' : 'var(--border)'}`,
+                        fontWeight: 800,
+                        fontSize: '0.85rem',
+                        cursor: (isExtreme ? availableShots < 1 : hasSubmitted) ? 'not-allowed' : 'pointer',
+                        transition: 'all 0.1s',
+                        position: 'relative',
+                        boxShadow: isSelected ? '0 0 12px rgba(255,255,255,0.5)' : 'none',
+                        opacity: isExtreme && availableShots < 1 ? 0.45 : 1,
+                      }}
+                    >
+                      <div>{c + 1}</div>
+                      <div style={{ fontSize: '0.6rem', color: isSelected ? '#fff' : 'var(--text-muted)', marginTop: 2 }}>
+                        {isRedTeam ? '↓' : '↑'}
+                      </div>
+                      {isDefendingCol && (
+                        <span style={{ position: 'absolute', top: -4, right: -2, fontSize: '0.6rem' }} title="Defender Advantage Active!">
+                          🛡️
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
-            )}
+
+              {/* Standard Mode Submit Button */}
+              {!isExtreme && (
+                <>
+                  {!hasSubmitted ? (
+                    <button
+                      type="button"
+                      id="lock-in-column-btn"
+                      disabled={selectedCol === null}
+                      onClick={handleStandardLockIn}
+                      className={`btn btn-lg btn-full ${selectedCol !== null ? 'btn-primary' : 'btn-secondary'}`}
+                      style={{ marginTop: 14 }}
+                    >
+                      {selectedCol !== null ? `🚀 Lock In Column ${selectedCol + 1}` : 'Select a Column above'}
+                    </button>
+                  ) : (
+                    <div
+                      className="glass text-center"
+                      style={{ padding: '12px', borderRadius: 'var(--radius-lg)', marginTop: 14, background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.3)' }}
+                    >
+                      <span style={{ color: 'var(--green-400)', fontWeight: 700 }}>
+                        ✓ Locked in Column {displayLockedCol !== null ? displayLockedCol + 1 : ''}!
+                      </span>
+                      <p className="text-xs text-muted" style={{ margin: '4px 0 0' }}>Waiting for all players to submit...</p>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
           </div>
 
-          {/* Sidebar: Roster & Turn Resolution Log */}
+          {/* Sidebar: Roster & Battle / Turn Feed */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             {/* Team Red Roster */}
             <div className="glass p-16" style={{ borderRadius: 'var(--radius-xl)', borderLeft: '4px solid var(--rose-400)' }}>
@@ -338,6 +494,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {redPlayers.map(p => {
                   const isDone = territory.submittedPicks[p.id] !== undefined;
+                  const pEnergy = territory.energy?.[p.id];
                   return (
                     <div
                       key={p.id}
@@ -354,9 +511,15 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                       <span style={{ fontWeight: p.id === myId ? 700 : 400 }}>
                         {p.name} {p.id === myId ? '(You)' : ''}
                       </span>
-                      <span className="text-xs" style={{ color: isDone ? 'var(--green-400)' : 'var(--amber-400)' }}>
-                        {isDone ? '✓ Ready' : '⏳ Picking'}
-                      </span>
+                      {isExtreme ? (
+                        <span className="text-xs" style={{ color: (pEnergy?.shots ?? 0) > 0 ? 'var(--rose-400)' : 'var(--text-muted)', fontWeight: 700 }}>
+                          ⚡ {pEnergy?.shots ?? 0} shots
+                        </span>
+                      ) : (
+                        <span className="text-xs" style={{ color: isDone ? 'var(--green-400)' : 'var(--amber-400)' }}>
+                          {isDone ? '✓ Ready' : '⏳ Picking'}
+                        </span>
+                      )}
                     </div>
                   );
                 })}
@@ -372,6 +535,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {bluePlayers.map(p => {
                   const isDone = territory.submittedPicks[p.id] !== undefined;
+                  const pEnergy = territory.energy?.[p.id];
                   return (
                     <div
                       key={p.id}
@@ -388,94 +552,150 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                       <span style={{ fontWeight: p.id === myId ? 700 : 400 }}>
                         {p.name} {p.id === myId ? '(You)' : ''}
                       </span>
-                      <span className="text-xs" style={{ color: isDone ? 'var(--green-400)' : 'var(--amber-400)' }}>
-                        {isDone ? '✓ Ready' : '⏳ Picking'}
-                      </span>
+                      {isExtreme ? (
+                        <span className="text-xs" style={{ color: (pEnergy?.shots ?? 0) > 0 ? 'var(--cyan-400)' : 'var(--text-muted)', fontWeight: 700 }}>
+                          ⚡ {pEnergy?.shots ?? 0} shots
+                        </span>
+                      ) : (
+                        <span className="text-xs" style={{ color: isDone ? 'var(--green-400)' : 'var(--amber-400)' }}>
+                          {isDone ? '✓ Ready' : '⏳ Picking'}
+                        </span>
+                      )}
                     </div>
                   );
                 })}
               </div>
             </div>
 
-            {/* Persistent Battle Log Panel */}
+            {/* Live Combat Feed (Extreme) / Battle Log (Standard) */}
             <div className="glass p-16 animate-fade-up" style={{ borderRadius: 'var(--radius-xl)', border: '1px solid rgba(255,255,255,0.15)' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                <span style={{ fontWeight: 800, fontSize: '0.95rem', color: 'var(--amber-400)' }}>
-                  📜 Battle Log
+                <span style={{ fontWeight: 800, fontSize: '0.95rem', color: isExtreme ? 'var(--rose-400)' : 'var(--amber-400)' }}>
+                  {isExtreme ? '⚡ Live Combat Feed' : '📜 Battle Log'}
                 </span>
                 <span className="badge badge-muted" style={{ fontSize: '0.65rem' }}>
-                  {territory.turnHistory && territory.turnHistory.length > 0 ? `${territory.turnHistory.length} turns recorded` : 'Turn 1 in progress'}
+                  {isExtreme
+                    ? `${territory.recentShots?.length || 0} recent shots`
+                    : territory.turnHistory && territory.turnHistory.length > 0 ? `${territory.turnHistory.length} turns recorded` : 'Turn 1 in progress'}
                 </span>
               </div>
 
-              {territory.turnHistory && territory.turnHistory.length > 0 ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxHeight: 300, overflowY: 'auto', paddingRight: 4 }}>
-                  {[...territory.turnHistory].reverse().map((hist) => {
-                    const activeResolutions = hist.resolutions.filter(r => r.redPicks.length > 0 || r.bluePicks.length > 0);
-                    return (
-                      <div
-                        key={hist.turn}
-                        style={{
-                          background: 'rgba(255,255,255,0.03)',
-                          borderRadius: 'var(--radius-lg)',
-                          padding: '10px 12px',
-                          border: '1px solid var(--border)',
-                        }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                          <span style={{ fontWeight: 800, fontSize: '0.8rem', color: 'var(--amber-400)' }}>
-                            ⚡ Turn {hist.turn}
-                          </span>
+              {isExtreme ? (
+                /* Extreme Mode Live Push Stream */
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto', paddingRight: 4 }}>
+                  {territory.recentShots && territory.recentShots.length > 0 ? (
+                    territory.recentShots.map((shot) => {
+                      const isRed = shot.team === 'red';
+                      const secondsAgo = Math.max(0, Math.floor((now - shot.timestamp) / 1000));
+
+                      return (
+                        <div
+                          key={shot.id}
+                          style={{
+                            padding: '8px 10px',
+                            borderRadius: 'var(--radius-md)',
+                            background: isRed ? 'rgba(239,68,68,0.12)' : 'rgba(6,182,212,0.12)',
+                            border: `1px solid ${isRed ? 'rgba(239,68,68,0.3)' : 'rgba(6,182,212,0.3)'}`,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            fontSize: '0.78rem',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span>{isRed ? '🔴' : '🔵'}</span>
+                            <span style={{ fontWeight: 700, color: isRed ? 'var(--rose-400)' : 'var(--cyan-400)' }}>
+                              {shot.playerName}
+                            </span>
+                            <span style={{ color: 'var(--text-muted)' }}>
+                              pushed <strong style={{ color: '#fff' }}>Col {shot.col + 1}</strong> ({isRed ? '+1↓' : '+1↑'})
+                            </span>
+                          </div>
                           <span className="text-xs text-muted" style={{ fontSize: '0.65rem' }}>
-                            {activeResolutions.length} clash{activeResolutions.length !== 1 ? 'es' : ''}
+                            {secondsAgo}s ago
                           </span>
                         </div>
-
-                        {activeResolutions.length > 0 ? (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                            {activeResolutions.map((res) => (
-                              <div
-                                key={res.col}
-                                style={{
-                                  padding: '6px 8px',
-                                  borderRadius: 'var(--radius-md)',
-                                  background: 'rgba(0,0,0,0.3)',
-                                  fontSize: '0.75rem',
-                                  border: '1px solid rgba(255,255,255,0.06)',
-                                }}
-                              >
-                                <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>
-                                  Col {res.col + 1}: {res.clashResult}
-                                </div>
-                                <div className="text-muted flex flex-wrap gap-6" style={{ fontSize: '0.68rem' }}>
-                                  {res.redPicks.length > 0 && (
-                                    <span style={{ color: 'var(--rose-400)' }}>Red: {res.redPicks.join(', ')}</span>
-                                  )}
-                                  {res.bluePicks.length > 0 && (
-                                    <span style={{ color: 'var(--cyan-400)' }}>Blue: {res.bluePicks.join(', ')}</span>
-                                  )}
-                                  {res.defenderAdvantageApplied && (
-                                    <span style={{ color: 'var(--amber-400)' }}>🛡️ Defender Bonus ({res.defenderAdvantageApplied})</span>
-                                  )}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="text-xs text-muted" style={{ fontStyle: 'italic' }}>
-                            No active clashes this turn
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                      );
+                    })
+                  ) : (
+                    <div style={{ padding: '16px 12px', textAlign: 'center', background: 'rgba(255,255,255,0.02)', borderRadius: 'var(--radius-lg)' }}>
+                      <p className="text-xs text-muted" style={{ margin: 0 }}>
+                        Real-time combat active! Click any column to launch your first push.
+                      </p>
+                    </div>
+                  )}
                 </div>
               ) : (
-                <div style={{ padding: '16px 12px', textAlign: 'center', background: 'rgba(255,255,255,0.02)', borderRadius: 'var(--radius-lg)' }}>
-                  <p className="text-xs text-muted" style={{ margin: 0 }}>
-                    No turn history yet. Lock in your column pick above to start the first clash!
-                  </p>
-                </div>
+                /* Standard Mode Turn History */
+                territory.turnHistory && territory.turnHistory.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxHeight: 300, overflowY: 'auto', paddingRight: 4 }}>
+                    {[...territory.turnHistory].reverse().map((hist) => {
+                      const activeResolutions = hist.resolutions.filter(r => r.redPicks.length > 0 || r.bluePicks.length > 0);
+                      return (
+                        <div
+                          key={hist.turn}
+                          style={{
+                            background: 'rgba(255,255,255,0.03)',
+                            borderRadius: 'var(--radius-lg)',
+                            padding: '10px 12px',
+                            border: '1px solid var(--border)',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                            <span style={{ fontWeight: 800, fontSize: '0.8rem', color: 'var(--amber-400)' }}>
+                              ⚡ Turn {hist.turn}
+                            </span>
+                            <span className="text-xs text-muted" style={{ fontSize: '0.65rem' }}>
+                              {activeResolutions.length} clash{activeResolutions.length !== 1 ? 'es' : ''}
+                            </span>
+                          </div>
+
+                          {activeResolutions.length > 0 ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                              {activeResolutions.map((res) => (
+                                <div
+                                  key={res.col}
+                                  style={{
+                                    padding: '6px 8px',
+                                    borderRadius: 'var(--radius-md)',
+                                    background: 'rgba(0,0,0,0.3)',
+                                    fontSize: '0.75rem',
+                                    border: '1px solid rgba(255,255,255,0.06)',
+                                  }}
+                                >
+                                  <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>
+                                    Col {res.col + 1}: {res.clashResult}
+                                  </div>
+                                  <div className="text-muted flex flex-wrap gap-6" style={{ fontSize: '0.68rem' }}>
+                                    {res.redPicks.length > 0 && (
+                                      <span style={{ color: 'var(--rose-400)' }}>Red: {res.redPicks.join(', ')}</span>
+                                    )}
+                                    {res.bluePicks.length > 0 && (
+                                      <span style={{ color: 'var(--cyan-400)' }}>Blue: {res.bluePicks.join(', ')}</span>
+                                    )}
+                                    {res.defenderAdvantageApplied && (
+                                      <span style={{ color: 'var(--amber-400)' }}>🛡️ Defender Bonus ({res.defenderAdvantageApplied})</span>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-xs text-muted" style={{ fontStyle: 'italic' }}>
+                              No active clashes this turn
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={{ padding: '16px 12px', textAlign: 'center', background: 'rgba(255,255,255,0.02)', borderRadius: 'var(--radius-lg)' }}>
+                    <p className="text-xs text-muted" style={{ margin: 0 }}>
+                      No turn history yet. Lock in your column pick above to start the first clash!
+                    </p>
+                  </div>
+                )
               )}
             </div>
           </div>
@@ -512,7 +732,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                 Team <span style={{ color: territory.winnerTeam === 'red' ? 'var(--rose-400)' : 'var(--cyan-400)' }}>{territory.winnerTeam.toUpperCase()}</span> Victory!
               </h2>
               <p className="text-muted text-sm" style={{ marginBottom: 24 }}>
-                Team {territory.winnerTeam.toUpperCase()} successfully pushed their territory into the enemy back row!
+                Team {territory.winnerTeam.toUpperCase()} successfully broke through and reached the enemy back line!
               </p>
 
               {isHost && (

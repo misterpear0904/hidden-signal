@@ -12,6 +12,7 @@ import {
   startGame,
   selectGame,
   updateChromaOptions,
+  updateTerritoryOptions,
   setPlayerDifficulty,
   submitChromaGuess,
   nextChromaRound,
@@ -67,7 +68,24 @@ function setRoomTimer(code, ms, cb) {
 function roomPublicState(room) {
   let publicTerritoryState = null;
   if (room.territoryState) {
-    if (room.phase === 'territory-turn') {
+    const now = Date.now();
+    let computedEnergy = undefined;
+    if (room.territoryState.extremeMode && room.territoryState.energy) {
+      computedEnergy = {};
+      for (const [pid, en] of Object.entries(room.territoryState.energy)) {
+        const elapsed = Math.max(0, now - en.lastChargeMs);
+        const earned = Math.floor(elapsed / 5000);
+        const shots = Math.min(3, en.shots + earned);
+        const remainderMs = elapsed % 5000;
+        computedEnergy[pid] = {
+          shots,
+          lastChargeMs: en.lastChargeMs,
+          nextChargeTime: shots >= 3 ? null : (now + (5000 - remainderMs)),
+        };
+      }
+    }
+
+    if (!room.territoryState.extremeMode && room.phase === 'territory-turn') {
       const maskedPicks = {};
       for (const [pid, _col] of Object.entries(room.territoryState.submittedPicks)) {
         maskedPicks[pid] = true;
@@ -77,14 +95,18 @@ function roomPublicState(room) {
         submittedPicks: maskedPicks,
       };
     } else {
-      publicTerritoryState = room.territoryState;
+      publicTerritoryState = {
+        ...room.territoryState,
+        energy: computedEnergy || room.territoryState.energy,
+      };
     }
   }
 
   return {
     code: room.code,
     selectedGameId: room.selectedGameId || 'hidden-signal',
-    chromaOptions: room.chromaOptions || { difficulty: 'easy', fairPoints: true },
+    chromaOptions: room.chromaOptions || { difficulty: 'easy', fairPoints: true, extremeMode: false },
+    territoryOptions: room.territoryOptions || { extremeMode: false },
     chromaState: room.chromaState || null,
     territoryState: publicTerritoryState,
     phase: room.phase,
@@ -179,6 +201,11 @@ io.on('connection', (socket) => {
 
   socket.on('update-chroma-options', ({ roomCode, options }) => {
     const room = updateChromaOptions(roomCode, options);
+    if (room) broadcastRoomState(room);
+  });
+
+  socket.on('update-territory-options', ({ roomCode, options }) => {
+    const room = updateTerritoryOptions(roomCode, options);
     if (room) broadcastRoomState(room);
   });
 

@@ -40,6 +40,7 @@ export default function App() {
     startGame,
     selectGame,
     updateChromaOptions,
+    updateTerritoryOptions,
     setPlayerDifficulty,
     submitChromaGuess,
     nextChromaRound,
@@ -66,6 +67,7 @@ export default function App() {
   const handleJoin = useCallback((code: string, name: string) => joinRoom(code, name), [joinRoom]);
   const handleSelectGame = useCallback((gameId: string) => { if (roomCode) selectGame(roomCode, gameId); }, [roomCode, selectGame]);
   const handleUpdateChromaOptions = useCallback((options: Partial<import('./types/game').ChromaOptions>) => { if (roomCode) updateChromaOptions(roomCode, options); }, [roomCode, updateChromaOptions]);
+  const handleUpdateTerritoryOptions = useCallback((options: Partial<import('./types/game').TerritoryOptions>) => { if (roomCode) updateTerritoryOptions(roomCode, options); }, [roomCode, updateTerritoryOptions]);
   const handleSetPlayerDifficulty = useCallback((diff: 'easy' | 'medium' | 'hard') => { if (roomCode) setPlayerDifficulty(roomCode, diff); }, [roomCode, setPlayerDifficulty]);
   const handleStartGame = useCallback(() => { if (roomCode) startGame(roomCode); }, [roomCode, startGame]);
   const handleGuessChromaTile = useCallback((tileIndex: number) => { if (roomCode) submitChromaGuess(roomCode, tileIndex); }, [roomCode, submitChromaGuess]);
@@ -91,6 +93,7 @@ export default function App() {
             myId={myId}
             onSelectGame={handleSelectGame}
             onUpdateChromaOptions={handleUpdateChromaOptions}
+            onUpdateTerritoryOptions={handleUpdateTerritoryOptions}
             onSetPlayerDifficulty={handleSetPlayerDifficulty}
             onStartGame={handleStartGame}
           />

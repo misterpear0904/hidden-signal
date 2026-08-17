@@ -7,6 +7,7 @@ interface Props {
   myId: string;
   onSelectGame: (gameId: string) => void;
   onUpdateChromaOptions: (options: Partial<import('../types/game').ChromaOptions>) => void;
+  onUpdateTerritoryOptions: (options: Partial<import('../types/game').TerritoryOptions>) => void;
   onSetPlayerDifficulty: (difficulty: 'easy' | 'medium' | 'hard') => void;
   onStartGame: () => void;
 }
@@ -22,7 +23,7 @@ const AVATAR_COLORS = [
   'linear-gradient(135deg,#f472b6,#be185d)',
 ];
 
-export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOptions, onSetPlayerDifficulty, onStartGame }: Props) {
+export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOptions, onUpdateTerritoryOptions, onSetPlayerDifficulty, onStartGame }: Props) {
   const me = roomState.players.find(p => p.id === myId);
   const isHost = me?.isHost ?? false;
   const playerCount = roomState.players.length;
@@ -45,7 +46,8 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
     ? 'Territory Push requires an EVEN number of players (e.g. 2, 4, 6, 8...)'
     : null;
 
-  const chromaOptions = roomState.chromaOptions || { difficulty: 'easy', playerDifficulties: {}, fairPoints: true };
+  const chromaOptions = roomState.chromaOptions || { difficulty: 'easy', playerDifficulties: {}, fairPoints: true, extremeMode: false };
+  const territoryOptions = roomState.territoryOptions || { extremeMode: false };
   const myDifficulty = chromaOptions.playerDifficulties?.[myId] || 'easy';
 
   return (
@@ -54,7 +56,7 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
         {/* Header */}
         <div className="text-center" style={{ marginBottom: 32 }}>
           <div className="flex items-center justify-center gap-12 mb-16">
-            <div className="badge badge-purple">Lobby</div>
+            <div className="badge badge-purple">Game Lounge Lobby</div>
             <div className="flex items-center gap-8">
               <div className="conn-dot online" />
               <span className="text-xs text-muted">Live</span>
@@ -64,7 +66,7 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
             Room <span className="gradient-purple">{roomState.code}</span>
           </h1>
           <p className="text-muted text-sm mt-8">
-            Share this code with your friends
+            Party lounge for deception, hidden knowledge & bluffing games • Share code with friends
           </p>
         </div>
 
@@ -86,6 +88,58 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
             {roomState.code}
           </div>
           <div className="text-xs text-muted mt-8">Click to copy code</div>
+        </div>
+
+        {/* Lobby Hub Guide */}
+        <div
+          className="glass p-20 animate-fade-up"
+          style={{
+            borderRadius: 'var(--radius-xl)',
+            marginBottom: 24,
+            background: 'linear-gradient(135deg, rgba(139,92,246,0.06), rgba(6,182,212,0.04))',
+            border: '1px solid rgba(139,92,246,0.2)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+            <span style={{ fontSize: '1.3rem' }}>🎲</span>
+            <div>
+              <h3 className="heading-md" style={{ fontSize: '0.95rem', margin: 0 }}>
+                Deception & Hidden Knowledge Games Lounge
+              </h3>
+              <p className="text-xs text-muted" style={{ marginTop: 2 }}>
+                This lobby is your shared room for multiple bluffing, deduction, and perception games.
+              </p>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
+            <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-lg)', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)' }}>
+              <div style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--purple-400)', marginBottom: 4 }}>
+                🤫 Hidden Information
+              </div>
+              <div className="text-xs text-muted" style={{ lineHeight: 1.4 }}>
+                Secret roles, hidden signals, visual changes & simultaneous blind choices.
+              </div>
+            </div>
+
+            <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-lg)', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)' }}>
+              <div style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--cyan-400)', marginBottom: 4 }}>
+                📖 Interactive Game Rules
+              </div>
+              <div className="text-xs text-muted" style={{ lineHeight: 1.4 }}>
+                Host picks the game, and any player can click any game card to preview its rules.
+              </div>
+            </div>
+
+            <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-lg)', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)' }}>
+              <div style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--amber-400)', marginBottom: 4 }}>
+                🔄 Continuous Party Play
+              </div>
+              <div className="text-xs text-muted" style={{ lineHeight: 1.4 }}>
+                Players stay connected together to play round after round or switch games seamlessly.
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Players */}
@@ -164,7 +218,7 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
           <div style={{ marginBottom: 16 }}>
             <h2 className="heading-md" style={{ marginBottom: 4 }}>Choose a Game</h2>
             <p className="text-xs text-muted">
-              {isHost ? 'Select which game to play' : 'Waiting for host to pick a game...'}
+              {isHost ? 'Select a deception or hidden knowledge game to launch' : 'Browse game rules below while the host chooses a game...'}
             </p>
           </div>
           <GameSelect
@@ -306,6 +360,73 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
               ) : (
                 <span className="badge" style={{ background: chromaOptions.extremeMode ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.05)', color: chromaOptions.extremeMode ? 'var(--rose-400)' : 'var(--text-muted)' }}>
                   {chromaOptions.extremeMode ? '8x8 🔥' : '5x5'} (Host Setting)
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Territory Push Game Options Panel ── */}
+        {selectedGameId === 'territory-push' && (
+          <div className="glass p-24 animate-fade-up" style={{ borderRadius: 'var(--radius-xl)', marginBottom: 24, border: '1px solid rgba(244,63,94,0.3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+              <span style={{ fontSize: '1.4rem' }}>⚔️</span>
+              <div>
+                <h3 className="heading-md" style={{ fontSize: '1.1rem', margin: 0 }}>Territory Push Settings</h3>
+                <p className="text-xs text-muted">Configure match format and real-time intensity!</p>
+              </div>
+            </div>
+
+            {/* Extreme Mode Host Toggle */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '16px 18px',
+              background: territoryOptions.extremeMode ? 'rgba(244,63,94,0.12)' : 'rgba(255,255,255,0.03)',
+              borderRadius: 'var(--radius-lg)',
+              border: `1px solid ${territoryOptions.extremeMode ? 'rgba(244,63,94,0.45)' : 'var(--border)'}`,
+              transition: 'all 0.2s',
+            }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontWeight: 700, fontSize: '0.95rem', color: territoryOptions.extremeMode ? 'var(--rose-400)' : 'var(--text-primary)' }}>
+                    🔥 Extreme Mode (Real-Time 10x20 Grid)
+                  </span>
+                  {territoryOptions.extremeMode && (
+                    <span className="badge badge-rose" style={{ fontSize: '0.6rem' }}>20 Rows + Real-Time</span>
+                  )}
+                </div>
+                <div className="text-xs text-muted" style={{ marginTop: 4, lineHeight: 1.4 }}>
+                  {territoryOptions.extremeMode
+                    ? '⚡ Real-time energy charging (+1 shot every 5s, store up to 3) & double height (20 rows)! Instant firing without turns.'
+                    : 'OFF: Standard 10x10 grid with turn-based simultaneous column selection.'}
+                </div>
+              </div>
+
+              {isHost ? (
+                <button
+                  type="button"
+                  id="territory-extreme-mode-toggle"
+                  onClick={() => onUpdateTerritoryOptions({ extremeMode: !territoryOptions.extremeMode })}
+                  style={{
+                    padding: '8px 18px',
+                    borderRadius: 'var(--radius-full)',
+                    background: territoryOptions.extremeMode ? 'var(--rose-400)' : 'rgba(255,255,255,0.1)',
+                    color: territoryOptions.extremeMode ? '#fff' : 'var(--text-muted)',
+                    fontWeight: 700,
+                    fontSize: '0.85rem',
+                    border: 'none',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    boxShadow: territoryOptions.extremeMode ? '0 0 16px rgba(244,63,94,0.45)' : 'none',
+                  }}
+                >
+                  {territoryOptions.extremeMode ? '20-Row ON 🔥' : 'OFF'}
+                </button>
+              ) : (
+                <span className="badge" style={{ background: territoryOptions.extremeMode ? 'rgba(244,63,94,0.15)' : 'rgba(255,255,255,0.05)', color: territoryOptions.extremeMode ? 'var(--rose-400)' : 'var(--text-muted)' }}>
+                  {territoryOptions.extremeMode ? '20-Row Extreme 🔥' : '10x10 Standard'} (Host Setting)
                 </span>
               )}
             </div>

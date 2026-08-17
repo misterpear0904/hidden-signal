@@ -34,6 +34,7 @@ export function createRoom(hostId, hostName) {
     code,
     selectedGameId: 'hidden-signal',
     chromaOptions: { difficulty: 'easy', playerDifficulties: {}, fairPoints: true, extremeMode: false },
+    territoryOptions: { extremeMode: false },
     chromaState: null,
     territoryState: null,
     phase: 'lobby',          // lobby | role-reveal | signal | discuss | guess | reveal | end | chroma-play | chroma-reveal | territory-turn | territory-reveal
@@ -88,6 +89,13 @@ export function updateChromaOptions(code, options) {
   return room;
 }
 
+export function updateTerritoryOptions(code, options) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'lobby') return null;
+  room.territoryOptions = { ...room.territoryOptions, ...options };
+  return room;
+}
+
 export function setPlayerDifficulty(code, playerId, difficulty) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'lobby') return null;
@@ -119,12 +127,26 @@ export function startGame(code) {
     const shuffled = [...room.players.map(p => p.id)].sort(() => Math.random() - 0.5);
     const half = Math.floor(shuffled.length / 2);
     
+    const isExtreme = room.territoryOptions?.extremeMode === true;
+    const boardHeight = isExtreme ? 20 : 10;
+    const initialFrontier = isExtreme ? 9 : 4; // 0..9 Red, 10..19 Blue in 20-row grid; 0..4 Red, 5..9 Blue in 10-row grid
+    
+    const now = Date.now();
+    const energy = {};
+    for (const p of room.players) {
+      energy[p.id] = { shots: 1, lastChargeMs: now };
+    }
+
     room.territoryState = {
       teams: {
         red: shuffled.slice(0, half),
         blue: shuffled.slice(half),
       },
-      board: [4, 4, 4, 4, 4, 4, 4, 4, 4, 4], // Initial frontier row for Red (0..9)
+      board: Array(10).fill(initialFrontier),
+      extremeMode: isExtreme,
+      boardHeight,
+      energy,
+      recentShots: [],
       submittedPicks: {},
       lastResolutions: null,
       turnHistory: [],
@@ -209,6 +231,78 @@ export function submitTerritoryPick(code, playerId, colIndex) {
   if (!room || room.phase !== 'territory-turn' || !room.territoryState) return null;
   if (typeof colIndex !== 'number' || colIndex < 0 || colIndex > 9) return null;
 
+  // ── Extreme Mode (Real-Time 10x20 Energy Shot) ──
+  if (room.territoryState.extremeMode) {
+    const isRed = room.territoryState.teams.red.includes(playerId);
+    const isBlue = room.territoryState.teams.blue.includes(playerId);
+    if (!isRed && !isBlue) return null;
+
+    if (!room.territoryState.energy) room.territoryState.energy = {};
+    const playerEnergy = room.territoryState.energy[playerId] || { shots: 1, lastChargeMs: Date.now() };
+    const now = Date.now();
+    const elapsed = Math.max(0, now - playerEnergy.lastChargeMs);
+    const earned = Math.floor(elapsed / 5000);
+    const currentShots = Math.min(3, playerEnergy.shots + earned);
+    const remainderMs = elapsed % 5000;
+
+    if (currentShots < 1) {
+      return { room, error: 'No shot charges ready yet!' };
+    }
+
+    // Deduct 1 shot and update lastChargeMs
+    const newShots = currentShots - 1;
+    const newLastChargeMs = now - remainderMs;
+    room.territoryState.energy[playerId] = {
+      shots: newShots,
+      lastChargeMs: newLastChargeMs,
+    };
+
+    // Apply push: Red pushes towards row 19 (+1), Blue pushes towards row 0 (-1)
+    const oldFrontier = room.territoryState.board[colIndex];
+    let newFrontier = oldFrontier;
+    if (isRed) {
+      newFrontier = Math.min(19, oldFrontier + 1);
+    } else {
+      newFrontier = Math.max(-1, oldFrontier - 1);
+    }
+    room.territoryState.board[colIndex] = newFrontier;
+
+    const player = room.players.find(p => p.id === playerId);
+    const shotEvent = {
+      id: Math.random().toString(36).substring(2, 9),
+      playerId,
+      playerName: player?.name || (isRed ? 'Red' : 'Blue'),
+      team: isRed ? 'red' : 'blue',
+      col: colIndex,
+      timestamp: now,
+      delta: isRed ? +1 : -1,
+    };
+
+    if (!room.territoryState.recentShots) {
+      room.territoryState.recentShots = [];
+    }
+    room.territoryState.recentShots.unshift(shotEvent);
+    if (room.territoryState.recentShots.length > 20) {
+      room.territoryState.recentShots.pop();
+    }
+
+    // Check victory condition (Red reaches row 19, Blue reaches row -1)
+    const redWins = room.territoryState.board.some(f => f >= 19);
+    const blueWins = room.territoryState.board.some(f => f <= -1);
+
+    if (redWins || blueWins) {
+      const winner = redWins ? 'red' : 'blue';
+      room.territoryState.winnerTeam = winner;
+      for (const p of room.players) {
+        if (room.territoryState.teams[winner].includes(p.id)) p.score += 5;
+      }
+      room.phase = 'end';
+    }
+
+    return { room, resolved: true, shotEvent };
+  }
+
+  // ── Standard Turn-Based Mode ──
   room.territoryState.submittedPicks[playerId] = colIndex;
 
   const connectedPlayers = room.players.filter(p => p.connected);

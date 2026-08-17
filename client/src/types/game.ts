@@ -20,6 +20,20 @@ export interface ChromaOptions {
   extremeMode: boolean;
 }
 
+export interface TerritoryOptions {
+  extremeMode: boolean;
+}
+
+export interface TerritoryShotEvent {
+  id: string;
+  playerId: string;
+  playerName: string;
+  team: 'red' | 'blue';
+  col: number;
+  timestamp: number;
+  delta: number;
+}
+
 export interface ChromaRoundState {
   targetTileIndex: number;
   baseGradient: [string, string];
@@ -46,7 +60,11 @@ export interface TerritoryGameState {
     red: string[];  // player IDs
     blue: string[]; // player IDs
   };
-  board: number[]; // 10 elements: frontier row index for Red (0 to 9). Initial 4 for all.
+  board: number[]; // 10 elements: frontier row index for Red (0 to 9 or 0 to 19).
+  extremeMode?: boolean;
+  boardHeight?: number; // 10 or 20
+  energy?: Record<string, { shots: number; nextChargeTime: number | null; lastChargeMs: number }>;
+  recentShots?: TerritoryShotEvent[];
   submittedPicks: Record<string, number>; // playerId -> col (0..9)
   lastResolutions: TerritoryColumnResolution[] | null;
   turnHistory: Array<{ turn: number; resolutions: TerritoryColumnResolution[] }>;
@@ -84,6 +102,7 @@ export interface RoomState {
   code: string;
   selectedGameId: string;
   chromaOptions: ChromaOptions;
+  territoryOptions?: TerritoryOptions;
   chromaState: ChromaRoundState | null;
   territoryState: TerritoryGameState | null;
   phase: GamePhase;
