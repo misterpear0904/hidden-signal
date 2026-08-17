@@ -24,13 +24,13 @@ export default function LandingPage({ onCreateRoom, onJoinRoom, connected }: Pro
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
-    if (name.trim().length < 2) return;
+    if (name.trim().length < 1) return;
     onCreateRoom(name.trim());
   };
 
   const handleJoin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (name.trim().length < 2 || code.trim().length < 6) return;
+    if (name.trim().length < 1 || code.trim().length < 4) return;
     onJoinRoom(code.trim().toUpperCase(), name.trim());
   };
 
@@ -108,10 +108,10 @@ export default function LandingPage({ onCreateRoom, onJoinRoom, connected }: Pro
                   <label className="input-label">Room Code</label>
                   <input
                     className="input input-code"
-                    placeholder="ABCDEF"
+                    placeholder="ABCD"
                     value={code}
                     onChange={e => setCode(e.target.value.toUpperCase())}
-                    maxLength={6}
+                    maxLength={4}
                     id="room-code-input"
                   />
                 </div>
@@ -120,7 +120,7 @@ export default function LandingPage({ onCreateRoom, onJoinRoom, connected }: Pro
               <button
                 type="submit"
                 className={`btn btn-lg btn-full ${tab === 'create' ? 'btn-primary' : 'btn-cyan'}`}
-                disabled={!connected || name.trim().length < 2 || (tab === 'join' && code.trim().length < 6)}
+                disabled={!connected || name.trim().length < 1 || (tab === 'join' && code.trim().length < 4)}
                 id={tab === 'create' ? 'create-room-btn' : 'join-room-btn'}
               >
                 {tab === 'create' ? '✦ Create Room' : '→ Join Game'}
@@ -135,7 +135,7 @@ export default function LandingPage({ onCreateRoom, onJoinRoom, connected }: Pro
             <p className="text-xs text-muted text-center" style={{ fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>How It Works</p>
             {[
               ['🎭', 'Multiplayer Mind Games: A collection of games testing deception, perception, hidden signals, and tactical bluffing.'],
-              ['👥', 'Gather in the Lobby: Create or join a private room with 2–12 players using a simple room code.'],
+              ['👥', 'Gather in the Lobby: Create or join a private room with 2–12 players using a 4-character room code.'],
               ['👑', 'Host Chooses the Game: The host picks from available game modes (Hidden Signal, Chroma Shift, Territory Push, etc.).'],
               ['🤫', 'Hidden Information: Outsmart your friends using secret identities, concealed moves, and psychological reads.'],
               ['🏆', 'Compete & Score: Earn points across multiple rounds to top the final leaderboard!'],
