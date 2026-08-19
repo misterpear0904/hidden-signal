@@ -279,12 +279,13 @@ export function triggerTerritoryMineDetonations(room, minesToTrigger) {
   const boardHeight = room.territoryState.boardHeight || (room.territoryState.extremeMode ? 20 : 10);
   const explosions = [];
   const triggeredMineIds = new Set();
+  const destroyedMineIds = new Set();
 
   let queue = [...minesToTrigger];
 
   while (queue.length > 0) {
     const mine = queue.shift();
-    if (!mine || triggeredMineIds.has(mine.playerId)) continue;
+    if (!mine || triggeredMineIds.has(mine.playerId) || destroyedMineIds.has(mine.playerId)) continue;
     triggeredMineIds.add(mine.playerId);
 
     const minCol = Math.max(0, mine.col - 2);
@@ -310,6 +311,36 @@ export function triggerTerritoryMineDetonations(room, minesToTrigger) {
       delete room.territoryState.mines[mine.playerId];
     }
 
+    // Destroy (without triggering) any other mines located within the 2-tile radius or newly claimed blast area
+    const destroyedInBlast = [];
+    if (room.territoryState.mines) {
+      for (const otherMine of Object.values(room.territoryState.mines)) {
+        if (!otherMine || otherMine.playerId === mine.playerId || triggeredMineIds.has(otherMine.playerId) || destroyedMineIds.has(otherMine.playerId)) continue;
+
+        const colDistance = Math.abs(otherMine.col - mine.col);
+        const rowDistance = Math.abs(otherMine.row - mine.row);
+        const inRadius = colDistance <= 2 && rowDistance <= 2;
+
+        const colFrontier = board[otherMine.col];
+        const caughtInClaimedTerritory = (otherMine.col >= minCol && otherMine.col <= maxCol) && (
+          (mine.team === 'red' && otherMine.row <= colFrontier) ||
+          (mine.team === 'blue' && otherMine.row > colFrontier)
+        );
+
+        if (inRadius || caughtInClaimedTerritory) {
+          destroyedMineIds.add(otherMine.playerId);
+          destroyedInBlast.push(otherMine);
+          delete room.territoryState.mines[otherMine.playerId];
+        }
+      }
+    }
+
+    let msg = `💥 TRAP TRIGGERED! ${mine.playerName}'s mine at (C${mine.col + 1}, R${mine.row + 1}) detonated a 2-tile radius blast!`;
+    if (destroyedInBlast.length > 0) {
+      const names = destroyedInBlast.map(m => `${m.playerName || m.team}'s mine`).join(', ');
+      msg += ` Destroyed ${names} caught in blast!`;
+    }
+
     const explosion = {
       id: Math.random().toString(36).substring(2, 9),
       minePlayerId: mine.playerId,
@@ -319,7 +350,8 @@ export function triggerTerritoryMineDetonations(room, minesToTrigger) {
       col: mine.col,
       timestamp: Date.now(),
       affectedCols,
-      message: `💥 TRAP TRIGGERED! ${mine.playerName}'s mine at (C${mine.col + 1}, R${mine.row + 1}) detonated a 2-tile radius blast!`,
+      destroyedMines: destroyedInBlast.map(m => ({ playerId: m.playerId, playerName: m.playerName, team: m.team, row: m.row, col: m.col })),
+      message: msg,
     };
 
     explosions.push(explosion);
@@ -329,21 +361,6 @@ export function triggerTerritoryMineDetonations(room, minesToTrigger) {
     room.territoryState.recentExplosions.unshift(explosion);
     if (room.territoryState.recentExplosions.length > 20) {
       room.territoryState.recentExplosions.pop();
-    }
-
-    // Check if any opposing mines in other columns/rows were caught in newly claimed territory
-    if (room.territoryState.mines) {
-      for (const otherMine of Object.values(room.territoryState.mines)) {
-        if (!otherMine || triggeredMineIds.has(otherMine.playerId)) continue;
-        if (otherMine.team !== mine.team) {
-          const colFrontier = board[otherMine.col];
-          const isNowInMineOwnersTerritory = (mine.team === 'red' && otherMine.row <= colFrontier) ||
-                                             (mine.team === 'blue' && otherMine.row > colFrontier);
-          if (isNowInMineOwnersTerritory) {
-            queue.push(otherMine);
-          }
-        }
-      }
     }
   }
 

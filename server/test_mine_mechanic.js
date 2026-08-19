@@ -159,7 +159,7 @@ console.log('--- Starting Territory Push Mine Mechanics Test Suite ---');
   console.log('✓ Test 4: Recharge Booster Generation (Unique Cols & Row Constraints) Passed');
 }
 
-// Test 5: Chain Reactions (Mine detonating into another opposing mine)
+// Test 5: Mine destruction in blast radius (Mines destroy other mines in radius without triggering them)
 {
   const room = createRoom('sock_p1', 'Player1');
   const code = room.code;
@@ -180,14 +180,19 @@ console.log('--- Starting Territory Push Mine Mechanics Test Suite ---');
   submitTerritoryPick(code, pRed, 4);
 
   // Blue's mine detonated converting 2-tile radius (cols 2..6, rows 8..12) to Blue
-  // Red's mine at (row 9, col 5) is within cols 2..6, rows 8..12!
-  // It gets swallowed by Blue's territory expansion, triggering a CHAIN REACTION!
-  // Red's mine detonates in response and reclaims 2-tile radius (cols 3..7, rows 7..11) for Red!
-  assert.strictEqual(room.territoryState.mines[pBlue], undefined, 'Blue mine consumed');
-  assert.strictEqual(room.territoryState.mines[pRed], undefined, 'Red mine consumed in chain reaction');
-  assert.strictEqual(room.territoryState.recentExplosions.length, 2, 'Two explosions occurred from chain reaction');
+  // Red's mine at (row 9, col 5) is within the 2-tile blast radius!
+  // It gets DESTROYED by Blue's explosion without triggering or chain-reacting!
+  assert.strictEqual(room.territoryState.mines[pBlue], undefined, 'Blue mine consumed after detonation');
+  assert.strictEqual(room.territoryState.mines[pRed], undefined, 'Red mine destroyed by Blue explosion');
+  assert.strictEqual(room.territoryState.recentExplosions.length, 1, 'Only 1 explosion occurred - no chain reaction triggered');
+  assert.ok(room.territoryState.recentExplosions[0].destroyedMines.some(m => m.playerId === pRed), 'Explosion recorded Red mine as destroyed');
 
-  console.log('✓ Test 5: Chain Reaction Detonations Passed');
+  // Red player can now re-arm/place a new mine since their mine was destroyed
+  const rearmResult = placeTerritoryMine(code, pRed, 5, 2);
+  assert.strictEqual(rearmResult.error, undefined, 'Red player can place new mine after previous mine destroyed in blast');
+  assert.strictEqual(room.territoryState.mines[pRed].row, 5);
+
+  console.log('✓ Test 5: Mine Destruction Without Chain Reactions Passed');
 }
 
 console.log('🎉 All Territory Push Mine Unit Tests Passed Successfully!');

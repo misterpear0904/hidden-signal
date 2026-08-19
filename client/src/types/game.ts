@@ -79,6 +79,7 @@ export interface TerritoryMineExplosion {
   col: number;
   timestamp: number;
   affectedCols: number[];
+  destroyedMines?: Array<{ playerId: string; playerName: string; team: 'red' | 'blue'; row: number; col: number }>;
   message: string;
 }
 
