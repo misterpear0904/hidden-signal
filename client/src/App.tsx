@@ -45,6 +45,7 @@ export default function App() {
     submitChromaGuess,
     nextChromaRound,
     submitTerritoryPick,
+    placeTerritoryMine,
     nextTerritoryTurn,
     submitSignal,
     submitGuess,
@@ -73,6 +74,7 @@ export default function App() {
   const handleGuessChromaTile = useCallback((tileIndex: number) => { if (roomCode) submitChromaGuess(roomCode, tileIndex); }, [roomCode, submitChromaGuess]);
   const handleNextChromaRound = useCallback(() => { if (roomCode) nextChromaRound(roomCode); }, [roomCode, nextChromaRound]);
   const handleSubmitTerritoryPick = useCallback((colIndex: number) => { if (roomCode) submitTerritoryPick(roomCode, colIndex); }, [roomCode, submitTerritoryPick]);
+  const handlePlaceTerritoryMine = useCallback((row: number, col: number) => { if (roomCode) placeTerritoryMine(roomCode, row, col); }, [roomCode, placeTerritoryMine]);
   const handleNextTerritoryTurn = useCallback(() => { if (roomCode) nextTerritoryTurn(roomCode); }, [roomCode, nextTerritoryTurn]);
   const handleSubmitSignal = useCallback((signal: string) => { if (roomCode) submitSignal(roomCode, signal); }, [roomCode, submitSignal]);
   const handleSubmitGuess = useCallback((guessData: object) => { if (roomCode) submitGuess(roomCode, guessData); }, [roomCode, submitGuess]);
@@ -119,6 +121,7 @@ export default function App() {
             myId={myId}
             isHost={isHost}
             onSubmitPick={handleSubmitTerritoryPick}
+            onPlaceMine={handlePlaceTerritoryMine}
             onNextTurn={handleNextTerritoryTurn}
           />
         );

@@ -190,6 +190,8 @@ export function startGame(code) {
       extremeMode: isExtreme,
       boardHeight,
       bonusSquares,
+      mines: {},
+      recentExplosions: [],
       energy,
       recentShots: [],
       submittedPicks: {},
@@ -271,6 +273,123 @@ export function nextChromaRound(code) {
   return startChromaRound(room);
 }
 
+export function triggerTerritoryMineDetonations(room, minesToTrigger) {
+  if (!room?.territoryState || !minesToTrigger || minesToTrigger.length === 0) return [];
+  const board = room.territoryState.board;
+  const boardHeight = room.territoryState.boardHeight || (room.territoryState.extremeMode ? 20 : 10);
+  const explosions = [];
+  const triggeredMineIds = new Set();
+
+  let queue = [...minesToTrigger];
+
+  while (queue.length > 0) {
+    const mine = queue.shift();
+    if (!mine || triggeredMineIds.has(mine.playerId)) continue;
+    triggeredMineIds.add(mine.playerId);
+
+    const minCol = Math.max(0, mine.col - 2);
+    const maxCol = Math.min(9, mine.col + 2);
+    const affectedCols = [];
+
+    // Convert tiles in 2-tile radius
+    for (let c = minCol; c <= maxCol; c++) {
+      affectedCols.push(c);
+      if (mine.team === 'red') {
+        // Red claims up to mine.row + 2
+        const targetRow = Math.min(boardHeight - 1, mine.row + 2);
+        board[c] = Math.max(board[c], targetRow);
+      } else {
+        // Blue claims down to mine.row - 2 (Red frontier must be <= mine.row - 3)
+        const targetRow = Math.max(-1, mine.row - 3);
+        board[c] = Math.min(board[c], targetRow);
+      }
+    }
+
+    // Remove detonated mine so player can place again
+    if (room.territoryState.mines) {
+      delete room.territoryState.mines[mine.playerId];
+    }
+
+    const explosion = {
+      id: Math.random().toString(36).substring(2, 9),
+      minePlayerId: mine.playerId,
+      minePlayerName: mine.playerName,
+      team: mine.team,
+      row: mine.row,
+      col: mine.col,
+      timestamp: Date.now(),
+      affectedCols,
+      message: `💥 TRAP TRIGGERED! ${mine.playerName}'s mine at (C${mine.col + 1}, R${mine.row + 1}) detonated a 2-tile radius blast!`,
+    };
+
+    explosions.push(explosion);
+    if (!room.territoryState.recentExplosions) {
+      room.territoryState.recentExplosions = [];
+    }
+    room.territoryState.recentExplosions.unshift(explosion);
+    if (room.territoryState.recentExplosions.length > 20) {
+      room.territoryState.recentExplosions.pop();
+    }
+
+    // Check if any opposing mines in other columns/rows were caught in newly claimed territory
+    if (room.territoryState.mines) {
+      for (const otherMine of Object.values(room.territoryState.mines)) {
+        if (!otherMine || triggeredMineIds.has(otherMine.playerId)) continue;
+        if (otherMine.team !== mine.team) {
+          const colFrontier = board[otherMine.col];
+          const isNowInMineOwnersTerritory = (mine.team === 'red' && otherMine.row <= colFrontier) ||
+                                             (mine.team === 'blue' && otherMine.row > colFrontier);
+          if (isNowInMineOwnersTerritory) {
+            queue.push(otherMine);
+          }
+        }
+      }
+    }
+  }
+
+  return explosions;
+}
+
+export function placeTerritoryMine(code, playerId, row, col) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'territory-turn' || !room.territoryState) return null;
+  if (typeof row !== 'number' || typeof col !== 'number') return { room, error: 'Invalid coordinates' };
+  if (col < 0 || col > 9) return { room, error: 'Column out of bounds' };
+
+  const isRed = room.territoryState.teams.red.includes(playerId);
+  const isBlue = room.territoryState.teams.blue.includes(playerId);
+  if (!isRed && !isBlue) return { room, error: 'You are not playing in this game' };
+
+  const boardHeight = room.territoryState.boardHeight || (room.territoryState.extremeMode ? 20 : 10);
+  if (row < 0 || row >= boardHeight) return { room, error: 'Row out of bounds' };
+
+  const frontier = room.territoryState.board[col];
+  const isRedTerritory = row <= frontier;
+  const isPlayerTerritory = isRed ? isRedTerritory : !isRedTerritory;
+
+  if (!isPlayerTerritory) {
+    return { room, error: 'Mines can only be placed inside your team’s territory!' };
+  }
+
+  if (!room.territoryState.mines) {
+    room.territoryState.mines = {};
+  }
+
+  const player = room.players.find(p => p.id === playerId);
+  const isMoving = !!room.territoryState.mines[playerId];
+
+  room.territoryState.mines[playerId] = {
+    playerId,
+    playerName: player?.name || (isRed ? 'Red' : 'Blue'),
+    team: isRed ? 'red' : 'blue',
+    row,
+    col,
+    placedAt: Date.now(),
+  };
+
+  return { room, success: true, isMoving };
+}
+
 export function submitTerritoryPick(code, playerId, colIndex) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'territory-turn' || !room.territoryState) return null;
@@ -317,6 +436,23 @@ export function submitTerritoryPick(code, playerId, colIndex) {
       newFrontier = Math.max(-1, oldFrontier - 1);
     }
     room.territoryState.board[colIndex] = newFrontier;
+
+    // Check if enemy mine was triggered by the push
+    const minesToTrigger = [];
+    if (room.territoryState.mines) {
+      for (const mine of Object.values(room.territoryState.mines)) {
+        if (!mine) continue;
+        if (isRed && mine.team === 'blue' && mine.col === colIndex && mine.row === oldFrontier + 1) {
+          minesToTrigger.push(mine);
+        } else if (isBlue && mine.team === 'red' && mine.col === colIndex && mine.row === oldFrontier) {
+          minesToTrigger.push(mine);
+        }
+      }
+    }
+
+    if (minesToTrigger.length > 0) {
+      triggerTerritoryMineDetonations(room, minesToTrigger);
+    }
 
     const player = room.players.find(p => p.id === playerId);
     const shotEvent = {
@@ -372,6 +508,7 @@ export function resolveTerritoryTurn(room) {
 
   const { teams, board, submittedPicks } = room.territoryState;
   const resolutions = [];
+  const minesToTrigger = [];
 
   const playerMap = new Map(room.players.map(p => [p.id, p.name]));
 
@@ -440,6 +577,18 @@ export function resolveTerritoryTurn(room) {
       clashResult = `No activity on col ${c + 1}`;
     }
 
+    // Check if enemy mines in column c are crossed by frontier movement
+    if (room.territoryState.mines) {
+      for (const mine of Object.values(room.territoryState.mines)) {
+        if (!mine || mine.col !== c) continue;
+        if (newFrontier > oldFrontier && mine.team === 'blue' && mine.row > oldFrontier && mine.row <= newFrontier) {
+          minesToTrigger.push(mine);
+        } else if (newFrontier < oldFrontier && mine.team === 'red' && mine.row <= oldFrontier && mine.row > newFrontier) {
+          minesToTrigger.push(mine);
+        }
+      }
+    }
+
     board[c] = newFrontier;
 
     resolutions.push({
@@ -453,6 +602,11 @@ export function resolveTerritoryTurn(room) {
     });
   }
 
+  // Detonate any triggered mines from this turn
+  if (minesToTrigger.length > 0) {
+    triggerTerritoryMineDetonations(room, minesToTrigger);
+  }
+
   // Save to turn history
   if (!room.territoryState.turnHistory) {
     room.territoryState.turnHistory = [];
@@ -464,7 +618,9 @@ export function resolveTerritoryTurn(room) {
   room.territoryState.lastResolutions = resolutions;
 
   // Check victory condition
-  let redWins = board.some(f => f >= 9);
+  const boardHeight = room.territoryState.boardHeight || 10;
+  const redWinTarget = boardHeight - 1;
+  let redWins = board.some(f => f >= redWinTarget);
   let blueWins = board.some(f => f <= -1);
 
   if (redWins && !blueWins) {
@@ -482,7 +638,7 @@ export function resolveTerritoryTurn(room) {
   } else if (redWins && blueWins) {
     const maxRedPen = Math.max(...board);
     const minBluePen = Math.min(...board);
-    if (maxRedPen >= 9 && minBluePen <= -1) {
+    if (maxRedPen >= redWinTarget && minBluePen <= -1) {
       room.territoryState.winnerTeam = 'red'; // tie break
     }
     room.phase = 'end';

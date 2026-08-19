@@ -61,6 +61,27 @@ export interface TerritoryBonusSquare {
   initialTeam: 'red' | 'blue';
 }
 
+export interface TerritoryMine {
+  playerId: string;
+  playerName: string;
+  team: 'red' | 'blue';
+  row: number;
+  col: number;
+  placedAt: number;
+}
+
+export interface TerritoryMineExplosion {
+  id: string;
+  minePlayerId: string;
+  minePlayerName: string;
+  team: 'red' | 'blue';
+  row: number;
+  col: number;
+  timestamp: number;
+  affectedCols: number[];
+  message: string;
+}
+
 export interface TerritoryGameState {
   teams: {
     red: string[];  // player IDs
@@ -70,6 +91,8 @@ export interface TerritoryGameState {
   extremeMode?: boolean;
   boardHeight?: number; // 10 or 20
   bonusSquares?: TerritoryBonusSquare[];
+  mines?: Record<string, TerritoryMine>; // playerId -> mine
+  recentExplosions?: TerritoryMineExplosion[];
   energy?: Record<string, { shots: number; nextChargeTime: number | null; lastChargeMs: number; chargeIntervalMs?: number }>;
   recentShots?: TerritoryShotEvent[];
   submittedPicks: Record<string, number>; // playerId -> col (0..9)

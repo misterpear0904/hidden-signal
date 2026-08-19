@@ -6,13 +6,16 @@ interface Props {
   myId: string;
   isHost: boolean;
   onSubmitPick: (colIndex: number) => void;
+  onPlaceMine?: (row: number, col: number) => void;
   onNextTurn: () => void;
 }
 
-export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPick, onNextTurn }: Props) {
+export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPick, onPlaceMine, onNextTurn }: Props) {
   const [selectedCol, setSelectedCol] = useState<number | null>(null);
   const [lockedCol, setLockedCol] = useState<number | null>(null);
   const [firedCol, setFiredCol] = useState<number | null>(null);
+  const [isPlacingMine, setIsPlacingMine] = useState(false);
+  const [mineFeedback, setMineFeedback] = useState<string | null>(null);
   const [now, setNow] = useState<number>(Date.now());
 
   const territory = roomState.territoryState;
@@ -42,6 +45,13 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
     return () => clearTimeout(t);
   }, [firedCol]);
 
+  // Clear mine feedback toast
+  useEffect(() => {
+    if (!mineFeedback) return;
+    const t = setTimeout(() => setMineFeedback(null), 3000);
+    return () => clearTimeout(t);
+  }, [mineFeedback]);
+
   if (!territory) {
     return (
       <div className="page text-center">
@@ -54,6 +64,13 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
   const isRedTeam = territory.teams.red.includes(myId);
   const isBlueTeam = territory.teams.blue.includes(myId);
   const myTeamName = isRedTeam ? 'Red' : isBlueTeam ? 'Blue' : 'Spectator';
+
+  // Mines & Traps state
+  const myMine = territory.mines?.[myId];
+  const allTeamMines = Object.values(territory.mines || {});
+  const recentExplosions = territory.recentExplosions || [];
+  const latestExplosion = recentExplosions[0];
+  const isLatestExplosionRecent = latestExplosion && (now - latestExplosion.timestamp < 6000);
 
   // Booster Squares & Dynamic Recharge calculation
   const bonusSquares = territory.bonusSquares || [];
@@ -90,6 +107,29 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
     if (availableShots > 0 && !territory?.winnerTeam) {
       setFiredCol(c);
       onSubmitPick(c);
+    }
+  }
+
+  function handleTileClick(r: number, c: number) {
+    if (!territory) return;
+
+    if (isPlacingMine) {
+      const redFrontier = territory.board[c];
+      const isRedTile = r <= redFrontier;
+      const isFriendlyTile = isRedTeam ? isRedTile : isBlueTeam ? !isRedTile : false;
+
+      if (isFriendlyTile && onPlaceMine) {
+        onPlaceMine(r, c);
+        setIsPlacingMine(false);
+        setMineFeedback(`💣 Mine deployed at Col ${c + 1}, Row ${r + 1}!`);
+      }
+      return;
+    }
+
+    if (isExtreme) {
+      handleExtremeFire(c);
+    } else if (roomState.phase === 'territory-turn' && !hasSubmitted) {
+      setSelectedCol(c);
     }
   }
 
@@ -140,6 +180,101 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
             </div>
           </div>
         </div>
+
+        {/* Explosion Alert Banner */}
+        {latestExplosion && isLatestExplosionRecent && (
+          <div
+            className="glass p-16 animate-fade-up"
+            style={{
+              borderRadius: 'var(--radius-xl)',
+              marginBottom: 20,
+              background: 'linear-gradient(135deg, rgba(239,68,68,0.25), rgba(245,158,11,0.2))',
+              border: '2px solid rgba(239,68,68,0.7)',
+              boxShadow: '0 0 25px rgba(239,68,68,0.4)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ fontSize: '2rem', animation: 'pulse 1s infinite' }}>💥</span>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: '1rem', color: '#fff' }}>
+                  {latestExplosion.message}
+                </div>
+                <p className="text-xs text-muted" style={{ margin: '2px 0 0' }}>
+                  Detonation blast engulfed 2-tile radius (Columns {latestExplosion.affectedCols.map(c => `C${c + 1}`).join(', ')}) converting them to Team {latestExplosion.team.toUpperCase()}!
+                </p>
+              </div>
+            </div>
+            <span className="badge badge-rose" style={{ fontSize: '0.75rem', fontWeight: 800 }}>TRAP DETONATED</span>
+          </div>
+        )}
+
+        {/* Mine Trap Control Bar */}
+        {(isRedTeam || isBlueTeam) && !territory.winnerTeam && (
+          <div
+            className="glass p-14 animate-fade-up"
+            style={{
+              borderRadius: 'var(--radius-xl)',
+              marginBottom: 20,
+              background: isPlacingMine
+                ? 'linear-gradient(135deg, rgba(74,222,128,0.15), rgba(16,185,129,0.1))'
+                : 'linear-gradient(135deg, rgba(168,85,247,0.12), rgba(99,102,241,0.08))',
+              border: `1px solid ${isPlacingMine ? 'rgba(74,222,128,0.5)' : 'rgba(168,85,247,0.3)'}`,
+              boxShadow: isPlacingMine ? '0 0 20px rgba(74,222,128,0.2)' : 'none',
+              transition: 'all 0.2s ease',
+            }}
+          >
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: '1.4rem' }}>💣</span>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontWeight: 800, fontSize: '0.95rem', color: '#fff' }}>
+                      {myMine
+                        ? `Mine Trap Armed at Col ${myMine.col + 1}, Row ${myMine.row + 1}`
+                        : 'Mine Trap Ready (1/1 Available)'}
+                    </span>
+                    {myMine && (
+                      <span className="badge badge-purple" style={{ fontSize: '0.65rem' }}>
+                        ACTIVE TRAP
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted" style={{ margin: '2px 0 0' }}>
+                    {isPlacingMine
+                      ? '🎯 Target mode: Click any friendly territory tile on the grid below to deploy your trap!'
+                      : '2-Tile Blast: If an enemy attacks this tile, it detonates and claims all tiles within 2 squares for your team.'}
+                  </p>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {mineFeedback && (
+                  <span style={{ fontSize: '0.8rem', color: 'var(--green-400)', fontWeight: 700 }}>
+                    {mineFeedback}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  id="deploy-mine-btn"
+                  onClick={() => setIsPlacingMine(!isPlacingMine)}
+                  className={`btn btn-sm ${isPlacingMine ? 'btn-secondary' : myMine ? 'btn-secondary' : 'btn-primary'}`}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    borderColor: isPlacingMine ? 'rgba(74,222,128,0.5)' : undefined,
+                  }}
+                >
+                  <span>{isPlacingMine ? '✖ Cancel' : myMine ? '🔄 Move Mine' : '💣 Place Mine Trap'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Extreme Mode Real-Time Energy HUD */}
         {isExtreme && (
@@ -309,6 +444,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                 const lastRes = territory.lastResolutions?.[c];
                 const delta = lastRes ? lastRes.newFrontier - lastRes.oldFrontier : 0;
                 const hadAction = lastRes ? (lastRes.redPicks.length > 0 || lastRes.bluePicks.length > 0) : false;
+                const isExplosionCol = latestExplosion && isLatestExplosionRecent && latestExplosion.affectedCols.includes(c);
 
                 return (
                   <div key={c} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
@@ -316,10 +452,12 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                       style={{
                         fontSize: '0.72rem',
                         fontWeight: 700,
-                        color: isSelected ? (isRedTeam ? 'var(--rose-400)' : 'var(--cyan-400)') : 'var(--text-muted)',
+                        color: isExplosionCol
+                          ? 'var(--amber-400)'
+                          : isSelected ? (isRedTeam ? 'var(--rose-400)' : 'var(--cyan-400)') : 'var(--text-muted)',
                       }}
                     >
-                      C{c + 1}
+                      {isExplosionCol ? '💥' : `C${c + 1}`}
                     </span>
                     {!isExtreme && lastRes && hadAction ? (
                       <span
@@ -359,7 +497,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                 background: 'rgba(0, 0, 0, 0.45)',
                 padding: 6,
                 borderRadius: 'var(--radius-lg)',
-                border: '1px solid var(--border)',
+                border: isPlacingMine ? '2px solid rgba(74,222,128,0.6)' : '1px solid var(--border)',
                 position: 'relative',
               }}
             >
@@ -379,6 +517,11 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                     const isRedTile = r <= redFrontier;
                     const isBoundaryTile = r === redFrontier;
                     const isSelectedColumn = selectedCol === c || firedCol === c;
+                    const isFriendlyTile = isRedTeam ? isRedTile : isBlueTeam ? !isRedTile : false;
+
+                    // Mine check
+                    const tileMine = allTeamMines.find(m => m.row === r && m.col === c);
+                    const isMyMineTile = tileMine?.playerId === myId;
 
                     // Booster square check
                     const bonusSquare = bonusSquares.find(sq => sq.row === r && sq.col === c);
@@ -403,15 +546,13 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                       <button
                         key={c}
                         type="button"
-                        onClick={() => {
-                          if (isExtreme) {
-                            handleExtremeFire(c);
-                          } else if (roomState.phase === 'territory-turn' && !hasSubmitted) {
-                            setSelectedCol(c);
-                          }
-                        }}
+                        onClick={() => handleTileClick(r, c)}
                         style={{
-                          background: isBonus
+                          background: isPlacingMine && isFriendlyTile
+                            ? isRedTile
+                              ? 'linear-gradient(135deg, rgba(239,68,68,0.85), rgba(74,222,128,0.35))'
+                              : 'linear-gradient(135deg, rgba(6,182,212,0.85), rgba(74,222,128,0.35))'
+                            : isBonus
                             ? isRedTile
                               ? isBoundaryTile
                                 ? 'linear-gradient(135deg, #f59e0b, #ef4444)'
@@ -430,7 +571,11 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                             : tileShiftType === 'blue-capture'
                             ? 'linear-gradient(135deg, #38bdf8, #0ea5e9)'
                             : 'rgba(6, 182, 212, 0.65)',
-                          border: isSelectedColumn
+                          border: isPlacingMine && isFriendlyTile
+                            ? '2px dashed #4ade80'
+                            : tileMine
+                            ? `2px solid ${isMyMineTile ? '#facc15' : 'rgba(255,255,255,0.9)'}`
+                            : isSelectedColumn
                             ? `2px solid ${isRedTeam ? '#f43f5e' : '#38bdf8'}`
                             : isBonus
                             ? `2px solid ${isRedTile ? '#fbbf24' : '#38bdf8'}`
@@ -442,7 +587,9 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                             ? '1px solid rgba(255,255,255,0.8)'
                             : '1px solid rgba(255,255,255,0.04)',
                           borderRadius: isExtreme ? 2 : 4,
-                          cursor: isExtreme
+                          cursor: isPlacingMine
+                            ? isFriendlyTile ? 'crosshair' : 'not-allowed'
+                            : isExtreme
                             ? availableShots > 0 ? 'pointer' : 'not-allowed'
                             : !hasSubmitted && roomState.phase === 'territory-turn' ? 'pointer' : 'default',
                           transition: 'all 0.1s ease',
@@ -450,7 +597,9 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                           alignItems: 'center',
                           justifyContent: 'center',
                           position: 'relative',
-                          boxShadow: isSelectedColumn
+                          boxShadow: tileMine
+                            ? `0 0 12px ${isMyMineTile ? 'rgba(250,204,21,0.8)' : 'rgba(255,255,255,0.5)'}`
+                            : isSelectedColumn
                             ? '0 0 14px rgba(255,255,255,0.6)'
                             : isBonus
                             ? `0 0 10px ${isRedTile ? 'rgba(245,158,11,0.85)' : 'rgba(56,189,248,0.85)'}`
@@ -459,12 +608,54 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                             : 'none',
                         }}
                         title={
-                          isBonus
-                            ? `⚡ Recharge Booster (+10% Team Speed) | Controlled by ${isRedTile ? 'Team Red' : 'Team Blue'}${isStolen ? ' (STOLEN from enemy!)' : ' (Native)'} | Col ${c + 1}, Row ${r}`
-                            : `Col ${c + 1}, Row ${r} | ${isRedTile ? 'Red Territory' : 'Blue Territory'}`
+                          tileMine
+                            ? `${isMyMineTile ? '💣 YOUR MINE TRAP' : `💣 ${tileMine.playerName}'s Mine Trap`} | Detonates 2-Tile Radius Blast if attacked! | Col ${c + 1}, Row ${r + 1}`
+                            : isBonus
+                            ? `⚡ Recharge Booster (+10% Team Speed) | Controlled by ${isRedTile ? 'Team Red' : 'Team Blue'}${isStolen ? ' (STOLEN from enemy!)' : ' (Native)'} | Col ${c + 1}, Row ${r + 1}`
+                            : `Col ${c + 1}, Row ${r + 1} | ${isRedTile ? 'Red Territory' : 'Blue Territory'}`
                         }
                       >
-                        {isBonus && (
+                        {tileMine && (
+                          <div
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              lineHeight: 1,
+                              pointerEvents: 'none',
+                              userSelect: 'none',
+                              zIndex: 2,
+                            }}
+                          >
+                            <span
+                              style={{
+                                fontSize: isExtreme ? '0.75rem' : '0.9rem',
+                                filter: 'drop-shadow(0 0 4px rgba(0,0,0,0.95))',
+                                animation: 'pulse 1.8s infinite',
+                              }}
+                            >
+                              💣
+                            </span>
+                            {isMyMineTile && (
+                              <span
+                                style={{
+                                  fontSize: '0.45rem',
+                                  fontWeight: 900,
+                                  color: '#facc15',
+                                  background: 'rgba(0,0,0,0.85)',
+                                  padding: '0 2px',
+                                  borderRadius: 2,
+                                  marginTop: -2,
+                                  lineHeight: 1,
+                                }}
+                              >
+                                YOU
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {!tileMine && isBonus && (
                           <div
                             style={{
                               display: 'flex',
@@ -503,21 +694,21 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                             )}
                           </div>
                         )}
-                        {!isBonus && tileShiftType === 'red-capture' && (
+                        {!tileMine && !isBonus && tileShiftType === 'red-capture' && (
                           <span style={{ fontSize: '0.65rem', fontWeight: 900, color: '#fff', textShadow: '0 1px 3px rgba(0,0,0,0.8)' }}>
                             ↓
                           </span>
                         )}
-                        {!isBonus && tileShiftType === 'blue-capture' && (
+                        {!tileMine && !isBonus && tileShiftType === 'blue-capture' && (
                           <span style={{ fontSize: '0.65rem', fontWeight: 900, color: '#fff', textShadow: '0 1px 3px rgba(0,0,0,0.8)' }}>
                             ↑
                           </span>
                         )}
-                        {!isBonus && tileShiftType === 'held' && (
+                        {!tileMine && !isBonus && tileShiftType === 'held' && (
                           <span style={{ fontSize: '0.55rem' }}>🛡️</span>
                         )}
-                        {!isBonus && !tileShiftType && isBoundaryTile && r === 0 && <span style={{ fontSize: isExtreme ? '0.45rem' : '0.55rem' }}>🚩</span>}
-                        {!isBonus && !tileShiftType && isBoundaryTile && r === boardHeight - 1 && <span style={{ fontSize: isExtreme ? '0.45rem' : '0.55rem' }}>🚩</span>}
+                        {!tileMine && !isBonus && !tileShiftType && isBoundaryTile && r === 0 && <span style={{ fontSize: isExtreme ? '0.45rem' : '0.55rem' }}>🚩</span>}
+                        {!tileMine && !isBonus && !tileShiftType && isBoundaryTile && r === boardHeight - 1 && <span style={{ fontSize: isExtreme ? '0.45rem' : '0.55rem' }}>🚩</span>}
                       </button>
                     );
                   })}
@@ -847,6 +1038,29 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                   </div>
                 )
               )}
+            </div>
+
+            {/* Tactical Intel / Field Guide Card */}
+            <div className="glass p-16 animate-fade-up" style={{ borderRadius: 'var(--radius-xl)', border: '1px solid rgba(168,85,247,0.25)', background: 'linear-gradient(135deg, rgba(168,85,247,0.08), rgba(0,0,0,0.3))' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: '1.1rem' }}>🛡️</span>
+                <span style={{ fontWeight: 800, fontSize: '0.9rem', color: 'var(--purple-400)' }}>Tactical Intel</span>
+              </div>
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: '0.78rem', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <li>
+                  <strong style={{ color: '#fff' }}>💣 Hidden Mine Traps:</strong> Place 1 secret mine anywhere in your team's territory. If the enemy invades it, it blasts a <strong style={{ color: '#facc15' }}>2-tile radius (5x5 zone)</strong> converting all tiles to your team! After exploding, your mine is refunded to deploy again.
+                </li>
+                {bonusSquares.length > 0 && (
+                  <li>
+                    <strong style={{ color: '#fff' }}>⚡ +10% Speed Boosters:</strong> Controlling booster nodes speeds up your entire team's charge rate by +10% per square.
+                  </li>
+                )}
+                {!isExtreme && (
+                  <li>
+                    <strong style={{ color: '#fff' }}>🛡️ Defender Advantage:</strong> Defending behind your home 4 rows grants +1 free defensive push value in clashes.
+                  </li>
+                )}
+              </ul>
             </div>
           </div>
         </div>

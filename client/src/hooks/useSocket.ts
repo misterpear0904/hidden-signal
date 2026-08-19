@@ -25,6 +25,7 @@ export interface SocketHookReturn {
   submitChromaGuess: (roomCode: string, tileIndex: number) => void;
   nextChromaRound: (roomCode: string) => void;
   submitTerritoryPick: (roomCode: string, colIndex: number) => void;
+  placeTerritoryMine: (roomCode: string, row: number, col: number) => void;
   nextTerritoryTurn: (roomCode: string) => void;
   submitSignal: (roomCode: string, signal: string) => void;
   submitGuess: (roomCode: string, guessData: object) => void;
@@ -140,6 +141,10 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('submit-territory-pick', { roomCode: code, colIndex });
   }, []);
 
+  const placeTerritoryMine = useCallback((code: string, row: number, col: number) => {
+    socketRef.current?.emit('place-territory-mine', { roomCode: code, row, col });
+  }, []);
+
   const nextTerritoryTurn = useCallback((code: string) => {
     socketRef.current?.emit('next-territory-turn', { roomCode: code });
   }, []);
@@ -165,6 +170,7 @@ export function useSocket(): SocketHookReturn {
     submitChromaGuess,
     nextChromaRound,
     submitTerritoryPick,
+    placeTerritoryMine,
     nextTerritoryTurn,
     submitSignal,
     submitGuess,

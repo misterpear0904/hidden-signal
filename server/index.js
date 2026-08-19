@@ -17,6 +17,7 @@ import {
   submitChromaGuess,
   nextChromaRound,
   submitTerritoryPick,
+  placeTerritoryMine,
   nextTerritoryTurn,
   getTeamBonusCounts,
   getTeamRechargeIntervalMs,
@@ -67,7 +68,7 @@ function setRoomTimer(code, ms, cb) {
 }
 
 // Sanitize room data for broadcast (strip secrets by player)
-function roomPublicState(room) {
+function roomPublicState(room, forPlayerId = null) {
   let publicTerritoryState = null;
   if (room.territoryState) {
     const now = Date.now();
@@ -93,6 +94,22 @@ function roomPublicState(room) {
       }
     }
 
+    // Filter mine visibility: during game, players only see their own team's mines (traps are secret!)
+    let visibleMines = room.territoryState.mines || {};
+    if (forPlayerId && room.phase !== 'end') {
+      const isRed = room.territoryState.teams.red.includes(forPlayerId);
+      const isBlue = room.territoryState.teams.blue.includes(forPlayerId);
+      const myTeam = isRed ? 'red' : isBlue ? 'blue' : null;
+      visibleMines = {};
+      if (myTeam && room.territoryState.mines) {
+        for (const [pid, mine] of Object.entries(room.territoryState.mines)) {
+          if (mine.team === myTeam) {
+            visibleMines[pid] = mine;
+          }
+        }
+      }
+    }
+
     if (!room.territoryState.extremeMode && room.phase === 'territory-turn') {
       const maskedPicks = {};
       for (const [pid, _col] of Object.entries(room.territoryState.submittedPicks)) {
@@ -100,11 +117,13 @@ function roomPublicState(room) {
       }
       publicTerritoryState = {
         ...room.territoryState,
+        mines: visibleMines,
         submittedPicks: maskedPicks,
       };
     } else {
       publicTerritoryState = {
         ...room.territoryState,
+        mines: visibleMines,
         energy: computedEnergy || room.territoryState.energy,
       };
     }
@@ -148,7 +167,12 @@ function sendPrivateRole(socket, room) {
 }
 
 function broadcastRoomState(room) {
-  io.to(room.code).emit('room-state', roomPublicState(room));
+  for (const player of room.players) {
+    const playerSocket = io.sockets.sockets.get(player.id);
+    if (playerSocket) {
+      playerSocket.emit('room-state', roomPublicState(room, player.id));
+    }
+  }
 }
 
 function startSignalPhase(code) {
@@ -280,6 +304,13 @@ io.on('connection', (socket) => {
   socket.on('submit-territory-pick', ({ roomCode, colIndex }) => {
     const result = submitTerritoryPick(roomCode, socket.id, colIndex);
     if (!result) return socket.emit('error', 'Cannot submit pick now');
+    broadcastRoomState(result.room);
+  });
+
+  socket.on('place-territory-mine', ({ roomCode, row, col }) => {
+    const result = placeTerritoryMine(roomCode, socket.id, row, col);
+    if (!result) return socket.emit('error', 'Cannot place mine now');
+    if (result.error) return socket.emit('error', result.error);
     broadcastRoomState(result.room);
   });
 
