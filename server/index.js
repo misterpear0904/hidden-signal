@@ -18,6 +18,8 @@ import {
   nextChromaRound,
   submitTerritoryPick,
   nextTerritoryTurn,
+  getTeamBonusCounts,
+  getTeamRechargeIntervalMs,
   advanceToSignal,
   advanceToDiscuss,
   advanceToGuess,
@@ -71,16 +73,22 @@ function roomPublicState(room) {
     const now = Date.now();
     let computedEnergy = undefined;
     if (room.territoryState.extremeMode && room.territoryState.energy) {
+      const bonusCounts = getTeamBonusCounts(room.territoryState.board, room.territoryState.bonusSquares || []);
       computedEnergy = {};
       for (const [pid, en] of Object.entries(room.territoryState.energy)) {
+        const isRed = room.territoryState.teams.red.includes(pid);
+        const teamBonusCount = isRed ? bonusCounts.red : bonusCounts.blue;
+        const chargeIntervalMs = getTeamRechargeIntervalMs(teamBonusCount);
+
         const elapsed = Math.max(0, now - en.lastChargeMs);
-        const earned = Math.floor(elapsed / 5000);
+        const earned = Math.floor(elapsed / chargeIntervalMs);
         const shots = Math.min(3, en.shots + earned);
-        const remainderMs = elapsed % 5000;
+        const remainderMs = elapsed % chargeIntervalMs;
         computedEnergy[pid] = {
           shots,
           lastChargeMs: en.lastChargeMs,
-          nextChargeTime: shots >= 3 ? null : (now + (5000 - remainderMs)),
+          chargeIntervalMs,
+          nextChargeTime: shots >= 3 ? null : (now + (chargeIntervalMs - remainderMs)),
         };
       }
     }

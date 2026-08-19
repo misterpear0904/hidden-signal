@@ -88,7 +88,7 @@ export const GAME_CATALOGUE: GameDefinition[] = [
       { icon: '⚡', text: 'Team Stacking: Multiple teammates picking the same column multiply your push force!' },
       { icon: '🛡️', text: 'Defender Advantage: Clashes in your home half give your team +2 Defender Bonus force to repel invaders!' },
       { icon: '⚖️', text: 'Center Clash: Equal opposing picks at center cancel out with no movement' },
-      { icon: '🔥', text: 'Host Extreme Mode: Double-height 10x20 board + Real-time 5s energy charging (store up to 3 shots) with instant firing!' },
+      { icon: '🔥', text: 'Host Extreme Mode: Double-height 10x20 board + Real-time energy charging with 8 randomized booster squares (+10% team recharge speed each) & instant firing!' },
       { icon: '🏆', text: 'First team to reach the opposing last row wins!' },
     ],
   },

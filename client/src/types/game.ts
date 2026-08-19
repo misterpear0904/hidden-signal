@@ -55,6 +55,12 @@ export interface TerritoryColumnResolution {
   clashResult: string;  // descriptive message
 }
 
+export interface TerritoryBonusSquare {
+  row: number;
+  col: number;
+  initialTeam: 'red' | 'blue';
+}
+
 export interface TerritoryGameState {
   teams: {
     red: string[];  // player IDs
@@ -63,7 +69,8 @@ export interface TerritoryGameState {
   board: number[]; // 10 elements: frontier row index for Red (0 to 9 or 0 to 19).
   extremeMode?: boolean;
   boardHeight?: number; // 10 or 20
-  energy?: Record<string, { shots: number; nextChargeTime: number | null; lastChargeMs: number }>;
+  bonusSquares?: TerritoryBonusSquare[];
+  energy?: Record<string, { shots: number; nextChargeTime: number | null; lastChargeMs: number; chargeIntervalMs?: number }>;
   recentShots?: TerritoryShotEvent[];
   submittedPicks: Record<string, number>; // playerId -> col (0..9)
   lastResolutions: TerritoryColumnResolution[] | null;

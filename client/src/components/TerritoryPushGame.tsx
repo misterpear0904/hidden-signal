@@ -55,14 +55,22 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
   const isBlueTeam = territory.teams.blue.includes(myId);
   const myTeamName = isRedTeam ? 'Red' : isBlueTeam ? 'Blue' : 'Spectator';
 
+  // Booster Squares & Dynamic Recharge calculation
+  const bonusSquares = territory.bonusSquares || [];
+  const redBonuses = bonusSquares.filter(sq => sq.row <= territory.board[sq.col]).length;
+  const blueBonuses = bonusSquares.length - redBonuses;
+  const myBonusCount = isRedTeam ? redBonuses : isBlueTeam ? blueBonuses : 0;
+  const myRechargeInterval = Math.max(1000, Math.round(5000 / (1 + myBonusCount * 0.10)));
+
   // Energy & Shot calculations in Extreme Mode
-  const myEnergy = territory.energy?.[myId] || { shots: 1, lastChargeMs: now };
+  const myEnergy = territory.energy?.[myId] || { shots: 1, lastChargeMs: now, nextChargeTime: null, chargeIntervalMs: myRechargeInterval };
+  const chargeInterval = myEnergy.chargeIntervalMs || myRechargeInterval;
   const elapsed = Math.max(0, now - myEnergy.lastChargeMs);
-  const earned = Math.floor(elapsed / 5000);
+  const earned = Math.floor(elapsed / chargeInterval);
   const availableShots = Math.min(3, myEnergy.shots + earned);
-  const remainderMs = elapsed % 5000;
-  const chargePercent = availableShots >= 3 ? 100 : Math.min(100, Math.floor((remainderMs / 5000) * 100));
-  const secondsUntilNext = availableShots >= 3 ? 0 : ((5000 - remainderMs) / 1000).toFixed(1);
+  const remainderMs = elapsed % chargeInterval;
+  const chargePercent = availableShots >= 3 ? 100 : Math.min(100, Math.floor((remainderMs / chargeInterval) * 100));
+  const secondsUntilNext = availableShots >= 3 ? 0 : ((chargeInterval - remainderMs) / 1000).toFixed(1);
 
   // Standard mode lock-in state
   const hasSubmitted = lockedCol !== null || territory.submittedPicks[myId] !== undefined;
@@ -102,7 +110,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                 )}
               </div>
               <p className="text-xs text-muted" style={{ margin: 0 }}>
-                Room: <strong style={{ color: 'var(--amber-400)' }}>{roomState.code}</strong> | {boardHeight}x10 Grid | {isExtreme ? '⚡ Real-Time Energy Charging (+1 / 5s)' : 'Simultaneous Push'}
+                Room: <strong style={{ color: 'var(--amber-400)' }}>{roomState.code}</strong> | {boardHeight}x10 Grid | {isExtreme ? `⚡ Real-Time (+1 / ${(chargeInterval / 1000).toFixed(1)}s) • 8 Booster Nodes` : 'Simultaneous Push'}
               </p>
             </div>
 
@@ -155,7 +163,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                 <p className="text-xs text-muted" style={{ margin: '3px 0 0' }}>
                   {availableShots >= 3
                     ? '⚡ Maximum charge reached! Click any column C1–C10 below to fire immediately.'
-                    : `🔋 Next shot ready in ${secondsUntilNext}s (+1 charge every 5 seconds)`}
+                    : `🔋 Next shot ready in ${secondsUntilNext}s (+1 charge every ${(chargeInterval / 1000).toFixed(1)}s • ${myBonusCount} booster${myBonusCount === 1 ? '' : 's'} controlled)`}
                 </p>
               </div>
 
@@ -221,6 +229,70 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                     transition: 'width 0.1s linear',
                   }}
                 />
+              </div>
+            )}
+
+            {/* Recharge Booster Control Bar */}
+            {bonusSquares.length > 0 && (
+              <div
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                  marginTop: 12,
+                  paddingTop: 10,
+                  borderTop: '1px solid rgba(255,255,255,0.1)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 700 }}>
+                    ⚡ Map Boosters (+10% Team Speed):
+                  </span>
+                  <div
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '2px 8px',
+                      borderRadius: 'var(--radius-full)',
+                      background: 'rgba(239,68,68,0.15)',
+                      border: '1px solid rgba(239,68,68,0.4)',
+                      fontSize: '0.75rem',
+                      color: 'var(--rose-400)',
+                      fontWeight: 700,
+                    }}
+                  >
+                    <span>🔴 Red: {redBonuses}/{bonusSquares.length}</span>
+                    <span style={{ opacity: 0.8, fontSize: '0.7rem' }}>
+                      (+{redBonuses * 10}% • {(5000 / (1 + redBonuses * 0.1) / 1000).toFixed(1)}s)
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '2px 8px',
+                      borderRadius: 'var(--radius-full)',
+                      background: 'rgba(6,182,212,0.15)',
+                      border: '1px solid rgba(6,182,212,0.4)',
+                      fontSize: '0.75rem',
+                      color: 'var(--cyan-400)',
+                      fontWeight: 700,
+                    }}
+                  >
+                    <span>🔵 Blue: {blueBonuses}/{bonusSquares.length}</span>
+                    <span style={{ opacity: 0.8, fontSize: '0.7rem' }}>
+                      (+{blueBonuses * 10}% • {(5000 / (1 + blueBonuses * 0.1) / 1000).toFixed(1)}s)
+                    </span>
+                  </div>
+                </div>
+
+                <div style={{ fontSize: '0.75rem', color: isRedTeam ? 'var(--rose-400)' : isBlueTeam ? 'var(--cyan-400)' : 'var(--text-muted)', fontWeight: 600 }}>
+                  Your Team: +{myBonusCount * 10}% Speed ({(chargeInterval / 1000).toFixed(1)}s / shot)
+                </div>
               </div>
             )}
           </div>
@@ -308,6 +380,11 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                     const isBoundaryTile = r === redFrontier;
                     const isSelectedColumn = selectedCol === c || firedCol === c;
 
+                    // Booster square check
+                    const bonusSquare = bonusSquares.find(sq => sq.row === r && sq.col === c);
+                    const isBonus = !!bonusSquare;
+                    const isStolen = isBonus && ((isRedTile && bonusSquare.initialTeam === 'blue') || (!isRedTile && bonusSquare.initialTeam === 'red'));
+
                     // Standard turn shift calculation
                     const lastRes = territory.lastResolutions?.[c];
                     let tileShiftType: 'red-capture' | 'blue-capture' | 'held' | null = null;
@@ -334,7 +411,15 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                           }
                         }}
                         style={{
-                          background: isRedTile
+                          background: isBonus
+                            ? isRedTile
+                              ? isBoundaryTile
+                                ? 'linear-gradient(135deg, #f59e0b, #ef4444)'
+                                : 'linear-gradient(135deg, #dc2626, #b45309)'
+                              : (r === redFrontier + 1)
+                              ? 'linear-gradient(135deg, #0284c7, #06b6d4)'
+                              : 'linear-gradient(135deg, #0369a1, #0891b2)'
+                            : isRedTile
                             ? isBoundaryTile
                               ? 'linear-gradient(135deg, #ef4444, #dc2626)'
                               : tileShiftType === 'red-capture'
@@ -347,6 +432,8 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                             : 'rgba(6, 182, 212, 0.65)',
                           border: isSelectedColumn
                             ? `2px solid ${isRedTeam ? '#f43f5e' : '#38bdf8'}`
+                            : isBonus
+                            ? `2px solid ${isRedTile ? '#fbbf24' : '#38bdf8'}`
                             : tileShiftType === 'red-capture'
                             ? '2px solid rgba(254, 202, 202, 0.9)'
                             : tileShiftType === 'blue-capture'
@@ -365,27 +452,72 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                           position: 'relative',
                           boxShadow: isSelectedColumn
                             ? '0 0 14px rgba(255,255,255,0.6)'
+                            : isBonus
+                            ? `0 0 10px ${isRedTile ? 'rgba(245,158,11,0.85)' : 'rgba(56,189,248,0.85)'}`
                             : isBoundaryTile
                             ? `0 0 8px ${isRedTile ? 'rgba(239,68,68,0.5)' : 'rgba(6,182,212,0.5)'}`
                             : 'none',
                         }}
-                        title={`Col ${c + 1}, Row ${r} | ${isRedTile ? 'Red Territory' : 'Blue Territory'}`}
+                        title={
+                          isBonus
+                            ? `⚡ Recharge Booster (+10% Team Speed) | Controlled by ${isRedTile ? 'Team Red' : 'Team Blue'}${isStolen ? ' (STOLEN from enemy!)' : ' (Native)'} | Col ${c + 1}, Row ${r}`
+                            : `Col ${c + 1}, Row ${r} | ${isRedTile ? 'Red Territory' : 'Blue Territory'}`
+                        }
                       >
-                        {tileShiftType === 'red-capture' && (
+                        {isBonus && (
+                          <div
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              lineHeight: 1,
+                              pointerEvents: 'none',
+                              userSelect: 'none',
+                            }}
+                          >
+                            <span
+                              style={{
+                                fontSize: isExtreme ? '0.7rem' : '0.8rem',
+                                filter: 'drop-shadow(0 0 3px rgba(0,0,0,0.9))',
+                              }}
+                            >
+                              ⚡
+                            </span>
+                            {isExtreme && (
+                              <span
+                                style={{
+                                  fontSize: '0.45rem',
+                                  fontWeight: 900,
+                                  color: isStolen ? '#fef08a' : '#fff',
+                                  background: isStolen ? 'rgba(0,0,0,0.75)' : 'rgba(0,0,0,0.45)',
+                                  padding: '0 2px',
+                                  borderRadius: 2,
+                                  marginTop: -1,
+                                  textShadow: '0 1px 2px rgba(0,0,0,0.9)',
+                                  lineHeight: '0.9',
+                                }}
+                              >
+                                +10%
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {!isBonus && tileShiftType === 'red-capture' && (
                           <span style={{ fontSize: '0.65rem', fontWeight: 900, color: '#fff', textShadow: '0 1px 3px rgba(0,0,0,0.8)' }}>
                             ↓
                           </span>
                         )}
-                        {tileShiftType === 'blue-capture' && (
+                        {!isBonus && tileShiftType === 'blue-capture' && (
                           <span style={{ fontSize: '0.65rem', fontWeight: 900, color: '#fff', textShadow: '0 1px 3px rgba(0,0,0,0.8)' }}>
                             ↑
                           </span>
                         )}
-                        {tileShiftType === 'held' && (
+                        {!isBonus && tileShiftType === 'held' && (
                           <span style={{ fontSize: '0.55rem' }}>🛡️</span>
                         )}
-                        {!tileShiftType && isBoundaryTile && r === 0 && <span style={{ fontSize: isExtreme ? '0.45rem' : '0.55rem' }}>🚩</span>}
-                        {!tileShiftType && isBoundaryTile && r === boardHeight - 1 && <span style={{ fontSize: isExtreme ? '0.45rem' : '0.55rem' }}>🚩</span>}
+                        {!isBonus && !tileShiftType && isBoundaryTile && r === 0 && <span style={{ fontSize: isExtreme ? '0.45rem' : '0.55rem' }}>🚩</span>}
+                        {!isBonus && !tileShiftType && isBoundaryTile && r === boardHeight - 1 && <span style={{ fontSize: isExtreme ? '0.45rem' : '0.55rem' }}>🚩</span>}
                       </button>
                     );
                   })}
@@ -408,6 +540,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                   const isSelected = selectedCol === c || firedCol === c;
                   const frontier = territory.board[c];
                   const isDefendingCol = !isExtreme && ((isRedTeam && frontier < 4) || (isBlueTeam && frontier > 4));
+                  const colBonus = bonusSquares.find(sq => sq.col === c);
 
                   return (
                     <button
@@ -429,7 +562,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                           ? isRedTeam ? 'var(--rose-400)' : 'var(--cyan-400)'
                           : 'rgba(255,255,255,0.06)',
                         color: isSelected ? '#fff' : 'var(--text-primary)',
-                        border: `1px solid ${isSelected ? '#fff' : 'var(--border)'}`,
+                        border: `1px solid ${isSelected ? '#fff' : colBonus ? 'rgba(251,191,36,0.5)' : 'var(--border)'}`,
                         fontWeight: 800,
                         fontSize: '0.85rem',
                         cursor: (isExtreme ? availableShots < 1 : hasSubmitted) ? 'not-allowed' : 'pointer',
@@ -446,6 +579,23 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                       {isDefendingCol && (
                         <span style={{ position: 'absolute', top: -4, right: -2, fontSize: '0.6rem' }} title="Defender Advantage Active!">
                           🛡️
+                        </span>
+                      )}
+                      {colBonus && (
+                        <span
+                          style={{
+                            position: 'absolute',
+                            top: -5,
+                            right: -3,
+                            fontSize: '0.55rem',
+                            background: 'rgba(0,0,0,0.85)',
+                            borderRadius: '50%',
+                            padding: '1px',
+                            border: '1px solid rgba(251,191,36,0.8)',
+                          }}
+                          title={`Column contains a +10% Recharge Booster at Row ${colBonus.row}!`}
+                        >
+                          ⚡
                         </span>
                       )}
                     </button>

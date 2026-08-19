@@ -107,6 +107,49 @@ export function setPlayerDifficulty(code, playerId, difficulty) {
   return room;
 }
 
+export function generateRechargeBonusSquares() {
+  // Pick 8 distinct columns out of 10 (0..9) so no two bonus squares share a column
+  const cols = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].sort(() => Math.random() - 0.5);
+  const redCols = cols.slice(0, 4);
+  const blueCols = cols.slice(4, 8);
+
+  const bonusSquares = [];
+  
+  // 4 on Red's side (spawn randomly in rows 6..8)
+  for (const col of redCols) {
+    const row = Math.floor(Math.random() * 3) + 6; // 6, 7, 8
+    bonusSquares.push({ row, col, initialTeam: 'red' });
+  }
+
+  // 4 on Blue's side (spawn randomly in rows 11..13)
+  for (const col of blueCols) {
+    const row = Math.floor(Math.random() * 3) + 11; // 11, 12, 13
+    bonusSquares.push({ row, col, initialTeam: 'blue' });
+  }
+
+  return bonusSquares;
+}
+
+export function getTeamBonusCounts(board, bonusSquares = []) {
+  let red = 0;
+  let blue = 0;
+  if (!board || !bonusSquares) return { red: 0, blue: 0 };
+  for (const sq of bonusSquares) {
+    // Red owns rows 0..board[sq.col]
+    if (sq.row <= board[sq.col]) {
+      red++;
+    } else {
+      blue++;
+    }
+  }
+  return { red, blue };
+}
+
+export function getTeamRechargeIntervalMs(bonusCount = 0) {
+  // Base 5000ms. Each bonus square grants +10% faster recharge.
+  return Math.max(1000, Math.round(5000 / (1 + (bonusCount || 0) * 0.10)));
+}
+
 export function startGame(code) {
   const room = rooms.get(code);
   if (!room) return null;
@@ -130,7 +173,8 @@ export function startGame(code) {
     const isExtreme = room.territoryOptions?.extremeMode === true;
     const boardHeight = isExtreme ? 20 : 10;
     const initialFrontier = isExtreme ? 9 : 4; // 0..9 Red, 10..19 Blue in 20-row grid; 0..4 Red, 5..9 Blue in 10-row grid
-    
+    const bonusSquares = isExtreme ? generateRechargeBonusSquares() : [];
+
     const now = Date.now();
     const energy = {};
     for (const p of room.players) {
@@ -145,6 +189,7 @@ export function startGame(code) {
       board: Array(10).fill(initialFrontier),
       extremeMode: isExtreme,
       boardHeight,
+      bonusSquares,
       energy,
       recentShots: [],
       submittedPicks: {},
@@ -240,10 +285,16 @@ export function submitTerritoryPick(code, playerId, colIndex) {
     if (!room.territoryState.energy) room.territoryState.energy = {};
     const playerEnergy = room.territoryState.energy[playerId] || { shots: 1, lastChargeMs: Date.now() };
     const now = Date.now();
+
+    // Determine current recharge interval for this player's team
+    const bonusCounts = getTeamBonusCounts(room.territoryState.board, room.territoryState.bonusSquares || []);
+    const teamBonusCount = isRed ? bonusCounts.red : bonusCounts.blue;
+    const chargeIntervalMs = getTeamRechargeIntervalMs(teamBonusCount);
+
     const elapsed = Math.max(0, now - playerEnergy.lastChargeMs);
-    const earned = Math.floor(elapsed / 5000);
+    const earned = Math.floor(elapsed / chargeIntervalMs);
     const currentShots = Math.min(3, playerEnergy.shots + earned);
-    const remainderMs = elapsed % 5000;
+    const remainderMs = elapsed % chargeIntervalMs;
 
     if (currentShots < 1) {
       return { room, error: 'No shot charges ready yet!' };

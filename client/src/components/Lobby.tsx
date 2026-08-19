@@ -399,7 +399,7 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
                 </div>
                 <div className="text-xs text-muted" style={{ marginTop: 4, lineHeight: 1.4 }}>
                   {territoryOptions.extremeMode
-                    ? '⚡ Real-time energy charging (+1 shot every 5s, store up to 3) & double height (20 rows)! Instant firing without turns.'
+                    ? '⚡ Real-time energy charging (+1 shot every ~3.5s, store up to 3) & 8 randomized booster squares (+10% team recharge speed each) on a 10x20 grid! Instant firing without turns.'
                     : 'OFF: Standard 10x10 grid with turn-based simultaneous column selection.'}
                 </div>
               </div>
