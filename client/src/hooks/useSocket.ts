@@ -1,12 +1,17 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
-import type { RoomState, RoleData, RoundRevealData } from '../types/game';
+import type { RoomState, RoleData, RoundRevealData, ChromaOptions, TerritoryOptions } from '../types/game';
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
+
+export type GuessData =
+  | { guessedPartnerId: string }
+  | { guessedPlayerId: string };
 
 export interface SocketHookReturn {
   socket: Socket | null;
   connected: boolean;
+  connectError: string | null;
   myId: string;
   roomCode: string;
   inRoom: boolean;
@@ -19,8 +24,8 @@ export interface SocketHookReturn {
   joinRoom: (roomCode: string, playerName: string) => void;
   startGame: (roomCode: string) => void;
   selectGame: (roomCode: string, gameId: string) => void;
-  updateChromaOptions: (roomCode: string, options: Partial<import('../types/game').ChromaOptions>) => void;
-  updateTerritoryOptions: (roomCode: string, options: Partial<import('../types/game').TerritoryOptions>) => void;
+  updateChromaOptions: (roomCode: string, options: Partial<ChromaOptions>) => void;
+  updateTerritoryOptions: (roomCode: string, options: Partial<TerritoryOptions>) => void;
   setPlayerDifficulty: (roomCode: string, difficulty: 'easy' | 'medium' | 'hard') => void;
   submitChromaGuess: (roomCode: string, tileIndex: number) => void;
   nextChromaRound: (roomCode: string) => void;
@@ -28,14 +33,17 @@ export interface SocketHookReturn {
   placeTerritoryMine: (roomCode: string, row: number, col: number) => void;
   nextTerritoryTurn: (roomCode: string) => void;
   submitSignal: (roomCode: string, signal: string) => void;
-  submitGuess: (roomCode: string, guessData: object) => void;
+  submitGuess: (roomCode: string, guessData: GuessData) => void;
+  kickPlayer: (roomCode: string, targetId: string) => void;
   nextRound: (roomCode: string) => void;
   playAgain: (roomCode: string) => void;
 }
 
 export function useSocket(): SocketHookReturn {
   const socketRef = useRef<Socket | null>(null);
+  const [socket, setSocket] = useState<Socket | null>(null);
   const [connected, setConnected] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
   const [myId, setMyId] = useState<string>('');
   const [roomCode, setRoomCode] = useState<string>('');
   const [inRoom, setInRoom] = useState(false);
@@ -45,41 +53,69 @@ export function useSocket(): SocketHookReturn {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const socket = io(SERVER_URL, { autoConnect: true });
-    socketRef.current = socket;
+    const s = io(SERVER_URL, { autoConnect: true });
+    socketRef.current = s;
+    setSocket(s);
 
-    socket.on('connect', () => setConnected(true));
-    socket.on('disconnect', () => setConnected(false));
-
-    socket.on('room-joined', ({ roomCode: code, playerId }: { roomCode: string; playerId: string }) => {
+    const onConnect = () => { setConnected(true); setConnectError(null); };
+    const onDisconnect = () => {
+      setConnected(false);
+      // Clear stale room UI so user isn't stuck in a dead game
+      setInRoom(false);
+      setRoomState(null);
+      setMyRole(null);
+      setRoundReveal(null);
+    };
+    const onConnectError = (err: Error) => setConnectError(err?.message ?? 'Connection failed');
+    const onRoomJoined = ({ roomCode: code, playerId }: { roomCode: string; playerId: string }) => {
       setMyId(playerId);
       setRoomCode(code);
       setInRoom(true);
-    });
-
-    socket.on('room-state', (state: RoomState) => {
+    };
+    const onRoomState = (state: RoomState) => {
       setRoomState(state);
       // Clear reveal when moving to a new round's role-reveal phase
       if (state.phase === 'role-reveal') {
         setRoundReveal(null);
         setMyRole(null);
       }
-    });
+    };
+    const onRole = (role: RoleData) => setMyRole(role);
+    const onReveal = (data: RoundRevealData) => setRoundReveal(data);
+    const onError = (msg: unknown) => {
+      setError(typeof msg === 'string' ? msg : (msg as { message?: string })?.message ?? JSON.stringify(msg));
+    };
+    const onKicked = ({ roomCode: code }: { roomCode: string }) => {
+      setInRoom(false);
+      setRoomState(null);
+      setMyRole(null);
+      setRoundReveal(null);
+      setRoomCode(code ?? '');
+      setError('You were kicked from the lobby by the host');
+    };
 
-    socket.on('your-role', (role: RoleData) => {
-      setMyRole(role);
-    });
-
-    socket.on('round-reveal', (data: RoundRevealData) => {
-      setRoundReveal(data);
-    });
-
-    socket.on('error', (msg: string) => {
-      setError(msg);
-    });
+    s.on('connect', onConnect);
+    s.on('disconnect', onDisconnect);
+    s.on('connect_error', onConnectError);
+    s.on('room-joined', onRoomJoined);
+    s.on('room-state', onRoomState);
+    s.on('your-role', onRole);
+    s.on('round-reveal', onReveal);
+    s.on('error', onError);
+    s.on('kicked', onKicked);
 
     return () => {
-      socket.disconnect();
+      s.off('connect', onConnect);
+      s.off('disconnect', onDisconnect);
+      s.off('connect_error', onConnectError);
+      s.off('room-joined', onRoomJoined);
+      s.off('room-state', onRoomState);
+      s.off('your-role', onRole);
+      s.off('round-reveal', onReveal);
+      s.off('error', onError);
+      s.off('kicked', onKicked);
+      s.disconnect();
+      socketRef.current = null;
     };
   }, []);
 
@@ -101,7 +137,7 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('submit-signal', { roomCode: code, signal });
   }, []);
 
-  const submitGuess = useCallback((code: string, guessData: object) => {
+  const submitGuess = useCallback((code: string, guessData: GuessData) => {
     socketRef.current?.emit('submit-guess', { roomCode: code, guessData });
   }, []);
 
@@ -117,11 +153,11 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('select-game', { roomCode: code, gameId });
   }, []);
 
-  const updateChromaOptions = useCallback((code: string, options: Partial<import('../types/game').ChromaOptions>) => {
+  const updateChromaOptions = useCallback((code: string, options: Partial<ChromaOptions>) => {
     socketRef.current?.emit('update-chroma-options', { roomCode: code, options });
   }, []);
 
-  const updateTerritoryOptions = useCallback((code: string, options: Partial<import('../types/game').TerritoryOptions>) => {
+  const updateTerritoryOptions = useCallback((code: string, options: Partial<TerritoryOptions>) => {
     socketRef.current?.emit('update-territory-options', { roomCode: code, options });
   }, []);
 
@@ -149,9 +185,14 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('next-territory-turn', { roomCode: code });
   }, []);
 
+  const kickPlayer = useCallback((code: string, targetId: string) => {
+    socketRef.current?.emit('kick-player', { roomCode: code, targetId });
+  }, []);
+
   return {
-    socket: socketRef.current,
+    socket,
     connected,
+    connectError,
     myId,
     roomCode,
     inRoom,
@@ -174,6 +215,7 @@ export function useSocket(): SocketHookReturn {
     nextTerritoryTurn,
     submitSignal,
     submitGuess,
+    kickPlayer,
     nextRound,
     playAgain,
   };

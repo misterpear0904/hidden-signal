@@ -1,24 +1,15 @@
-import React, { useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import type { RoleData, RoomState, Player } from '../types/game';
+import type { GuessData } from '../hooks/useSocket';
+import { TOTAL_ROUNDS, avatarColor, avatarInitial } from '../constants';
 import TimerBar from './TimerBar';
 
 interface Props {
   myRole: RoleData;
   roomState: RoomState;
   myId: string;
-  onSubmitGuess: (guessData: object) => void;
+  onSubmitGuess: (guessData: GuessData) => void;
 }
-
-const AVATAR_COLORS = [
-  'linear-gradient(135deg,#8b5cf6,#6d28d9)',
-  'linear-gradient(135deg,#22d3ee,#0891b2)',
-  'linear-gradient(135deg,#fbbf24,#d97706)',
-  'linear-gradient(135deg,#4ade80,#16a34a)',
-  'linear-gradient(135deg,#fb7185,#be123c)',
-  'linear-gradient(135deg,#a78bfa,#7c3aed)',
-  'linear-gradient(135deg,#34d399,#059669)',
-  'linear-gradient(135deg,#f472b6,#be185d)',
-];
 
 export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: Props) {
   const [selectedPartner, setSelectedPartner] = useState<string>('');
@@ -55,7 +46,7 @@ export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: P
         <div className="text-center mb-28">
           <div className="flex items-center justify-center gap-12 mb-16">
             <div className="round-dots">
-              {Array.from({ length: 3 }).map((_, i) => (
+              {Array.from({ length: TOTAL_ROUNDS }).map((_, i) => (
                 <div key={i} className={`round-dot ${i + 1 === roomState.round ? 'active' : i + 1 < roomState.round ? 'done' : ''}`} />
               ))}
             </div>
@@ -70,9 +61,14 @@ export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: P
           </h1>
           <p className="text-muted text-sm mt-8">
             {isHidden
-              ? 'Select the player you think shares your hidden signal. First vote immediately ends the round!'
+              ? 'Select the player you think shares your hidden signal. Round resolves once everyone has voted!'
               : 'Pick one player you think is part of the hidden pair. Correct = +1 pt. Wrong = -3 pts!'}
           </p>
+          {roomState.timerEnd && (
+            <div style={{ maxWidth: 400, margin: '16px auto 0' }}>
+              <TimerBar endTime={roomState.timerEnd} color="amber" />
+            </div>
+          )}
         </div>
 
         {/* Role & Hidden Signal Reminder Card */}
@@ -151,9 +147,9 @@ export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: P
                     >
                       <div
                         className="player-avatar"
-                        style={{ width: 40, height: 40, fontSize: '1.1rem', background: AVATAR_COLORS[pIdx % AVATAR_COLORS.length] }}
+                        style={{ width: 40, height: 40, fontSize: '1.1rem', background: avatarColor(pIdx) }}
                       >
-                        {player.name[0]?.toUpperCase()}
+                        {avatarInitial(player.name)}
                       </div>
                       <span style={{ fontWeight: 600 }}>{player.name}</span>
                       <div className="check-circle checked" style={{ marginLeft: 'auto', opacity: isSelected ? 1 : 0 }}>
@@ -182,9 +178,9 @@ export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: P
                       >
                         <div
                           className="player-avatar"
-                          style={{ width: 40, height: 40, fontSize: '1.1rem', background: AVATAR_COLORS[pIdx % AVATAR_COLORS.length] }}
+                          style={{ width: 40, height: 40, fontSize: '1.1rem', background: avatarColor(pIdx) }}
                         >
-                          {player.name[0]?.toUpperCase()}
+                          {avatarInitial(player.name)}
                         </div>
                         <span style={{ fontWeight: 600 }}>{player.name}</span>
                         <div className="check-circle checked" style={{ marginLeft: 'auto', opacity: isSelected ? 1 : 0 }}>

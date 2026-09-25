@@ -1,5 +1,5 @@
-import React from 'react';
 import type { RoomState } from '../types/game';
+import { avatarColor, avatarInitial } from '../constants';
 
 interface Props {
   roomState: RoomState;
@@ -8,24 +8,26 @@ interface Props {
   onPlayAgain: () => void;
 }
 
-const AVATAR_COLORS = [
-  'linear-gradient(135deg,#8b5cf6,#6d28d9)',
-  'linear-gradient(135deg,#22d3ee,#0891b2)',
-  'linear-gradient(135deg,#fbbf24,#d97706)',
-  'linear-gradient(135deg,#4ade80,#16a34a)',
-  'linear-gradient(135deg,#fb7185,#be123c)',
-  'linear-gradient(135deg,#a78bfa,#7c3aed)',
-  'linear-gradient(135deg,#34d399,#059669)',
-  'linear-gradient(135deg,#f472b6,#be185d)',
-];
-
 const MEDALS = ['🥇', '🥈', '🥉'];
-const RANK_LABELS = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th'];
+
+function rankLabel(i: number): string {
+  const n = i + 1;
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1: return `${n}st`;
+    case 2: return `${n}nd`;
+    case 3: return `${n}rd`;
+    default: return `${n}th`;
+  }
+}
 
 export default function FinalLeaderboard({ roomState, myId, isHost, onPlayAgain }: Props) {
   const sorted = [...roomState.players].sort((a, b) => b.score - a.score);
+  const topScore = sorted[0]?.score ?? 0;
+  const winners = sorted.filter(p => p.score === topScore);
+  const iWin = winners.some(p => p.id === myId);
   const winner = sorted[0];
-  const iWin = winner.id === myId;
   const myRank = sorted.findIndex(p => p.id === myId);
 
   return (
@@ -45,7 +47,11 @@ export default function FinalLeaderboard({ roomState, myId, isHost, onPlayAgain 
           </h1>
           <p className="text-muted text-sm">
             {iWin
-              ? 'Masterful deduction — you outsmarted everyone!'
+              ? winners.length > 1
+                ? `Tied for first with ${winners.filter(p => p.id !== myId).map(p => p.name).join(', ')} — masterful deduction!`
+                : 'Masterful deduction — you outsmarted everyone!'
+              : winners.length > 1
+              ? `${winners.map(p => p.name).join(' & ')} tie for the win!`
               : `${winner.name} takes the win!`}
           </p>
         </div>
@@ -68,11 +74,11 @@ export default function FinalLeaderboard({ roomState, myId, isHost, onPlayAgain 
               className="player-avatar"
               style={{
                 width: 72, height: 72, fontSize: '1.8rem',
-                background: AVATAR_COLORS[roomState.players.findIndex(p => p.id === winner.id) % AVATAR_COLORS.length],
+                background: avatarColor(roomState.players.findIndex(p => p.id === winner.id)),
                 margin: '0 auto 12px',
               }}
             >
-              {winner.name[0]?.toUpperCase()}
+              {avatarInitial(winner.name)}
             </div>
             <div className="heading-lg mb-4">{winner.name}</div>
             <div className="text-mono" style={{ fontSize: '2rem', color: 'var(--amber-400)', fontWeight: 700 }}>
@@ -95,17 +101,17 @@ export default function FinalLeaderboard({ roomState, myId, isHost, onPlayAgain 
                 id={`leaderboard-row-${i}`}
               >
                 <div className="rank-num">
-                  {i < 3 ? MEDALS[i] : <span className="text-muted">{RANK_LABELS[i]}</span>}
+                  {i < 3 ? MEDALS[i] : <span className="text-muted">{rankLabel(i)}</span>}
                 </div>
                 <div
                   className="player-avatar"
                   style={{
                     width: 44, height: 44, fontSize: '1.1rem',
-                    background: AVATAR_COLORS[pIdx % AVATAR_COLORS.length],
+                    background: avatarColor(pIdx),
                     flexShrink: 0,
                   }}
                 >
-                  {p.name[0]?.toUpperCase()}
+                  {avatarInitial(p.name)}
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 600 }}>{p.name}</div>
@@ -133,7 +139,7 @@ export default function FinalLeaderboard({ roomState, myId, isHost, onPlayAgain 
           </div>
           <div className="flex items-center gap-12">
             <span style={{ fontSize: '1.4rem' }}>{myRank === 0 ? '🏆' : myRank === 1 ? '🥈' : myRank === 2 ? '🥉' : '🎮'}</span>
-            <span style={{ fontWeight: 600 }}>{RANK_LABELS[myRank]} place</span>
+            <span style={{ fontWeight: 600 }}>{rankLabel(myRank)} place</span>
             <span className="text-mono" style={{ marginLeft: 'auto', color: 'var(--purple-400)', fontWeight: 700, fontSize: '1.2rem' }}>
               {roomState.players.find(p => p.id === myId)?.score ?? 0} pts
             </span>

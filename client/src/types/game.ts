@@ -34,6 +34,12 @@ export interface TerritoryShotEvent {
   delta: number;
 }
 
+export interface ChromaSolver {
+  playerId: string;
+  playerName: string;
+  points: number;
+}
+
 export interface ChromaRoundState {
   targetTileIndex: number;
   baseGradient: [string, string];
@@ -43,6 +49,12 @@ export interface ChromaRoundState {
   pointsAwarded: number;
   shiftDurationSec: number;
   seed: number;
+  // 10s race after first finder: others can solve for half points
+  raceEndAt: number | null;
+  firstFinderId: string | null;
+  firstFinderName: string | null;
+  firstFinderPoints: number;
+  solvers: ChromaSolver[];
 }
 
 export interface TerritoryColumnResolution {

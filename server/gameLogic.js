@@ -12,7 +12,12 @@ const SECRET_CODES = [
  * Returns an array of player role objects.
  */
 export function assignRoles(players) {
-  const shuffled = [...players].sort(() => Math.random() - 0.5);
+  // Fisher-Yates shuffle (unbiased, unlike sort(() => Math.random() - 0.5))
+  const shuffled = [...players];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
   const secretCode = SECRET_CODES[Math.floor(Math.random() * SECRET_CODES.length)];
 
   const hiddenPairIds = [shuffled[0].id, shuffled[1].id];
@@ -28,6 +33,10 @@ export function assignRoles(players) {
 
 /**
  * Calculates score deltas for a round.
+ * Hidden pair: +1 to guesser on correct partner guess, partner gets +1
+ * once per round max (prevents +2 when both guess correctly).
+ * Neutral: +1 if guessed player is in hidden pair, -3 if wrong.
+ * Self-guesses score 0 (no exploit).
  * @param {Array} guesses - [{playerId, guessedId}] for neutral, [{playerId, guessedPartnerId}] for hidden
  * @param {string[]} hiddenPairIds - IDs of the two hidden pair members
  * @param {Map} roleMap - playerId -> role ('hidden' | 'neutral')
@@ -35,6 +44,7 @@ export function assignRoles(players) {
  */
 export function calculateScores(guesses, hiddenPairIds, roleMap) {
   const scores = new Map();
+  const partnerAwarded = new Set();
 
   for (const guess of guesses) {
     const role = roleMap.get(guess.playerId);
@@ -44,8 +54,9 @@ export function calculateScores(guesses, hiddenPairIds, roleMap) {
       const partner = hiddenPairIds.find(id => id !== guess.playerId);
       if (guess.guessedPartnerId === partner) {
         scores.set(guess.playerId, (scores.get(guess.playerId) || 0) + 1);
-        if (partner) {
+        if (partner && !partnerAwarded.has(partner)) {
           scores.set(partner, (scores.get(partner) || 0) + 1);
+          partnerAwarded.add(partner);
         }
       } else if (guess.guessedPartnerId) {
         scores.set(guess.playerId, (scores.get(guess.playerId) || 0) - 3);
@@ -57,7 +68,9 @@ export function calculateScores(guesses, hiddenPairIds, roleMap) {
       // +1 pt if the guessed player is in the hidden pair, -3 pts if wrong.
       const guessedId = guess.guessedPlayerId;
       if (guessedId) {
-        if (hiddenPairIds.includes(guessedId)) {
+        if (guessedId === guess.playerId) {
+          scores.set(guess.playerId, scores.get(guess.playerId) || 0);
+        } else if (hiddenPairIds.includes(guessedId)) {
           scores.set(guess.playerId, (scores.get(guess.playerId) || 0) + 1);
         } else {
           scores.set(guess.playerId, (scores.get(guess.playerId) || 0) - 3);

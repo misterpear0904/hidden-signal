@@ -1,32 +1,43 @@
-import React, { useState } from 'react';
-import type { RoomState } from '../types/game';
+import { useState } from 'react';
+import type { RoomState, ChromaOptions, TerritoryOptions } from '../types/game';
 import GameSelect, { GAME_CATALOGUE } from './GameSelect';
+import { avatarColor, avatarInitial } from '../constants';
 
 interface Props {
   roomState: RoomState;
   myId: string;
   onSelectGame: (gameId: string) => void;
-  onUpdateChromaOptions: (options: Partial<import('../types/game').ChromaOptions>) => void;
-  onUpdateTerritoryOptions: (options: Partial<import('../types/game').TerritoryOptions>) => void;
+  onUpdateChromaOptions: (options: Partial<ChromaOptions>) => void;
+  onUpdateTerritoryOptions: (options: Partial<TerritoryOptions>) => void;
   onSetPlayerDifficulty: (difficulty: 'easy' | 'medium' | 'hard') => void;
+  onKickPlayer: (targetId: string) => void;
   onStartGame: () => void;
 }
 
-const AVATAR_COLORS = [
-  'linear-gradient(135deg,#8b5cf6,#6d28d9)',
-  'linear-gradient(135deg,#22d3ee,#0891b2)',
-  'linear-gradient(135deg,#fbbf24,#d97706)',
-  'linear-gradient(135deg,#4ade80,#16a34a)',
-  'linear-gradient(135deg,#fb7185,#be123c)',
-  'linear-gradient(135deg,#a78bfa,#7c3aed)',
-  'linear-gradient(135deg,#34d399,#059669)',
-  'linear-gradient(135deg,#f472b6,#be185d)',
-];
-
-export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOptions, onUpdateTerritoryOptions, onSetPlayerDifficulty, onStartGame }: Props) {
+export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOptions, onUpdateTerritoryOptions, onSetPlayerDifficulty, onKickPlayer, onStartGame }: Props) {
   const me = roomState.players.find(p => p.id === myId);
   const isHost = me?.isHost ?? false;
   const playerCount = roomState.players.length;
+  const [copied, setCopied] = useState(false);
+
+  const copyCode = async () => {
+    const done = () => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    };
+    try {
+      await navigator.clipboard.writeText(roomState.code);
+      done();
+    } catch {
+      // Fallback for non-HTTPS / no clipboard permission
+      const ta = document.createElement('textarea');
+      ta.value = roomState.code;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); done(); } catch { /* noop */ }
+      document.body.removeChild(ta);
+    }
+  };
 
   const selectedGameId = roomState.selectedGameId || null;
   const selectedGame = GAME_CATALOGUE.find(g => g.id === selectedGameId) ?? null;
@@ -80,14 +91,18 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
             cursor: 'pointer',
             transition: 'all 0.2s',
           }}
-          onClick={() => navigator.clipboard?.writeText(roomState.code)}
+          onClick={copyCode}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') copyCode(); }}
+          tabIndex={0}
+          role="button"
+          aria-label={`Copy room code ${roomState.code}`}
           id="copy-code-btn"
           title="Click to copy"
         >
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: '2.5rem', fontWeight: 700, letterSpacing: '0.3em', color: 'var(--amber-400)' }}>
             {roomState.code}
           </div>
-          <div className="text-xs text-muted mt-8">Click to copy code</div>
+          <div className="text-xs text-muted mt-8">{copied ? 'Copied!' : 'Click to copy code'}</div>
         </div>
 
         {/* Lobby Hub Guide */}
@@ -166,6 +181,7 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
           <div className="player-grid stagger">
             {roomState.players.map((p, i) => {
               const pDiff = chromaOptions.playerDifficulties?.[p.id] || 'easy';
+              const kickable = isHost && p.id !== myId && !p.isHost;
               return (
                 <div
                   key={p.id}
@@ -174,9 +190,9 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
                 >
                   <div
                     className="player-avatar"
-                    style={{ background: AVATAR_COLORS[i % AVATAR_COLORS.length] }}
+                    style={{ background: avatarColor(i) }}
                   >
-                    {p.name[0]?.toUpperCase()}
+                    {avatarInitial(p.name)}
                   </div>
                   <div className="player-name">{p.name}</div>
                   <div className="flex flex-wrap gap-4 justify-center">
@@ -195,6 +211,20 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
                       </div>
                     )}
                   </div>
+                  {kickable && (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-secondary"
+                      aria-label={`Kick ${p.name} from lobby`}
+                      title={`Kick ${p.name}`}
+                      onClick={() => {
+                        if (window.confirm(`Kick ${p.name} from the lobby?`)) onKickPlayer(p.id);
+                      }}
+                      style={{ marginTop: 8, fontSize: '0.7rem' }}
+                    >
+                      Kick
+                    </button>
+                  )}
                 </div>
               );
             })}

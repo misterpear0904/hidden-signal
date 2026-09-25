@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { RoleData, RoomState } from '../types/game';
+import { TOTAL_ROUNDS, avatarColor, avatarInitial } from '../constants';
 
 interface Props {
   myRole: RoleData;
@@ -29,7 +30,7 @@ export default function RoleReveal({ myRole, roomState, myId }: Props) {
               />
             ))}
           </div>
-          <div className="badge badge-muted">Round {roomState.round} of 3</div>
+          <div className="badge badge-muted">Round {roomState.round} of {TOTAL_ROUNDS}</div>
         </div>
 
         <div className="text-center mb-24">
@@ -95,20 +96,10 @@ export default function RoleReveal({ myRole, roomState, myId }: Props) {
           <div className="heading-md mb-16">Players this round</div>
           <div className="player-grid stagger">
             {roomState.players.map((p, i) => {
-              const AVATAR_COLORS = [
-                'linear-gradient(135deg,#8b5cf6,#6d28d9)',
-                'linear-gradient(135deg,#22d3ee,#0891b2)',
-                'linear-gradient(135deg,#fbbf24,#d97706)',
-                'linear-gradient(135deg,#4ade80,#16a34a)',
-                'linear-gradient(135deg,#fb7185,#be123c)',
-                'linear-gradient(135deg,#a78bfa,#7c3aed)',
-                'linear-gradient(135deg,#34d399,#059669)',
-                'linear-gradient(135deg,#f472b6,#be185d)',
-              ];
               return (
                 <div key={p.id} className="player-card animate-fade-up">
-                  <div className="player-avatar" style={{ background: AVATAR_COLORS[i % AVATAR_COLORS.length] }}>
-                    {p.name[0]?.toUpperCase()}
+                  <div className="player-avatar" style={{ background: avatarColor(i) }}>
+                    {avatarInitial(p.name)}
                   </div>
                   <div className="player-name">{p.name}</div>
                   {p.id === myId && <div className="badge badge-cyan" style={{ fontSize: '0.6rem' }}>You</div>}

@@ -1,5 +1,5 @@
-import React from 'react';
 import type { RoleData, RoomState } from '../types/game';
+import { avatarColor, avatarInitial } from '../constants';
 import TimerBar from './TimerBar';
 
 interface Props {
@@ -7,17 +7,6 @@ interface Props {
   myId: string;
   myRole: RoleData;
 }
-
-const AVATAR_COLORS = [
-  'linear-gradient(135deg,#8b5cf6,#6d28d9)',
-  'linear-gradient(135deg,#22d3ee,#0891b2)',
-  'linear-gradient(135deg,#fbbf24,#d97706)',
-  'linear-gradient(135deg,#4ade80,#16a34a)',
-  'linear-gradient(135deg,#fb7185,#be123c)',
-  'linear-gradient(135deg,#a78bfa,#7c3aed)',
-  'linear-gradient(135deg,#34d399,#059669)',
-  'linear-gradient(135deg,#f472b6,#be185d)',
-];
 
 export default function DiscussPhase({ roomState, myId, myRole }: Props) {
   const isHidden = myRole.role === 'hidden';
@@ -100,9 +89,9 @@ export default function DiscussPhase({ roomState, myId, myRole }: Props) {
                   <div className="flex items-center gap-8">
                     <div
                       className="player-avatar"
-                      style={{ width: 24, height: 24, fontSize: '0.7rem', background: AVATAR_COLORS[pIdx % AVATAR_COLORS.length] }}
+                      style={{ width: 24, height: 24, fontSize: '0.7rem', background: avatarColor(pIdx) }}
                     >
-                      {player?.name?.[0]?.toUpperCase() ?? '?'}
+                      {avatarInitial(player?.name ?? '')}
                     </div>
                     <div className="signal-author">
                       {player?.name ?? 'Unknown'}
@@ -127,9 +116,9 @@ export default function DiscussPhase({ roomState, myId, myRole }: Props) {
                   <div key={p.id} className="score-row">
                     <div
                       className="player-avatar"
-                      style={{ width: 32, height: 32, fontSize: '0.9rem', background: AVATAR_COLORS[pIdx % AVATAR_COLORS.length] }}
+                      style={{ width: 32, height: 32, fontSize: '0.9rem', background: avatarColor(pIdx) }}
                     >
-                      {p.name[0]?.toUpperCase()}
+                      {avatarInitial(p.name)}
                     </div>
                     <span className="text-sm" style={{ fontWeight: 600 }}>{p.name}</span>
                     {p.id === myId && <span className="badge badge-cyan" style={{ fontSize: '0.6rem' }}>You</span>}

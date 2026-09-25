@@ -1,5 +1,5 @@
-import React from 'react';
 import type { RoundRevealData, RoomState } from '../types/game';
+import { avatarColor, avatarInitial } from '../constants';
 
 interface Props {
   revealData: RoundRevealData;
@@ -10,30 +10,15 @@ interface Props {
   onNextRound: () => void;
 }
 
-const AVATAR_COLORS = [
-  'linear-gradient(135deg,#8b5cf6,#6d28d9)',
-  'linear-gradient(135deg,#22d3ee,#0891b2)',
-  'linear-gradient(135deg,#fbbf24,#d97706)',
-  'linear-gradient(135deg,#4ade80,#16a34a)',
-  'linear-gradient(135deg,#fb7185,#be123c)',
-  'linear-gradient(135deg,#a78bfa,#7c3aed)',
-  'linear-gradient(135deg,#34d399,#059669)',
-  'linear-gradient(135deg,#f472b6,#be185d)',
-];
-
 export default function RoundReveal({ revealData, roomState, myId, isHost, isLastRound, onNextRound }: Props) {
   const { hiddenPairIds, secretCode, roles, signals, guesses, scoreDeltas, players } = revealData;
 
   const myRole = roles.find(r => r.playerId === myId);
   const isHidden = myRole?.role === 'hidden';
-  const myPartner = hiddenPairIds.find(id => id !== myId);
-  const myPartnerPlayer = players.find(p => p.id === myPartner);
-  const partnerGuess = guesses.find(g => g.playerId === myId);
 
   const playerMap = Object.fromEntries(players.map(p => [p.id, p]));
   const playerIndex = (id: string) => players.findIndex(p => p.id === id);
 
-  const roleName = (id: string) => roles.find(r => r.playerId === id)?.role === 'hidden' ? 'Hidden' : 'Neutral';
   const isHiddenPlayer = (id: string) => hiddenPairIds.includes(id);
 
   // Determine outcome for me
@@ -47,7 +32,7 @@ export default function RoundReveal({ revealData, roomState, myId, isHost, isLas
   } else if (isHidden) {
     const correctPartner = hiddenPairIds.find(id => id !== myId);
     const guessedOk = guesses.find(g => g.playerId === myId)?.guessedPartnerId === correctPartner;
-    myOutcomeLabel = guessedOk ? 'Found your partner! (+2 pts)' : 'Wrong partner choice (-3 pts)';
+    myOutcomeLabel = guessedOk ? 'Found your partner! (+1 pt)' : 'Wrong partner choice (-3 pts)';
     myOutcomeIcon = guessedOk ? '🎉' : '😬';
   } else {
     const myGuess = guesses.find(g => g.playerId === myId);
@@ -110,8 +95,8 @@ export default function RoundReveal({ revealData, roomState, myId, isHost, isLas
               const pIdx = playerIndex(id);
               return (
                 <div key={id} className="flex items-center gap-8" style={{ background: 'rgba(251,191,36,0.15)', padding: '6px 14px', borderRadius: 'var(--radius-full)', border: '1px solid rgba(251,191,36,0.3)' }}>
-                  <div className="player-avatar" style={{ width: 22, height: 22, fontSize: '0.65rem', background: AVATAR_COLORS[pIdx % AVATAR_COLORS.length] }}>
-                    {p?.name?.[0]?.toUpperCase()}
+                  <div className="player-avatar" style={{ width: 22, height: 22, fontSize: '0.65rem', background: avatarColor(pIdx) }}>
+                    {avatarInitial(p?.name ?? '')}
                   </div>
                   <span className="text-sm" style={{ fontWeight: 600, color: 'var(--amber-400)' }}>{p?.name}</span>
                   <span className="badge badge-amber" style={{ fontSize: '0.55rem' }}>Hidden</span>
@@ -175,8 +160,8 @@ export default function RoundReveal({ revealData, roomState, myId, isHost, isLas
                   }}
                   id={`reveal-row-${p.id}`}
                 >
-                  <div className="player-avatar" style={{ width: 36, height: 36, fontSize: '0.9rem', background: AVATAR_COLORS[pIdx % AVATAR_COLORS.length] }}>
-                    {p.name[0]?.toUpperCase()}
+                  <div className="player-avatar" style={{ width: 36, height: 36, fontSize: '0.9rem', background: avatarColor(pIdx) }}>
+                    {avatarInitial(p.name)}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: 6 }}>

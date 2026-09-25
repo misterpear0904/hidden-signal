@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import type { RoomState } from '../types/game';
 
 interface Props {
@@ -23,12 +23,12 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
   const boardHeight = territory?.boardHeight || (isExtreme ? 20 : 10);
   const midRow = isExtreme ? 9 : 4;
 
-  // Real-time clock for extreme mode charge progress animation
+  // Real-time clock for extreme mode charge progress + explosion banner expiry.
+  // 1s granularity is enough (secondsAgo display); charge bar animates via CSS.
   useEffect(() => {
-    if (!isExtreme) return;
-    const interval = setInterval(() => setNow(Date.now()), 100);
+    const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
-  }, [isExtreme]);
+  }, []);
 
   // Reset standard turn selection ONLY when turn changes in turn-based mode
   useEffect(() => {
@@ -97,13 +97,16 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
   const bluePlayers = roomState.players.filter(p => territory.teams.blue.includes(p.id));
 
   function handleStandardLockIn() {
-    if (selectedCol !== null && !hasSubmitted) {
-      setLockedCol(selectedCol);
-      onSubmitPick(selectedCol);
+    if (isRedTeam || isBlueTeam) {
+      if (selectedCol !== null && !hasSubmitted) {
+        setLockedCol(selectedCol);
+        onSubmitPick(selectedCol);
+      }
     }
   }
 
   function handleExtremeFire(c: number) {
+    if (!(isRedTeam || isBlueTeam)) return;
     if (availableShots > 0 && !territory?.winnerTeam) {
       setFiredCol(c);
       onSubmitPick(c);
@@ -441,7 +444,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(10, 1fr)', width: '100%', maxWidth: 460, gap: 4, marginBottom: 6, textAlign: 'center' }}>
               {Array.from({ length: 10 }).map((_, c) => {
                 const isSelected = selectedCol === c || firedCol === c;
-                const lastRes = territory.lastResolutions?.[c];
+                const lastRes = territory.lastResolutions?.find(r => r.col === c);
                 const delta = lastRes ? lastRes.newFrontier - lastRes.oldFrontier : 0;
                 const hadAction = lastRes ? (lastRes.redPicks.length > 0 || lastRes.bluePicks.length > 0) : false;
                 const isExplosionCol = latestExplosion && isLatestExplosionRecent && latestExplosion.affectedCols.includes(c);
@@ -529,7 +532,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                     const isStolen = isBonus && ((isRedTile && bonusSquare.initialTeam === 'blue') || (!isRedTile && bonusSquare.initialTeam === 'red'));
 
                     // Standard turn shift calculation
-                    const lastRes = territory.lastResolutions?.[c];
+                    const lastRes = territory.lastResolutions?.find(r => r.col === c);
                     let tileShiftType: 'red-capture' | 'blue-capture' | 'held' | null = null;
                     if (!isExtreme && lastRes) {
                       const delta = lastRes.newFrontier - lastRes.oldFrontier;
@@ -730,7 +733,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                 {Array.from({ length: 10 }).map((_, c) => {
                   const isSelected = selectedCol === c || firedCol === c;
                   const frontier = territory.board[c];
-                  const isDefendingCol = !isExtreme && ((isRedTeam && frontier < 4) || (isBlueTeam && frontier > 4));
+                  const isDefendingCol = !isExtreme && ((isRedTeam && frontier < midRow) || (isBlueTeam && frontier > midRow));
                   const colBonus = bonusSquares.find(sq => sq.col === c);
 
                   return (
@@ -1099,7 +1102,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                 Team {territory.winnerTeam.toUpperCase()} successfully broke through and reached the enemy back line!
               </p>
 
-              {isHost && (
+              {isHost ? (
                 <button
                   type="button"
                   id="victory-next-btn"
@@ -1108,6 +1111,10 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                 >
                   📊 View Final Scores
                 </button>
+              ) : (
+                <p className="text-muted text-sm" style={{ fontStyle: 'italic' }}>
+                  Waiting for host to show final scores...
+                </p>
               )}
             </div>
           </div>

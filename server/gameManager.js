@@ -5,10 +5,29 @@ import { assignRoles, calculateScores, generateRoomCode } from './gameLogic.js';
 // rooms: Map<roomCode, RoomState>
 const rooms = new Map();
 
-const TOTAL_ROUNDS = 5;
+export const TOTAL_ROUNDS = 5;
+const HIDDEN_ROUNDS = 5;
+const CHROMA_ROUNDS = 5;
 const SIGNAL_TIME = 60;    // seconds
 const DISCUSS_TIME = 60;   // seconds
 const GUESS_TIME = 45;     // seconds
+
+// Territory Push tuning constants
+const TERRITORY_COLS = 10;
+const STANDARD_HEIGHT = 10;
+const EXTREME_HEIGHT = 20;
+const DEFENDER_BONUS = 2;
+const WIN_SCORE = 5;
+const MAX_TURN_HISTORY = 50;
+const ROOM_TTL_MS = 2 * 60 * 60 * 1000; // 2h idle sweep
+
+function shuffleInPlace(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
 
 const BASE_GRADIENT_PALETTES = [
   ['#1e1b4b', '#312e81'], // Indigo
@@ -30,6 +49,7 @@ export function createRoom(hostId, hostName) {
   let code;
   do { code = generateRoomCode(); } while (rooms.has(code));
 
+  const now = Date.now();
   const room = {
     code,
     selectedGameId: 'hidden-signal',
@@ -47,6 +67,8 @@ export function createRoom(hostId, hostName) {
     guesses: [],             // { playerId, guessedPartnerId?, guessedPairIds? }
     timer: null,
     timerEnd: null,
+    createdAt: now,
+    lastActivityMs: now,
   };
 
   rooms.set(code, room);
@@ -75,24 +97,56 @@ export function getRoomByPlayerId(playerId) {
   return null;
 }
 
+export function kickPlayer(code, hostId, targetId) {
+  const room = rooms.get(code);
+  if (!room) return { error: 'Room not found' };
+  if (room.phase !== 'lobby') return { error: 'Can only kick players from the lobby' };
+  if (!isHost(room, hostId)) return { error: 'Only the host can kick players' };
+  if (hostId === targetId) return { error: 'Host cannot kick themselves' };
+  const idx = room.players.findIndex(p => p.id === targetId);
+  if (idx === -1) return { error: 'Player not found' };
+  if (room.players[idx].isHost) return { error: 'Cannot kick the host' };
+  room.players.splice(idx, 1);
+  if (room.chromaOptions?.playerDifficulties) {
+    delete room.chromaOptions.playerDifficulties[targetId];
+  }
+  room.lastActivityMs = Date.now();
+  return { room, kickedId: targetId };
+}
+
 export function selectGame(code, gameId) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'lobby') return null;
+  const allowed = ['hidden-signal', 'chroma-shift', 'territory-push'];
+  if (!allowed.includes(gameId)) return null;
   room.selectedGameId = gameId;
+  room.lastActivityMs = Date.now();
   return room;
 }
 
 export function updateChromaOptions(code, options) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'lobby') return null;
-  room.chromaOptions = { ...room.chromaOptions, ...options };
+  if (!options || typeof options !== 'object') return null;
+  const next = { ...room.chromaOptions };
+  if (typeof options.difficulty === 'string' && ['easy', 'medium', 'hard'].includes(options.difficulty)) {
+    next.difficulty = options.difficulty;
+  }
+  if (typeof options.fairPoints === 'boolean') next.fairPoints = options.fairPoints;
+  if (typeof options.extremeMode === 'boolean') next.extremeMode = options.extremeMode;
+  room.chromaOptions = next;
+  room.lastActivityMs = Date.now();
   return room;
 }
 
 export function updateTerritoryOptions(code, options) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'lobby') return null;
-  room.territoryOptions = { ...room.territoryOptions, ...options };
+  if (!options || typeof options !== 'object') return null;
+  const next = { ...room.territoryOptions };
+  if (typeof options.extremeMode === 'boolean') next.extremeMode = options.extremeMode;
+  room.territoryOptions = next;
+  room.lastActivityMs = Date.now();
   return room;
 }
 
@@ -109,7 +163,7 @@ export function setPlayerDifficulty(code, playerId, difficulty) {
 
 export function generateRechargeBonusSquares() {
   // Pick 8 distinct columns out of 10 (0..9) so no two bonus squares share a column
-  const cols = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].sort(() => Math.random() - 0.5);
+  const cols = shuffleInPlace([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   const redCols = cols.slice(0, 4);
   const blueCols = cols.slice(4, 8);
 
@@ -167,11 +221,11 @@ export function startGame(code) {
     for (const p of room.players) p.score = 0;
     
     // Shuffle players randomly into two teams
-    const shuffled = [...room.players.map(p => p.id)].sort(() => Math.random() - 0.5);
+    const shuffled = shuffleInPlace([...room.players.map(p => p.id)]);
     const half = Math.floor(shuffled.length / 2);
     
     const isExtreme = room.territoryOptions?.extremeMode === true;
-    const boardHeight = isExtreme ? 20 : 10;
+    const boardHeight = isExtreme ? EXTREME_HEIGHT : STANDARD_HEIGHT;
     const initialFrontier = isExtreme ? 9 : 4; // 0..9 Red, 10..19 Blue in 20-row grid; 0..4 Red, 5..9 Blue in 10-row grid
     const bonusSquares = isExtreme ? generateRechargeBonusSquares() : [];
 
@@ -186,7 +240,7 @@ export function startGame(code) {
         red: shuffled.slice(0, half),
         blue: shuffled.slice(half),
       },
-      board: Array(10).fill(initialFrontier),
+      board: Array(TERRITORY_COLS).fill(initialFrontier),
       extremeMode: isExtreme,
       boardHeight,
       bonusSquares,
@@ -209,6 +263,18 @@ export function startGame(code) {
   return startRound(room);
 }
 
+const CHROMA_RACE_MS = 10 * 1000;
+
+function chromaFullPoints(room, playerId) {
+  let points = 1;
+  const playerDiff = room.chromaOptions.playerDifficulties?.[playerId] || 'easy';
+  if (room.chromaOptions.fairPoints) {
+    if (playerDiff === 'medium') points = 2;
+    else if (playerDiff === 'hard') points = 3;
+  }
+  return points;
+}
+
 function startChromaRound(room) {
   const totalTiles = room.chromaOptions.extremeMode ? 64 : 25;
   const targetTileIndex = Math.floor(Math.random() * totalTiles);
@@ -225,6 +291,12 @@ function startChromaRound(room) {
     pointsAwarded: 0,
     shiftDurationSec,
     seed: Date.now() + Math.random(),
+    // 10s race: first finder announces, others can solve for half points
+    raceEndAt: null,
+    firstFinderId: null,
+    firstFinderName: null,
+    firstFinderPoints: 0,
+    solvers: [],
   };
 
   room.phase = 'chroma-play';
@@ -237,34 +309,62 @@ export function submitChromaGuess(code, playerId, tileIndex) {
 
   const player = room.players.find(p => p.id === playerId);
   if (!player) return null;
+  const totalTiles = room.chromaOptions?.extremeMode ? 64 : 25;
+  if (!Number.isInteger(tileIndex) || tileIndex < 0 || tileIndex >= totalTiles) return null;
 
   if (tileIndex === room.chromaState.targetTileIndex) {
-    // Correct!
-    let points = 1;
-    const playerDiff = room.chromaOptions.playerDifficulties?.[playerId] || 'easy';
-    if (room.chromaOptions.fairPoints) {
-      if (playerDiff === 'medium') points = 2;
-      else if (playerDiff === 'hard') points = 3;
+    // Already solved by this player (e.g. double-click during race) — ignore, no penalty
+    if (room.chromaState.solvers?.some(s => s.playerId === playerId)) {
+      return { room, correct: true, alreadySolved: true };
     }
+    const now = Date.now();
+    // No race running: this player is first finder, full points + open 10s race
+    if (!room.chromaState.raceEndAt) {
+      const points = chromaFullPoints(room, playerId);
+      player.score += points;
+      room.chromaState.roundWinnerId = playerId;
+      room.chromaState.roundWinnerName = player.name;
+      room.chromaState.pointsAwarded = points;
+      room.chromaState.firstFinderId = playerId;
+      room.chromaState.firstFinderName = player.name;
+      room.chromaState.firstFinderPoints = points;
+      room.chromaState.raceEndAt = now + CHROMA_RACE_MS;
+      room.chromaState.solvers = [{ playerId, playerName: player.name, points }];
+      room.lastActivityMs = now;
+      // Phase stays chroma-play during the race; reveal happens on timeout
+      return { room, correct: true, pointsAwarded: points, winnerId: playerId, raceStarted: true, raceEndAt: room.chromaState.raceEndAt };
+    }
+    // Race already running: half points for additional solvers
+    if (now > room.chromaState.raceEndAt) return null; // race expired, reveal imminent
+    const full = chromaFullPoints(room, playerId);
+    const points = full / 2;
     player.score += points;
-    room.chromaState.roundWinnerId = playerId;
-    room.chromaState.roundWinnerName = player.name;
-    room.chromaState.pointsAwarded = points;
-    room.phase = 'chroma-reveal';
-
-    return { room, correct: true, pointsAwarded: points, winnerId: playerId };
+    room.chromaState.solvers.push({ playerId, playerName: player.name, points });
+    room.lastActivityMs = now;
+    return { room, correct: true, pointsAwarded: points, winnerId: playerId, raceSolved: true };
   } else {
     // Wrong guess penalty: lose 1 point
     player.score -= 1;
+    room.lastActivityMs = Date.now();
     return { room, correct: false, penaltyPlayerId: playerId, currentScore: player.score };
   }
+}
+
+export function resolveChromaRace(code) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'chroma-play' || !room.chromaState) return null;
+  if (!room.chromaState.raceEndAt) return null;
+  room.chromaState.raceEndAt = null;
+  room.phase = 'chroma-reveal';
+  room.lastActivityMs = Date.now();
+  return room;
 }
 
 export function nextChromaRound(code) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'chroma-reveal') return null;
 
-  if (room.round >= TOTAL_ROUNDS) {
+  if (room.round >= CHROMA_ROUNDS) {
     room.phase = 'end';
     return room;
   }
@@ -342,7 +442,7 @@ export function triggerTerritoryMineDetonations(room, minesToTrigger) {
     }
 
     const explosion = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: `${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`,
       minePlayerId: mine.playerId,
       minePlayerName: mine.playerName,
       team: mine.team,
@@ -444,11 +544,13 @@ export function submitTerritoryPick(code, playerId, colIndex) {
       lastChargeMs: newLastChargeMs,
     };
 
-    // Apply push: Red pushes towards row 19 (+1), Blue pushes towards row 0 (-1)
+    // Apply push: Red pushes towards top of board (+1), Blue pushes towards row 0 (-1)
     const oldFrontier = room.territoryState.board[colIndex];
+    const boardHeight = room.territoryState.boardHeight || (room.territoryState.extremeMode ? EXTREME_HEIGHT : STANDARD_HEIGHT);
+    const redWinTarget = boardHeight - 1;
     let newFrontier = oldFrontier;
     if (isRed) {
-      newFrontier = Math.min(19, oldFrontier + 1);
+      newFrontier = Math.min(redWinTarget, oldFrontier + 1);
     } else {
       newFrontier = Math.max(-1, oldFrontier - 1);
     }
@@ -473,7 +575,7 @@ export function submitTerritoryPick(code, playerId, colIndex) {
 
     const player = room.players.find(p => p.id === playerId);
     const shotEvent = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: `${now.toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`,
       playerId,
       playerName: player?.name || (isRed ? 'Red' : 'Blue'),
       team: isRed ? 'red' : 'blue',
@@ -490,15 +592,15 @@ export function submitTerritoryPick(code, playerId, colIndex) {
       room.territoryState.recentShots.pop();
     }
 
-    // Check victory condition (Red reaches row 19, Blue reaches row -1)
-    const redWins = room.territoryState.board.some(f => f >= 19);
+    // Check victory condition (Red reaches top row, Blue reaches row -1)
+    const redWins = room.territoryState.board.some(f => f >= redWinTarget);
     const blueWins = room.territoryState.board.some(f => f <= -1);
 
     if (redWins || blueWins) {
-      const winner = redWins ? 'red' : 'blue';
+      const winner = redWins && !blueWins ? 'red' : !redWins && blueWins ? 'blue' : (Math.max(...room.territoryState.board) - redWinTarget >= 0 - Math.min(...room.territoryState.board) ? 'red' : 'blue');
       room.territoryState.winnerTeam = winner;
       for (const p of room.players) {
-        if (room.territoryState.teams[winner].includes(p.id)) p.score += 5;
+        if (room.territoryState.teams[winner].includes(p.id)) p.score += WIN_SCORE;
       }
       room.phase = 'end';
     }
@@ -530,7 +632,7 @@ export function resolveTerritoryTurn(room) {
   const playerMap = new Map(room.players.map(p => [p.id, p.name]));
 
   // Resolve column by column
-  for (let c = 0; c < 10; c++) {
+  for (let c = 0; c < TERRITORY_COLS; c++) {
     const redPickers = teams.red.filter(pid => submittedPicks[pid] === c).map(pid => playerMap.get(pid) || 'Red');
     const bluePickers = teams.blue.filter(pid => submittedPicks[pid] === c).map(pid => playerMap.get(pid) || 'Blue');
 
@@ -564,7 +666,7 @@ export function resolveTerritoryTurn(room) {
       } else if (oldFrontier > 4) {
         // Boundary in Blue's half: Red is attacking, Blue is defending
         defenderAdvantageApplied = 'blue';
-        const effectiveBlue = M + 2; // +2 defender bonus
+        const effectiveBlue = M + DEFENDER_BONUS; // defender bonus
         const netRed = N - effectiveBlue;
         newFrontier = Math.min(9, Math.max(-1, oldFrontier + netRed));
 
@@ -578,7 +680,7 @@ export function resolveTerritoryTurn(room) {
       } else {
         // Boundary in Red's half (oldFrontier < 4): Blue is attacking, Red is defending
         defenderAdvantageApplied = 'red';
-        const effectiveRed = N + 2; // +2 defender bonus
+        const effectiveRed = N + DEFENDER_BONUS; // defender bonus
         const netRed = effectiveRed - M;
         newFrontier = Math.min(9, Math.max(-1, oldFrontier + netRed));
 
@@ -624,7 +726,7 @@ export function resolveTerritoryTurn(room) {
     triggerTerritoryMineDetonations(room, minesToTrigger);
   }
 
-  // Save to turn history
+  // Save to turn history (capped)
   if (!room.territoryState.turnHistory) {
     room.territoryState.turnHistory = [];
   }
@@ -632,6 +734,9 @@ export function resolveTerritoryTurn(room) {
     turn: room.territoryState.turn,
     resolutions,
   });
+  if (room.territoryState.turnHistory.length > MAX_TURN_HISTORY) {
+    room.territoryState.turnHistory.splice(0, room.territoryState.turnHistory.length - MAX_TURN_HISTORY);
+  }
   room.territoryState.lastResolutions = resolutions;
 
   // Check victory condition
@@ -643,20 +748,25 @@ export function resolveTerritoryTurn(room) {
   if (redWins && !blueWins) {
     room.territoryState.winnerTeam = 'red';
     for (const p of room.players) {
-      if (teams.red.includes(p.id)) p.score += 5;
+      if (teams.red.includes(p.id)) p.score += WIN_SCORE;
     }
     room.phase = 'end';
   } else if (blueWins && !redWins) {
     room.territoryState.winnerTeam = 'blue';
     for (const p of room.players) {
-      if (teams.blue.includes(p.id)) p.score += 5;
+      if (teams.blue.includes(p.id)) p.score += WIN_SCORE;
     }
     room.phase = 'end';
   } else if (redWins && blueWins) {
+    // Tie-break: deeper penetration wins, award winners
     const maxRedPen = Math.max(...board);
     const minBluePen = Math.min(...board);
-    if (maxRedPen >= redWinTarget && minBluePen <= -1) {
-      room.territoryState.winnerTeam = 'red'; // tie break
+    const redDepth = maxRedPen - redWinTarget;
+    const blueDepth = 0 - minBluePen - 1;
+    const winnerTeam = redDepth >= blueDepth ? 'red' : 'blue';
+    room.territoryState.winnerTeam = winnerTeam;
+    for (const p of room.players) {
+      if (teams[winnerTeam].includes(p.id)) p.score += WIN_SCORE;
     }
     room.phase = 'end';
   } else {
@@ -670,15 +780,19 @@ export function resolveTerritoryTurn(room) {
 export function nextTerritoryTurn(code) {
   const room = rooms.get(code);
   if (!room || !room.territoryState) return null;
+  if (room.phase !== 'territory-turn' && room.phase !== 'territory-reveal') return null;
 
   if (room.territoryState.winnerTeam) {
     room.phase = 'end';
     return room;
   }
 
+  // Do not wipe in-progress picks: only reset if all connected players submitted
+  // (resolveTerritoryTurn already advances automatically). Manual skip is host-only (checked in index.js).
   room.territoryState.submittedPicks = {};
   room.territoryState.turn += 1;
   room.phase = 'territory-turn';
+  room.lastActivityMs = Date.now();
   return room;
 }
 
@@ -721,8 +835,10 @@ export function submitSignal(code, playerId, signal) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'signal') return null;
   if (room.signals.find(s => s.playerId === playerId)) return null; // already submitted
+  if (typeof signal !== 'string' || !signal.trim()) return null;
 
   room.signals.push({ playerId, signal: signal.trim().substring(0, 80) });
+  room.lastActivityMs = Date.now();
   return room;
 }
 
@@ -730,8 +846,26 @@ export function submitGuess(code, playerId, guessData) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'guess') return null;
   if (room.guesses.find(g => g.playerId === playerId)) return null;
+  if (!guessData || typeof guessData !== 'object') return null;
 
-  room.guesses.push({ playerId, ...guessData });
+  const roleMap = new Map(room.roles.map(r => [r.playerId, r.role]));
+  const role = roleMap.get(playerId);
+  // Whitelist fields to prevent playerId spoofing via spread
+  let clean = null;
+  if (role === 'hidden' && typeof guessData.guessedPartnerId === 'string') {
+    if (guessData.guessedPartnerId === playerId) return null;
+    if (!room.players.some(p => p.id === guessData.guessedPartnerId)) return null;
+    clean = { guessedPartnerId: guessData.guessedPartnerId };
+  } else if (role === 'neutral' && typeof guessData.guessedPlayerId === 'string') {
+    if (guessData.guessedPlayerId === playerId) return null;
+    if (!room.players.some(p => p.id === guessData.guessedPlayerId)) return null;
+    clean = { guessedPlayerId: guessData.guessedPlayerId };
+  } else {
+    return null;
+  }
+
+  room.guesses.push({ playerId, ...clean });
+  room.lastActivityMs = Date.now();
   return room;
 }
 
@@ -755,7 +889,7 @@ export function advanceRound(code) {
   const room = rooms.get(code);
   if (!room) return null;
 
-  if (room.round >= TOTAL_ROUNDS) {
+  if (room.round >= HIDDEN_ROUNDS) {
     room.phase = 'end';
     return room;
   }
@@ -764,23 +898,22 @@ export function advanceRound(code) {
   return startRound(room);
 }
 
+export function isHost(room, socketId) {
+  return !!room?.players?.find(p => p.id === socketId && p.isHost);
+}
+
 export function playerDisconnected(playerId) {
   for (const room of rooms.values()) {
     const player = room.players.find(p => p.id === playerId);
     if (player) {
       player.connected = false;
-      return room;
-    }
-  }
-  return null;
-}
-
-export function playerReconnected(playerId, newSocketId) {
-  for (const room of rooms.values()) {
-    const player = room.players.find(p => p.id === playerId);
-    if (player) {
-      player.id = newSocketId;
-      player.connected = true;
+      room.lastActivityMs = Date.now();
+      // Transfer host if host left
+      if (player.isHost) {
+        player.isHost = false;
+        const next = room.players.find(p => p.connected);
+        if (next) next.isHost = true;
+      }
       return room;
     }
   }
@@ -791,7 +924,19 @@ export function deleteRoom(code) {
   rooms.delete(code);
 }
 
+export function sweepInactiveRooms(now = Date.now()) {
+  for (const [code, room] of rooms) {
+    const allGone = room.players.every(p => !p.connected);
+    const idle = now - (room.lastActivityMs || room.createdAt || now);
+    if (allGone || idle > ROOM_TTL_MS) {
+      rooms.delete(code);
+    }
+  }
+}
+
 export const SIGNAL_TIME_SEC = SIGNAL_TIME;
 export const DISCUSS_TIME_SEC = DISCUSS_TIME;
 export const GUESS_TIME_SEC = GUESS_TIME;
+export const CHROMA_RACE_MS_VALUE = CHROMA_RACE_MS;
 export const TOTAL_ROUNDS_COUNT = TOTAL_ROUNDS;
+export const ROOM_TTL_MS_VALUE = ROOM_TTL_MS;

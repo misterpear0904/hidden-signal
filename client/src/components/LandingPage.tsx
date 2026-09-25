@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import { useState, type FormEvent } from 'react';
+import { avatarColor, avatarInitial } from '../constants';
 
 interface Props {
   onCreateRoom: (name: string) => void;
@@ -6,29 +7,21 @@ interface Props {
   connected: boolean;
 }
 
-const AVATAR_COLORS = [
-  'linear-gradient(135deg,#8b5cf6,#6d28d9)',
-  'linear-gradient(135deg,#22d3ee,#0891b2)',
-  'linear-gradient(135deg,#fbbf24,#d97706)',
-  'linear-gradient(135deg,#4ade80,#16a34a)',
-  'linear-gradient(135deg,#fb7185,#be123c)',
-];
-
 export default function LandingPage({ onCreateRoom, onJoinRoom, connected }: Props) {
   const [tab, setTab] = useState<'create' | 'join'>('create');
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
 
-  const avatarColor = AVATAR_COLORS[name.length % AVATAR_COLORS.length];
-  const initial = name.trim()[0]?.toUpperCase() || '?';
+  const previewColor = avatarColor(name.length);
+  const initial = avatarInitial(name.trim());
 
-  const handleCreate = (e: React.FormEvent) => {
+  const handleCreate = (e: FormEvent) => {
     e.preventDefault();
     if (name.trim().length < 1) return;
     onCreateRoom(name.trim());
   };
 
-  const handleJoin = (e: React.FormEvent) => {
+  const handleJoin = (e: FormEvent) => {
     e.preventDefault();
     if (name.trim().length < 1 || code.trim().length < 4) return;
     onJoinRoom(code.trim().toUpperCase(), name.trim());
@@ -79,7 +72,7 @@ export default function LandingPage({ onCreateRoom, onJoinRoom, connected }: Pro
               style={{
                 width: 72, height: 72,
                 fontSize: '1.8rem',
-                background: name.trim() ? avatarColor : 'var(--bg-card)',
+                background: name.trim() ? previewColor : 'var(--bg-card)',
                 border: '2px solid var(--border)',
                 transition: 'background 0.3s',
               }}

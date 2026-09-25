@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { RoleData, RoomState } from '../types/game';
 import TimerBar from './TimerBar';
 
@@ -13,6 +13,12 @@ export default function SignalPhase({ myRole, roomState, myId, onSubmitSignal }:
   const [signal, setSignal] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const isHidden = myRole.role === 'hidden';
+
+  // Reset local state each round so a previous signal never echoes
+  useEffect(() => {
+    setSignal('');
+    setSubmitted(false);
+  }, [roomState.round, roomState.code]);
 
   const alreadySubmitted = roomState.signals.some(s => s.playerId === myId);
   const effectivelySubmitted = submitted || alreadySubmitted;
@@ -49,6 +55,11 @@ export default function SignalPhase({ myRole, roomState, myId, onSubmitSignal }:
               ? `Your code is "${myRole.secretCode}" — hint at it without being obvious`
               : 'Submit any signal word — blend in or cause confusion!'}
           </p>
+          {roomState.timerEnd && (
+            <div style={{ maxWidth: 400, margin: '16px auto 0' }}>
+              <TimerBar endTime={roomState.timerEnd} color="purple" />
+            </div>
+          )}
         </div>
 
         {/* Your Role Reminder */}

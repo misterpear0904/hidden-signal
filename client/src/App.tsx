@@ -1,6 +1,8 @@
 import { useEffect, useCallback } from 'react';
 import './index.css';
-import { useSocket } from './hooks/useSocket';
+import { useSocket, type GuessData } from './hooks/useSocket';
+import type { ChromaOptions, TerritoryOptions } from './types/game';
+import { TOTAL_ROUNDS } from './constants';
 import LandingPage from './components/LandingPage';
 import Lobby from './components/Lobby';
 import RoleReveal from './components/RoleReveal';
@@ -49,6 +51,7 @@ export default function App() {
     nextTerritoryTurn,
     submitSignal,
     submitGuess,
+    kickPlayer,
     nextRound,
     playAgain,
   } = useSocket();
@@ -62,13 +65,13 @@ export default function App() {
 
   const me = roomState?.players.find(p => p.id === myId);
   const isHost = me?.isHost ?? false;
-  const isLastRound = (roomState?.round ?? 0) >= 5;
+  const isLastRound = (roomState?.round ?? 0) >= TOTAL_ROUNDS;
 
   const handleCreate = useCallback((name: string) => createRoom(name), [createRoom]);
   const handleJoin = useCallback((code: string, name: string) => joinRoom(code, name), [joinRoom]);
   const handleSelectGame = useCallback((gameId: string) => { if (roomCode) selectGame(roomCode, gameId); }, [roomCode, selectGame]);
-  const handleUpdateChromaOptions = useCallback((options: Partial<import('./types/game').ChromaOptions>) => { if (roomCode) updateChromaOptions(roomCode, options); }, [roomCode, updateChromaOptions]);
-  const handleUpdateTerritoryOptions = useCallback((options: Partial<import('./types/game').TerritoryOptions>) => { if (roomCode) updateTerritoryOptions(roomCode, options); }, [roomCode, updateTerritoryOptions]);
+  const handleUpdateChromaOptions = useCallback((options: Partial<ChromaOptions>) => { if (roomCode) updateChromaOptions(roomCode, options); }, [roomCode, updateChromaOptions]);
+  const handleUpdateTerritoryOptions = useCallback((options: Partial<TerritoryOptions>) => { if (roomCode) updateTerritoryOptions(roomCode, options); }, [roomCode, updateTerritoryOptions]);
   const handleSetPlayerDifficulty = useCallback((diff: 'easy' | 'medium' | 'hard') => { if (roomCode) setPlayerDifficulty(roomCode, diff); }, [roomCode, setPlayerDifficulty]);
   const handleStartGame = useCallback(() => { if (roomCode) startGame(roomCode); }, [roomCode, startGame]);
   const handleGuessChromaTile = useCallback((tileIndex: number) => { if (roomCode) submitChromaGuess(roomCode, tileIndex); }, [roomCode, submitChromaGuess]);
@@ -77,7 +80,8 @@ export default function App() {
   const handlePlaceTerritoryMine = useCallback((row: number, col: number) => { if (roomCode) placeTerritoryMine(roomCode, row, col); }, [roomCode, placeTerritoryMine]);
   const handleNextTerritoryTurn = useCallback(() => { if (roomCode) nextTerritoryTurn(roomCode); }, [roomCode, nextTerritoryTurn]);
   const handleSubmitSignal = useCallback((signal: string) => { if (roomCode) submitSignal(roomCode, signal); }, [roomCode, submitSignal]);
-  const handleSubmitGuess = useCallback((guessData: object) => { if (roomCode) submitGuess(roomCode, guessData); }, [roomCode, submitGuess]);
+  const handleSubmitGuess = useCallback((guessData: GuessData) => { if (roomCode) submitGuess(roomCode, guessData); }, [roomCode, submitGuess]);
+  const handleKickPlayer = useCallback((targetId: string) => { if (roomCode) kickPlayer(roomCode, targetId); }, [roomCode, kickPlayer]);
   const handleNextRound = useCallback(() => { if (roomCode) nextRound(roomCode); }, [roomCode, nextRound]);
   const handlePlayAgain = useCallback(() => { if (roomCode) playAgain(roomCode); }, [roomCode, playAgain]);
 
@@ -97,6 +101,7 @@ export default function App() {
             onUpdateChromaOptions={handleUpdateChromaOptions}
             onUpdateTerritoryOptions={handleUpdateTerritoryOptions}
             onSetPlayerDifficulty={handleSetPlayerDifficulty}
+            onKickPlayer={handleKickPlayer}
             onStartGame={handleStartGame}
           />
         );
@@ -189,7 +194,7 @@ export default function App() {
       <div className="bg-mesh" />
       {renderPhase()}
       {error && (
-        <div className="toast" onClick={clearError} id="error-toast">
+        <div className="toast" role="alert" onClick={clearError} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') clearError(); }} tabIndex={0} id="error-toast">
           ⚠ {error}
         </div>
       )}

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 
 interface Props {
   endTime: number;
@@ -6,20 +6,19 @@ interface Props {
 }
 
 export default function TimerBar({ endTime, color = 'purple' }: Props) {
-  const totalMs = useCallback(() => {
-    // We don't know the original duration exactly from just endTime,
-    // so we store the first render's remaining as total
-    return Math.max(endTime - Date.now(), 0);
-  }, [endTime]);
-
   const [pct, setPct] = useState(100);
   const [secsLeft, setSecsLeft] = useState(0);
-  const [initialMs] = useState(() => Math.max(endTime - Date.now(), 1000));
+  const [initialMs, setInitialMs] = useState(() => Math.max(endTime - Date.now(), 1000));
+
+  // Reset denominator when phase/round changes
+  useEffect(() => {
+    setInitialMs(Math.max(endTime - Date.now(), 1000));
+  }, [endTime]);
 
   useEffect(() => {
     const update = () => {
       const remaining = Math.max(endTime - Date.now(), 0);
-      setPct((remaining / initialMs) * 100);
+      setPct(Math.min(100, Math.max(0, (remaining / initialMs) * 100)));
       setSecsLeft(Math.ceil(remaining / 1000));
     };
     update();
@@ -35,6 +34,8 @@ export default function TimerBar({ endTime, color = 'purple' }: Props) {
         <span className="text-xs text-muted">Time remaining</span>
         <span
           className="text-mono text-sm"
+          role="timer"
+          aria-live="off"
           style={{
             color: isUrgent ? 'var(--rose-400)' : color === 'purple' ? 'var(--purple-400)' : 'var(--amber-400)',
             fontWeight: 700,
