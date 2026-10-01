@@ -11,9 +11,14 @@ import DiscussPhase from './components/DiscussPhase';
 import GuessPhase from './components/GuessPhase';
 import RoundReveal from './components/RoundReveal';
 import FinalLeaderboard from './components/FinalLeaderboard';
+import EndGameVote from './components/EndGameVote';
 
 import ChromaShiftGame from './components/ChromaShiftGame';
 import TerritoryPushGame from './components/TerritoryPushGame';
+import BlendWordPhase from './components/BlendWordPhase';
+import BlendVotePhase from './components/BlendVotePhase';
+import BlendGuessPhase from './components/BlendGuessPhase';
+import BlendRevealPhase from './components/BlendRevealPhase';
 
 function LoadingScreen({ text }: { text: string }) {
   return (
@@ -52,6 +57,13 @@ export default function App() {
     submitSignal,
     submitGuess,
     kickPlayer,
+    requestEndVote,
+    submitEndVote,
+    cancelEndVote,
+    submitBlendClue,
+    submitBlendVote,
+    submitBlendGuess,
+    nextBlendRound,
     nextRound,
     playAgain,
   } = useSocket();
@@ -82,6 +94,13 @@ export default function App() {
   const handleSubmitSignal = useCallback((signal: string) => { if (roomCode) submitSignal(roomCode, signal); }, [roomCode, submitSignal]);
   const handleSubmitGuess = useCallback((guessData: GuessData) => { if (roomCode) submitGuess(roomCode, guessData); }, [roomCode, submitGuess]);
   const handleKickPlayer = useCallback((targetId: string) => { if (roomCode) kickPlayer(roomCode, targetId); }, [roomCode, kickPlayer]);
+  const handleRequestEndVote = useCallback(() => { if (roomCode) requestEndVote(roomCode); }, [roomCode, requestEndVote]);
+  const handleSubmitEndVote = useCallback((agree: boolean) => { if (roomCode) submitEndVote(roomCode, agree); }, [roomCode, submitEndVote]);
+  const handleCancelEndVote = useCallback(() => { if (roomCode) cancelEndVote(roomCode); }, [roomCode, cancelEndVote]);
+  const handleSubmitBlendClue = useCallback((word: string) => { if (roomCode) submitBlendClue(roomCode, word); }, [roomCode, submitBlendClue]);
+  const handleSubmitBlendVote = useCallback((targetId: string) => { if (roomCode) submitBlendVote(roomCode, targetId); }, [roomCode, submitBlendVote]);
+  const handleSubmitBlendGuess = useCallback((guess: string) => { if (roomCode) submitBlendGuess(roomCode, guess); }, [roomCode, submitBlendGuess]);
+  const handleNextBlendRound = useCallback(() => { if (roomCode) nextBlendRound(roomCode); }, [roomCode, nextBlendRound]);
   const handleNextRound = useCallback(() => { if (roomCode) nextRound(roomCode); }, [roomCode, nextRound]);
   const handlePlayAgain = useCallback(() => { if (roomCode) playAgain(roomCode); }, [roomCode, playAgain]);
 
@@ -128,6 +147,44 @@ export default function App() {
             onSubmitPick={handleSubmitTerritoryPick}
             onPlaceMine={handlePlaceTerritoryMine}
             onNextTurn={handleNextTerritoryTurn}
+          />
+        );
+
+      case 'blend-word':
+        return (
+          <BlendWordPhase
+            roomState={roomState}
+            myId={myId}
+            onSubmitClue={handleSubmitBlendClue}
+          />
+        );
+
+      case 'blend-vote':
+        return (
+          <BlendVotePhase
+            roomState={roomState}
+            myId={myId}
+            onSubmitVote={handleSubmitBlendVote}
+          />
+        );
+
+      case 'blend-guess':
+        return (
+          <BlendGuessPhase
+            roomState={roomState}
+            myId={myId}
+            onSubmitGuess={handleSubmitBlendGuess}
+          />
+        );
+
+      case 'blend-reveal':
+        return (
+          <BlendRevealPhase
+            roomState={roomState}
+            myId={myId}
+            isHost={isHost}
+            isLastRound={isLastRound}
+            onNextRound={handleNextBlendRound}
           />
         );
 
@@ -193,6 +250,16 @@ export default function App() {
     <>
       <div className="bg-mesh" />
       {renderPhase()}
+      {inRoom && roomState && roomState.phase !== 'lobby' && roomState.phase !== 'end' && (
+        <EndGameVote
+          roomState={roomState}
+          myId={myId}
+          isHost={isHost}
+          onRequest={handleRequestEndVote}
+          onVote={handleSubmitEndVote}
+          onCancel={handleCancelEndVote}
+        />
+      )}
       {error && (
         <div className="toast" role="alert" onClick={clearError} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') clearError(); }} tabIndex={0} id="error-toast">
           ⚠ {error}

@@ -152,8 +152,12 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
   }, [gridDim, totalTiles, round, chromaState?.seed]);
 
   useEffect(() => {
-    buttonEls.current = new Array(totalTiles).fill(null);
-    overlayEls.current = new Array(totalTiles).fill(null);
+    // NOTE: do NOT replace buttonEls/overlayEls arrays here. React attaches
+    // callback refs during commit, before effects run — wholesale replacing
+    // the arrays wipes the attached DOM nodes and freezes all tiles until
+    // the next re-render. Resizing via .length preserves existing entries.
+    buttonEls.current.length = totalTiles;
+    overlayEls.current.length = totalTiles;
     shiftStartRef.current = performance.now();
     const speedMult = difficulty === 'hard' ? 0.13 : 0.09;
     physicsRef.current = initialPositions.map((p, i) => {

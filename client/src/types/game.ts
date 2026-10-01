@@ -11,7 +11,11 @@ export type GamePhase =
   | 'chroma-play'
   | 'chroma-reveal'
   | 'territory-turn'
-  | 'territory-reveal';
+  | 'territory-reveal'
+  | 'blend-word'
+  | 'blend-vote'
+  | 'blend-guess'
+  | 'blend-reveal';
 
 export interface ChromaOptions {
   difficulty: 'easy' | 'medium' | 'hard';
@@ -141,6 +145,40 @@ export interface Guess {
   guessedPlayerId?: string;        // for neutral players (single pick)
 }
 
+export interface EndVoteState {
+  initiatorId: string;
+  initiatorName: string;
+  yesIds: string[];                // players who agreed (initiator auto-yes)
+  startedAt: number;
+}
+
+export interface BlendClue {
+  playerId: string;
+  word?: string;                   // hidden during word phase (submitted flag only)
+}
+
+export interface BlendVote {
+  playerId: string;
+  targetId: string;
+}
+
+export interface BlendGameState {
+  category: string;
+  secretWord: string | null;       // null for the chameleon until reveal
+  amChameleon: boolean;
+  chameleonId: string | null;      // null until reveal
+  chameleonName: string | null;    // null until reveal
+  clues: BlendClue[];
+  clueCount: number;
+  votes: BlendVote[];              // only at reveal
+  voteCount: number;
+  accusedId: string | null;        // public once voting resolves
+  caught: boolean | null;
+  chameleonGuess: string | null;   // only at reveal
+  stealSuccess: boolean | null;    // only at reveal
+  points: Record<string, number>;  // only at reveal
+}
+
 export interface RoomState {
   code: string;
   selectedGameId: string;
@@ -148,6 +186,7 @@ export interface RoomState {
   territoryOptions?: TerritoryOptions;
   chromaState: ChromaRoundState | null;
   territoryState: TerritoryGameState | null;
+  blendState: BlendGameState | null;
   phase: GamePhase;
   round: number;
   players: Player[];
@@ -156,6 +195,7 @@ export interface RoomState {
   hiddenPairIds: string[];
   secretCode: string | null;
   timerEnd: number | null;
+  endVote: EndVoteState | null;
   submittedSignalCount: number;
   submittedGuessCount: number;
   totalPlayers: number;

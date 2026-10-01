@@ -17,6 +17,15 @@ import {
   submitChromaGuess,
   resolveChromaRace,
   nextChromaRound,
+  submitBlendClue,
+  blendAllCluesIn,
+  advanceToBlendVote,
+  submitBlendVote,
+  blendAllVotesIn,
+  resolveBlendVotes,
+  submitBlendGuess,
+  expireBlendGuess,
+  nextBlendRound,
   submitTerritoryPick,
   placeTerritoryMine,
   nextTerritoryTurn,
@@ -33,10 +42,17 @@ import {
   deleteRoom,
   sweepInactiveRooms,
   isHost,
+  startEndVote,
+  submitEndVote,
+  cancelEndVote,
+  resetToLobby,
   SIGNAL_TIME_SEC,
   DISCUSS_TIME_SEC,
   GUESS_TIME_SEC,
   CHROMA_RACE_MS_VALUE,
+  BLEND_WORD_SEC_VALUE,
+  BLEND_VOTE_SEC_VALUE,
+  BLEND_GUESS_SEC_VALUE,
 } from './gameManager.js';
 
 // Fail-closed CORS: production requires CLIENT_ORIGIN, dev allows all.
@@ -146,6 +162,38 @@ function roomPublicState(room, forPlayerId = null) {
     }
   }
 
+  // Blend In masking: chameleon identity + secret word stay hidden until reveal.
+  // The chameleon only ever sees the category; innocents see the secret word.
+  let publicBlendState = null;
+  if (room.blendState) {
+    const b = room.blendState;
+    const isReveal = room.phase === 'blend-reveal' || room.phase === 'end';
+    const amChameleon = forPlayerId ? b.chameleonId === forPlayerId : false;
+    const votesPublic = room.phase === 'blend-guess' || isReveal;
+    publicBlendState = {
+      category: b.category,
+      secretWord: isReveal || !amChameleon ? b.secretWord : null,
+      amChameleon: forPlayerId ? amChameleon : false,
+      chameleonId: isReveal ? b.chameleonId : null,
+      chameleonName: null,
+      clues: room.phase === 'blend-word'
+        ? b.clues.map(c => ({ playerId: c.playerId }))
+        : b.clues.map(c => ({ playerId: c.playerId, word: c.word })),
+      clueCount: b.clues.length,
+      votes: isReveal ? b.votes : [],
+      voteCount: b.votes.length,
+      accusedId: votesPublic ? b.accusedId : null,
+      caught: votesPublic ? b.caught : null,
+      chameleonGuess: isReveal ? b.chameleonGuess : null,
+      stealSuccess: isReveal ? b.stealSuccess : null,
+      points: isReveal ? { ...b.points } : {},
+    };
+    if (isReveal) {
+      const chameleon = room.players.find(p => p.id === b.chameleonId);
+      publicBlendState.chameleonName = chameleon ? chameleon.name : '???';
+    }
+  }
+
   return {
     code: room.code,
     selectedGameId: room.selectedGameId || 'hidden-signal',
@@ -153,6 +201,15 @@ function roomPublicState(room, forPlayerId = null) {
     territoryOptions: room.territoryOptions || { extremeMode: false },
     chromaState: room.chromaState || null,
     territoryState: publicTerritoryState,
+    blendState: publicBlendState,
+    endVote: room.endVote
+      ? {
+          initiatorId: room.endVote.initiatorId,
+          initiatorName: room.endVote.initiatorName,
+          yesIds: [...room.endVote.yesIds],
+          startedAt: room.endVote.startedAt,
+        }
+      : null,
     phase: room.phase,
     round: room.round,
     players: room.players.map(p => ({
@@ -244,6 +301,30 @@ function autoResolveChromaRace(code) {
   const room = resolveChromaRace(code);
   if (!room) return;
   broadcastRoomState(room);
+}
+
+function startBlendWordPhase(code) {
+  const room = getRoom(code);
+  if (!room || room.phase !== 'blend-word') return;
+  broadcastRoomState(room);
+  setRoomTimer(code, BLEND_WORD_SEC_VALUE * 1000, () => {
+    const r1 = advanceToBlendVote(code);
+    if (!r1) return;
+    broadcastRoomState(r1);
+    setRoomTimer(code, BLEND_VOTE_SEC_VALUE * 1000, () => autoResolveBlendVotes(code));
+  });
+}
+
+function autoResolveBlendVotes(code) {
+  const room = resolveBlendVotes(code);
+  if (!room) return;
+  broadcastRoomState(room);
+  if (room.phase === 'blend-guess') {
+    setRoomTimer(code, BLEND_GUESS_SEC_VALUE * 1000, () => {
+      const r = expireBlendGuess(code);
+      if (r) broadcastRoomState(r);
+    });
+  }
 }
 
 function autoResolveRound(code) {
@@ -354,6 +435,15 @@ io.on('connection', (socket) => {
       return;
     }
 
+    if (gameId === 'blend-in') {
+      if (room.players.length < 3) return socket.emit('error', 'Need at least 3 players for Blend In');
+      clearRoomTimer(roomCode);
+      const started = startGame(roomCode);
+      if (!started) return socket.emit('error', 'Could not start Blend In');
+      startBlendWordPhase(roomCode);
+      return;
+    }
+
     if (room.players.length < 4) return socket.emit('error', 'Need at least 4 players for Hidden Signal');
     const started = startGame(roomCode);
     if (!started) return socket.emit('error', 'Could not start game');
@@ -387,6 +477,54 @@ io.on('connection', (socket) => {
     clearRoomTimer(roomCode);
     const next = nextChromaRound(roomCode);
     if (next) broadcastRoomState(next);
+  });
+
+  socket.on('submit-blend-clue', ({ roomCode, word } = {}) => {
+    const room = submitBlendClue(roomCode, socket.id, word);
+    if (!room) return socket.emit('error', 'Cannot submit clue now');
+    socket.emit('blend-clue-accepted');
+    if (blendAllCluesIn(room)) {
+      clearRoomTimer(roomCode);
+      const next = advanceToBlendVote(roomCode);
+      if (next) {
+        broadcastRoomState(next);
+        setRoomTimer(roomCode, BLEND_VOTE_SEC_VALUE * 1000, () => autoResolveBlendVotes(roomCode));
+      }
+    } else {
+      broadcastRoomState(room);
+    }
+  });
+
+  socket.on('submit-blend-vote', ({ roomCode, targetId } = {}) => {
+    const room = submitBlendVote(roomCode, socket.id, targetId);
+    if (!room) return socket.emit('error', 'Cannot submit vote now');
+    socket.emit('blend-vote-accepted');
+    if (blendAllVotesIn(room)) {
+      clearRoomTimer(roomCode);
+      autoResolveBlendVotes(roomCode);
+    } else {
+      broadcastRoomState(room);
+    }
+  });
+
+  socket.on('submit-blend-guess', ({ roomCode, guess } = {}) => {
+    const room = submitBlendGuess(roomCode, socket.id, guess);
+    if (!room) return socket.emit('error', 'Cannot submit guess now');
+    clearRoomTimer(roomCode);
+    broadcastRoomState(room);
+  });
+
+  socket.on('next-blend-round', ({ roomCode } = {}) => {
+    const room = getRoom(roomCode);
+    if (!room || !isHost(room, socket.id)) return;
+    clearRoomTimer(roomCode);
+    const next = nextBlendRound(roomCode);
+    if (!next) return;
+    if (next.phase === 'end') {
+      broadcastRoomState(next);
+      return;
+    }
+    startBlendWordPhase(roomCode);
   });
 
   socket.on('submit-territory-pick', ({ roomCode, colIndex } = {}) => {
@@ -455,24 +593,35 @@ io.on('connection', (socket) => {
     startSignalPhase(roomCode);
   });
 
+  socket.on('request-end-vote', ({ roomCode } = {}) => {
+    const result = startEndVote(roomCode, socket.id);
+    if (result.error) return socket.emit('error', result.error);
+    if (result.passed) clearRoomTimer(roomCode);
+    broadcastRoomState(result.room);
+  });
+
+  socket.on('submit-end-vote', ({ roomCode, agree } = {}) => {
+    const result = submitEndVote(roomCode, socket.id, agree !== false);
+    if (result.error) return socket.emit('error', result.error);
+    if (result.failed) {
+      io.to(roomCode).emit('end-vote-failed', { declinedBy: result.declinedBy });
+    }
+    if (result.passed) clearRoomTimer(roomCode);
+    broadcastRoomState(result.room);
+  });
+
+  socket.on('cancel-end-vote', ({ roomCode } = {}) => {
+    const room = cancelEndVote(roomCode, socket.id);
+    if (room) broadcastRoomState(room);
+  });
+
   socket.on('play-again', ({ roomCode } = {}) => {
     const room = getRoom(roomCode);
     if (!room) return;
     if (!isHost(room, socket.id)) return;
 
     // Reset scores, go back to lobby (clear all game modes)
-    for (const p of room.players) p.score = 0;
-    room.phase = 'lobby';
-    room.round = 0;
-    room.roles = [];
-    room.hiddenPairIds = [];
-    room.secretCode = null;
-    room.signals = [];
-    room.guesses = [];
-    room.chromaState = null;
-    room.territoryState = null;
-    room.timerEnd = null;
-    room.lastActivityMs = Date.now();
+    resetToLobby(room);
     clearRoomTimer(roomCode);
     broadcastRoomState(room);
   });

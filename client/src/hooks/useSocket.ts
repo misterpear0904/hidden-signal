@@ -35,6 +35,13 @@ export interface SocketHookReturn {
   submitSignal: (roomCode: string, signal: string) => void;
   submitGuess: (roomCode: string, guessData: GuessData) => void;
   kickPlayer: (roomCode: string, targetId: string) => void;
+  requestEndVote: (roomCode: string) => void;
+  submitEndVote: (roomCode: string, agree: boolean) => void;
+  cancelEndVote: (roomCode: string) => void;
+  submitBlendClue: (roomCode: string, word: string) => void;
+  submitBlendVote: (roomCode: string, targetId: string) => void;
+  submitBlendGuess: (roomCode: string, guess: string) => void;
+  nextBlendRound: (roomCode: string) => void;
   nextRound: (roomCode: string) => void;
   playAgain: (roomCode: string) => void;
 }
@@ -93,6 +100,9 @@ export function useSocket(): SocketHookReturn {
       setRoomCode(code ?? '');
       setError('You were kicked from the lobby by the host');
     };
+    const onEndVoteFailed = ({ declinedBy }: { declinedBy: string }) => {
+      setError(`${declinedBy} voted to keep playing — end-game vote failed`);
+    };
 
     s.on('connect', onConnect);
     s.on('disconnect', onDisconnect);
@@ -103,6 +113,7 @@ export function useSocket(): SocketHookReturn {
     s.on('round-reveal', onReveal);
     s.on('error', onError);
     s.on('kicked', onKicked);
+    s.on('end-vote-failed', onEndVoteFailed);
 
     return () => {
       s.off('connect', onConnect);
@@ -114,6 +125,7 @@ export function useSocket(): SocketHookReturn {
       s.off('round-reveal', onReveal);
       s.off('error', onError);
       s.off('kicked', onKicked);
+      s.off('end-vote-failed', onEndVoteFailed);
       s.disconnect();
       socketRef.current = null;
     };
@@ -189,6 +201,34 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('kick-player', { roomCode: code, targetId });
   }, []);
 
+  const requestEndVote = useCallback((code: string) => {
+    socketRef.current?.emit('request-end-vote', { roomCode: code });
+  }, []);
+
+  const submitEndVote = useCallback((code: string, agree: boolean) => {
+    socketRef.current?.emit('submit-end-vote', { roomCode: code, agree });
+  }, []);
+
+  const cancelEndVote = useCallback((code: string) => {
+    socketRef.current?.emit('cancel-end-vote', { roomCode: code });
+  }, []);
+
+  const submitBlendClue = useCallback((code: string, word: string) => {
+    socketRef.current?.emit('submit-blend-clue', { roomCode: code, word });
+  }, []);
+
+  const submitBlendVote = useCallback((code: string, targetId: string) => {
+    socketRef.current?.emit('submit-blend-vote', { roomCode: code, targetId });
+  }, []);
+
+  const submitBlendGuess = useCallback((code: string, guess: string) => {
+    socketRef.current?.emit('submit-blend-guess', { roomCode: code, guess });
+  }, []);
+
+  const nextBlendRound = useCallback((code: string) => {
+    socketRef.current?.emit('next-blend-round', { roomCode: code });
+  }, []);
+
   return {
     socket,
     connected,
@@ -216,6 +256,13 @@ export function useSocket(): SocketHookReturn {
     submitSignal,
     submitGuess,
     kickPlayer,
+    requestEndVote,
+    submitEndVote,
+    cancelEndVote,
+    submitBlendClue,
+    submitBlendVote,
+    submitBlendGuess,
+    nextBlendRound,
     nextRound,
     playAgain,
   };

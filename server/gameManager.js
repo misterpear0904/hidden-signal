@@ -57,7 +57,8 @@ export function createRoom(hostId, hostName) {
     territoryOptions: { extremeMode: false },
     chromaState: null,
     territoryState: null,
-    phase: 'lobby',          // lobby | role-reveal | signal | discuss | guess | reveal | end | chroma-play | chroma-reveal | territory-turn | territory-reveal
+    blendState: null,
+    phase: 'lobby',          // lobby | role-reveal | signal | discuss | guess | reveal | end | chroma-play | chroma-reveal | territory-turn | territory-reveal | blend-word | blend-vote | blend-guess | blend-reveal
     round: 0,
     players: [{ id: hostId, name: hostName, score: 0, isHost: true, connected: true }],
     roles: [],
@@ -67,6 +68,7 @@ export function createRoom(hostId, hostName) {
     guesses: [],             // { playerId, guessedPartnerId?, guessedPairIds? }
     timer: null,
     timerEnd: null,
+    endVote: null,           // active unanimous vote to end game early
     createdAt: now,
     lastActivityMs: now,
   };
@@ -117,7 +119,7 @@ export function kickPlayer(code, hostId, targetId) {
 export function selectGame(code, gameId) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'lobby') return null;
-  const allowed = ['hidden-signal', 'chroma-shift', 'territory-push'];
+  const allowed = ['hidden-signal', 'chroma-shift', 'territory-push', 'blend-in'];
   if (!allowed.includes(gameId)) return null;
   room.selectedGameId = gameId;
   room.lastActivityMs = Date.now();
@@ -211,6 +213,7 @@ export function startGame(code) {
   if (room.selectedGameId === 'chroma-shift') {
     if (room.players.length < 2) return null;
     room.round = 1;
+    room.endVote = null;
     for (const p of room.players) p.score = 0;
     return startChromaRound(room);
   }
@@ -218,6 +221,7 @@ export function startGame(code) {
   if (room.selectedGameId === 'territory-push') {
     if (room.players.length < 2 || room.players.length % 2 !== 0) return null;
     room.round = 1;
+    room.endVote = null;
     for (const p of room.players) p.score = 0;
     
     // Shuffle players randomly into two teams
@@ -258,12 +262,43 @@ export function startGame(code) {
     return room;
   }
 
+  if (room.selectedGameId === 'blend-in') {
+    if (room.players.length < 3) return null;
+    room.round = 1;
+    room.endVote = null;
+    room.blendState = null;
+    for (const p of room.players) p.score = 0;
+    return startBlendRound(room);
+  }
+
   if (room.players.length < 4) return null;
   room.round = 1;
+  room.endVote = null;
+  room.blendState = null;
   return startRound(room);
 }
 
 const CHROMA_RACE_MS = 10 * 1000;
+
+// ─── Blend In (social word deduction) tuning ────────────────────────────────
+const BLEND_WORD_SEC = 45;
+const BLEND_VOTE_SEC = 30;
+const BLEND_GUESS_SEC = 20;
+const BLEND_ROUNDS = 5;
+const BLEND_VOTER_POINT = 1;
+const BLEND_ESCAPE_POINTS = 2;
+const BLEND_STEAL_POINTS = 2;
+
+const BLEND_WORDS = {
+  Animals: ['Elephant', 'Penguin', 'Kangaroo', 'Octopus', 'Giraffe', 'Crocodile', 'Owl', 'Dolphin'],
+  Food: ['Pizza', 'Sushi', 'Chocolate', 'Popcorn', 'Honey', 'Spaghetti', 'Avocado', 'Pancake'],
+  Places: ['Beach', 'Castle', 'Airport', 'Library', 'Volcano', 'Desert', 'Lighthouse', 'Market'],
+  Objects: ['Umbrella', 'Guitar', 'Telescope', 'Candle', 'Backpack', 'Mirror', 'Ladder', 'Compass'],
+  Sports: ['Soccer', 'Swimming', 'Tennis', 'Basketball', 'Surfing', 'Skiing', 'Boxing', 'Yoga'],
+  Characters: ['Pirate', 'Robot', 'Wizard', 'Dragon', 'Ghost', 'Vampire', 'Knight', 'Alien'],
+  Nature: ['Rainbow', 'Thunder', 'Waterfall', 'Forest', 'Ocean', 'Mountain', 'Sunset', 'Snowflake'],
+  Jobs: ['Chef', 'Pilot', 'Doctor', 'Farmer', 'Astronaut', 'Teacher', 'Detective', 'Baker'],
+};
 
 function chromaFullPoints(room, playerId) {
   let points = 1;
@@ -371,6 +406,164 @@ export function nextChromaRound(code) {
 
   room.round += 1;
   return startChromaRound(room);
+}
+
+function startBlendRound(room) {
+  const ids = room.players.map(p => p.id);
+  const chameleonId = ids[Math.floor(Math.random() * ids.length)];
+  const categories = Object.keys(BLEND_WORDS);
+  const category = categories[Math.floor(Math.random() * categories.length)];
+  const words = BLEND_WORDS[category];
+  const secretWord = words[Math.floor(Math.random() * words.length)];
+
+  room.blendState = {
+    category,
+    secretWord,
+    chameleonId,
+    clues: [],            // { playerId, word }
+    votes: [],            // { playerId, targetId }
+    accusedId: null,
+    caught: false,
+    chameleonGuess: null,
+    stealSuccess: false,
+    points: {},           // playerId -> points this round
+  };
+  room.phase = 'blend-word';
+  room.timerEnd = Date.now() + BLEND_WORD_SEC * 1000;
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+function awardBlendPoints(room, playerId, pts) {
+  const player = room.players.find(p => p.id === playerId);
+  if (!player) return;
+  player.score += pts;
+  room.blendState.points[playerId] = (room.blendState.points[playerId] || 0) + pts;
+}
+
+export function submitBlendClue(code, playerId, word) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'blend-word' || !room.blendState) return null;
+  if (!room.players.some(p => p.id === playerId)) return null;
+  if (room.blendState.clues.some(c => c.playerId === playerId)) return null;
+  if (typeof word !== 'string') return null;
+  const clean = word.trim().replace(/\s+/g, ' ').substring(0, 24);
+  if (clean.length < 1) return null;
+
+  room.blendState.clues.push({ playerId, word: clean });
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+export function blendAllCluesIn(room) {
+  if (!room?.blendState) return false;
+  const connected = room.players.filter(p => p.connected);
+  return connected.length > 0 && connected.every(p => room.blendState.clues.some(c => c.playerId === p.id));
+}
+
+export function advanceToBlendVote(code) {
+  const room = rooms.get(code);
+  if (!room || !room.blendState) return null;
+  room.phase = 'blend-vote';
+  room.timerEnd = Date.now() + BLEND_VOTE_SEC * 1000;
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+export function submitBlendVote(code, playerId, targetId) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'blend-vote' || !room.blendState) return null;
+  if (!room.players.some(p => p.id === playerId)) return null;
+  if (!room.players.some(p => p.id === targetId)) return null;
+  if (targetId === playerId) return null;
+  if (room.blendState.votes.some(v => v.playerId === playerId)) return null;
+
+  room.blendState.votes.push({ playerId, targetId });
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+export function blendAllVotesIn(room) {
+  if (!room?.blendState) return false;
+  const connected = room.players.filter(p => p.connected);
+  return connected.length > 0 && connected.every(p => room.blendState.votes.some(v => v.playerId === p.id));
+}
+
+export function resolveBlendVotes(code) {
+  const room = rooms.get(code);
+  if (!room || !room.blendState) return null;
+
+  const tally = {};
+  for (const v of room.blendState.votes) {
+    tally[v.targetId] = (tally[v.targetId] || 0) + 1;
+  }
+  let accusedId = null;
+  let topVotes = 0;
+  let tied = false;
+  for (const [pid, count] of Object.entries(tally)) {
+    if (count > topVotes) { topVotes = count; accusedId = pid; tied = false; }
+    else if (count === topVotes) { tied = true; }
+  }
+  if (tied) accusedId = null;
+
+  room.blendState.accusedId = accusedId;
+  room.blendState.caught = accusedId !== null && accusedId === room.blendState.chameleonId;
+
+  if (!room.blendState.caught) {
+    // Chameleon escaped (wrong accusation or tie/no votes): +2, nobody else scores
+    awardBlendPoints(room, room.blendState.chameleonId, BLEND_ESCAPE_POINTS);
+    room.phase = 'blend-reveal';
+  } else {
+    // Every correct voter scores now; chameleon may still steal with a word guess
+    for (const v of room.blendState.votes) {
+      if (v.targetId === room.blendState.chameleonId) {
+        awardBlendPoints(room, v.playerId, BLEND_VOTER_POINT);
+      }
+    }
+    room.phase = 'blend-guess';
+    room.timerEnd = Date.now() + BLEND_GUESS_SEC * 1000;
+  }
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+export function submitBlendGuess(code, playerId, guess) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'blend-guess' || !room.blendState) return null;
+  if (playerId !== room.blendState.chameleonId) return null;
+  if (typeof guess !== 'string') return null;
+  const clean = guess.trim().substring(0, 30);
+  if (clean.length < 1) return null;
+
+  room.blendState.chameleonGuess = clean;
+  if (clean.toLowerCase() === room.blendState.secretWord.toLowerCase()) {
+    room.blendState.stealSuccess = true;
+    awardBlendPoints(room, playerId, BLEND_STEAL_POINTS);
+  }
+  room.phase = 'blend-reveal';
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+export function expireBlendGuess(code) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'blend-guess' || !room.blendState) return null;
+  room.phase = 'blend-reveal';
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+export function nextBlendRound(code) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'blend-reveal') return null;
+
+  if (room.round >= BLEND_ROUNDS) {
+    room.phase = 'end';
+    return room;
+  }
+
+  room.round += 1;
+  return startBlendRound(room);
 }
 
 export function triggerTerritoryMineDetonations(room, minesToTrigger) {
@@ -902,12 +1095,92 @@ export function isHost(room, socketId) {
   return !!room?.players?.find(p => p.id === socketId && p.isHost);
 }
 
+export function resetToLobby(room) {
+  for (const p of room.players) p.score = 0;
+  room.phase = 'lobby';
+  room.round = 0;
+  room.roles = [];
+  room.hiddenPairIds = [];
+  room.secretCode = null;
+  room.signals = [];
+  room.guesses = [];
+  room.chromaState = null;
+  room.territoryState = null;
+  room.blendState = null;
+  room.timerEnd = null;
+  room.endVote = null;
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+function hasEndVotePassed(room) {
+  if (!room.endVote) return false;
+  const connected = room.players.filter(p => p.connected);
+  return connected.length > 0 && connected.every(p => room.endVote.yesIds.includes(p.id));
+}
+
+export function startEndVote(code, playerId) {
+  const room = rooms.get(code);
+  if (!room) return { error: 'Room not found' };
+  if (room.phase === 'lobby' || room.phase === 'end') return { error: 'No active game to end' };
+  if (!isHost(room, playerId)) return { error: 'Only the host can call a vote' };
+  if (room.endVote) return { error: 'A vote is already running' };
+  const host = room.players.find(p => p.id === playerId);
+  room.endVote = {
+    initiatorId: playerId,
+    initiatorName: host?.name || 'Host',
+    yesIds: [playerId],
+    startedAt: Date.now(),
+  };
+  room.lastActivityMs = Date.now();
+  if (hasEndVotePassed(room)) {
+    resetToLobby(room);
+    return { room, passed: true };
+  }
+  return { room, started: true };
+}
+
+export function submitEndVote(code, playerId, agree) {
+  const room = rooms.get(code);
+  if (!room || !room.endVote) return { error: 'No vote running' };
+  if (room.phase === 'lobby' || room.phase === 'end') {
+    room.endVote = null;
+    return { error: 'No active game' };
+  }
+  const player = room.players.find(p => p.id === playerId);
+  if (!player || !player.connected) return { error: 'Not in this room' };
+  if (agree === false) {
+    const name = player.name;
+    room.endVote = null;
+    room.lastActivityMs = Date.now();
+    return { room, failed: true, declinedBy: name };
+  }
+  if (!room.endVote.yesIds.includes(playerId)) room.endVote.yesIds.push(playerId);
+  room.lastActivityMs = Date.now();
+  if (hasEndVotePassed(room)) {
+    resetToLobby(room);
+    return { room, passed: true };
+  }
+  return { room, voted: true };
+}
+
+export function cancelEndVote(code, playerId) {
+  const room = rooms.get(code);
+  if (!room || !room.endVote) return null;
+  if (room.endVote.initiatorId !== playerId && !isHost(room, playerId)) return null;
+  room.endVote = null;
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
 export function playerDisconnected(playerId) {
   for (const room of rooms.values()) {
     const player = room.players.find(p => p.id === playerId);
     if (player) {
       player.connected = false;
       room.lastActivityMs = Date.now();
+      // A pending end-game vote can't complete predictably — cancel it
+      if (room.endVote) room.endVote = null;
       // Transfer host if host left
       if (player.isHost) {
         player.isHost = false;
@@ -937,6 +1210,9 @@ export function sweepInactiveRooms(now = Date.now()) {
 export const SIGNAL_TIME_SEC = SIGNAL_TIME;
 export const DISCUSS_TIME_SEC = DISCUSS_TIME;
 export const GUESS_TIME_SEC = GUESS_TIME;
+export const BLEND_WORD_SEC_VALUE = BLEND_WORD_SEC;
+export const BLEND_VOTE_SEC_VALUE = BLEND_VOTE_SEC;
+export const BLEND_GUESS_SEC_VALUE = BLEND_GUESS_SEC;
 export const CHROMA_RACE_MS_VALUE = CHROMA_RACE_MS;
 export const TOTAL_ROUNDS_COUNT = TOTAL_ROUNDS;
 export const ROOM_TTL_MS_VALUE = ROOM_TTL_MS;
