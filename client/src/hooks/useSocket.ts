@@ -63,20 +63,35 @@ export function useSocket(): SocketHookReturn {
   const [myRole, setMyRole] = useState<RoleData | null>(null);
   const [roundReveal, setRoundReveal] = useState<RoundRevealData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const reconnectingRef = useRef(false);
 
   useEffect(() => {
-    const s = io(SERVER_URL, { autoConnect: true });
+    const s = io(SERVER_URL, { autoConnect: true, reconnection: true, reconnectionAttempts: 10, reconnectionDelay: 1000 });
     socketRef.current = s;
     setSocket(s);
 
-    const onConnect = () => { setConnected(true); setConnectError(null); };
-    const onDisconnect = () => {
+    const onConnect = () => { 
+      setConnected(true); 
+      setConnectError(null);
+      if (reconnectingRef.current) {
+        reconnectingRef.current = false;
+        // Request fresh room state on reconnect
+        if (roomCode) {
+          s.emit('room-state-request', { roomCode });
+        }
+      }
+    };
+    const onDisconnect = (reason: string) => {
       setConnected(false);
-      // Clear stale room UI so user isn't stuck in a dead game
-      setInRoom(false);
-      setRoomState(null);
-      setMyRole(null);
-      setRoundReveal(null);
+      reconnectingRef.current = true;
+      // Don't clear room state on disconnect - wait for reconnection
+      // Only clear if it's a permanent disconnect (io.disconnect())
+      if (reason === 'io client disconnect') {
+        setInRoom(false);
+        setRoomState(null);
+        setMyRole(null);
+        setRoundReveal(null);
+      }
     };
     const onConnectError = (err: Error) => setConnectError(err?.message ?? 'Connection failed');
     const onRoomJoined = ({ roomCode: code, playerId }: { roomCode: string; playerId: string }) => {
@@ -134,7 +149,7 @@ export function useSocket(): SocketHookReturn {
       s.disconnect();
       socketRef.current = null;
     };
-  }, []);
+  }, [roomCode]);
 
   const clearError = useCallback(() => setError(null), []);
 

@@ -167,7 +167,7 @@ export function setPlayerDifficulty(code, playerId, difficulty) {
 
 export function generateRechargeBonusSquares() {
   // Pick 8 distinct columns out of 10 (0..9) so no two bonus squares share a column
-  const cols = shuffleInPlace([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  const cols = shuffleInPlace([...Array(10).keys()]);
   const redCols = cols.slice(0, 4);
   const blueCols = cols.slice(4, 8);
 
@@ -1244,7 +1244,7 @@ export function resolveTerritoryTurn(room) {
     const maxRedPen = Math.max(...board);
     const minBluePen = Math.min(...board);
     const redDepth = maxRedPen - redWinTarget;
-    const blueDepth = 0 - minBluePen - 1;
+    const blueDepth = -1 - minBluePen;
     const winnerTeam = redDepth >= blueDepth ? 'red' : 'blue';
     room.territoryState.winnerTeam = winnerTeam;
     for (const p of room.players) {

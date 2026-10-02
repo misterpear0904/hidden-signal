@@ -3,6 +3,7 @@ import './index.css';
 import { useSocket, type GuessData } from './hooks/useSocket';
 import type { ChromaOptions, TerritoryOptions } from './types/game';
 import { TOTAL_ROUNDS } from './constants';
+import ErrorBoundary from './components/ErrorBoundary';
 import LandingPage from './components/LandingPage';
 import Lobby from './components/Lobby';
 import RoleReveal from './components/RoleReveal';
@@ -304,7 +305,9 @@ export default function App() {
   return (
     <>
       <div className="bg-mesh" />
-      {renderPhase()}
+      <ErrorBoundary>
+        {renderPhase()}
+      </ErrorBoundary>
       {inRoom && roomState && roomState.phase !== 'lobby' && roomState.phase !== 'end' && (
         <EndGameVote
           roomState={roomState}

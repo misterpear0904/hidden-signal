@@ -68,7 +68,38 @@ import {
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || (process.env.NODE_ENV === 'production' ? false : '*');
 if (process.env.NODE_ENV === 'production' && !process.env.CLIENT_ORIGIN) {
   console.error('[config] CLIENT_ORIGIN not set in production — refusing cross-origin requests');
+  process.exit(1);
 }
+
+// Rate limiting configuration
+const MAX_ROOMS = 500;
+const MAX_EVENTS_PER_SECOND = 30;
+const EVENT_WINDOW_MS = 1000;
+const eventCounts = new Map();
+
+function checkRateLimit(socketId) {
+  const now = Date.now();
+  const record = eventCounts.get(socketId);
+  if (!record || now - record.windowStart > EVENT_WINDOW_MS) {
+    eventCounts.set(socketId, { count: 1, windowStart: now });
+    return true;
+  }
+  if (record.count >= MAX_EVENTS_PER_SECOND) {
+    return false;
+  }
+  record.count++;
+  return true;
+}
+
+// Periodic cleanup of rate limit records
+setInterval(() => {
+  const now = Date.now();
+  for (const [socketId, record] of eventCounts) {
+    if (now - record.windowStart > EVENT_WINDOW_MS * 2) {
+      eventCounts.delete(socketId);
+    }
+  }
+}, 60 * 1000);
 
 const app = express();
 app.use(cors({ origin: CLIENT_ORIGIN }));
@@ -322,15 +353,29 @@ function startSignalPhase(code) {
   broadcastRoomState(room);
   // Auto-advance signal -> discuss -> guess on timeout
   setRoomTimer(code, SIGNAL_TIME_SEC * 1000, () => {
-    const r1 = advanceToDiscuss(code);
-    if (!r1) return;
-    broadcastRoomState(r1);
-    setRoomTimer(code, DISCUSS_TIME_SEC * 1000, () => {
-      const r2 = advanceToGuess(code);
-      if (!r2) return;
-      broadcastRoomState(r2);
-      setRoomTimer(code, GUESS_TIME_SEC * 1000, () => autoResolveRound(code));
-    });
+    try {
+      const r1 = advanceToDiscuss(code);
+      if (!r1) return;
+      broadcastRoomState(r1);
+      setRoomTimer(code, DISCUSS_TIME_SEC * 1000, () => {
+        try {
+          const r2 = advanceToGuess(code);
+          if (!r2) return;
+          broadcastRoomState(r2);
+          setRoomTimer(code, GUESS_TIME_SEC * 1000, () => {
+            try {
+              autoResolveRound(code);
+            } catch (e) {
+              console.error('[timer] autoResolveRound failed', e);
+            }
+          });
+        } catch (e) {
+          console.error('[timer] advanceToGuess failed', e);
+        }
+      });
+    } catch (e) {
+      console.error('[timer] advanceToDiscuss failed', e);
+    }
   });
 }
 
@@ -339,10 +384,20 @@ function startDiscussPhase(code) {
   if (!room) return;
   broadcastRoomState(room);
   setRoomTimer(code, DISCUSS_TIME_SEC * 1000, () => {
-    const r2 = advanceToGuess(code);
-    if (!r2) return;
-    broadcastRoomState(r2);
-    setRoomTimer(code, GUESS_TIME_SEC * 1000, () => autoResolveRound(code));
+    try {
+      const r2 = advanceToGuess(code);
+      if (!r2) return;
+      broadcastRoomState(r2);
+      setRoomTimer(code, GUESS_TIME_SEC * 1000, () => {
+        try {
+          autoResolveRound(code);
+        } catch (e) {
+          console.error('[timer] autoResolveRound failed', e);
+        }
+      });
+    } catch (e) {
+      console.error('[timer] advanceToGuess failed', e);
+    }
   });
 }
 
@@ -374,10 +429,20 @@ function startBlendWordPhase(code) {
   if (!room || room.phase !== 'blend-word') return;
   broadcastRoomState(room);
   setRoomTimer(code, BLEND_WORD_SEC_VALUE * 1000, () => {
-    const r1 = advanceToBlendVote(code);
-    if (!r1) return;
-    broadcastRoomState(r1);
-    setRoomTimer(code, BLEND_VOTE_SEC_VALUE * 1000, () => autoResolveBlendVotes(code));
+    try {
+      const r1 = advanceToBlendVote(code);
+      if (!r1) return;
+      broadcastRoomState(r1);
+      setRoomTimer(code, BLEND_VOTE_SEC_VALUE * 1000, () => {
+        try {
+          autoResolveBlendVotes(code);
+        } catch (e) {
+          console.error('[timer] autoResolveBlendVotes failed', e);
+        }
+      });
+    } catch (e) {
+      console.error('[timer] advanceToBlendVote failed', e);
+    }
   });
 }
 
@@ -387,8 +452,12 @@ function autoResolveBlendVotes(code) {
   broadcastRoomState(room);
   if (room.phase === 'blend-guess') {
     setRoomTimer(code, BLEND_GUESS_SEC_VALUE * 1000, () => {
-      const r = expireBlendGuess(code);
-      if (r) broadcastRoomState(r);
+      try {
+        const r = expireBlendGuess(code);
+        if (r) broadcastRoomState(r);
+      } catch (e) {
+        console.error('[timer] expireBlendGuess failed', e);
+      }
     });
   }
 }
@@ -398,8 +467,12 @@ function startLiarBidPhase(code) {
   if (!room || room.phase !== 'liar-bid') return;
   broadcastRoomState(room);
   setRoomTimer(code, LIAR_BID_SEC_VALUE * 1000, () => {
-    const r = expireLiarBid(code);
-    if (r) broadcastRoomState(r);
+    try {
+      const r = expireLiarBid(code);
+      if (r) broadcastRoomState(r);
+    } catch (e) {
+      console.error('[timer] expireLiarBid failed', e);
+    }
   });
 }
 
@@ -408,8 +481,12 @@ function startBluffBetPhase(code) {
   if (!room || room.phase !== 'bluff-bet') return;
   broadcastRoomState(room);
   setRoomTimer(code, BLUFF_BET_SEC_VALUE * 1000, () => {
-    const r = expireBluffBet(code);
-    if (r) broadcastRoomState(r);
+    try {
+      const r = expireBluffBet(code);
+      if (r) broadcastRoomState(r);
+    } catch (e) {
+      console.error('[timer] expireBluffBet failed', e);
+    }
   });
 }
 
@@ -441,6 +518,8 @@ io.on('connection', (socket) => {
   console.log(`[connect] ${socket.id}`);
 
   socket.on('create-room', ({ playerName } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    if (rooms.size >= MAX_ROOMS) return socket.emit('error', 'Server at capacity, try again later');
     if (!playerName?.trim()) return socket.emit('error', 'Name required');
     const room = createRoom(socket.id, playerName.trim().substring(0, 20));
     socket.join(room.code);
@@ -449,6 +528,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('join-room', ({ roomCode, playerName } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     if (!playerName?.trim() || !roomCode?.trim()) return socket.emit('error', 'Name and code required');
     const code = roomCode.trim().toUpperCase();
     const result = joinRoom(code, socket.id, playerName.trim().substring(0, 20));
@@ -471,13 +551,16 @@ io.on('connection', (socket) => {
     broadcastRoomState(result.room);
   });
 
-  socket.on('select-game', ({ roomCode, gameId } = {}) => {    const room = getRoom(roomCode);
+  socket.on('select-game', ({ roomCode, gameId } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const room = getRoom(roomCode);
     if (!room || !isHost(room, socket.id)) return socket.emit('error', 'Only host can change game');
     const updated = selectGame(roomCode, gameId);
     if (updated) broadcastRoomState(updated);
   });
 
   socket.on('update-chroma-options', ({ roomCode, options } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const room = getRoom(roomCode);
     if (!room || !isHost(room, socket.id)) return socket.emit('error', 'Only host can change options');
     const updated = updateChromaOptions(roomCode, options);
@@ -485,6 +568,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('update-territory-options', ({ roomCode, options } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const room = getRoom(roomCode);
     if (!room || !isHost(room, socket.id)) return socket.emit('error', 'Only host can change options');
     const updated = updateTerritoryOptions(roomCode, options);
@@ -492,11 +576,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('set-player-difficulty', ({ roomCode, difficulty } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const room = setPlayerDifficulty(roomCode, socket.id, difficulty);
     if (room) broadcastRoomState(room);
   });
 
   socket.on('start-game', ({ roomCode } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const room = getRoom(roomCode);
     if (!room) return socket.emit('error', 'Room not found');
     if (!isHost(room, socket.id)) return socket.emit('error', 'Only the host can start');
@@ -563,6 +649,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('submit-chroma-guess', ({ roomCode, tileIndex } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const result = submitChromaGuess(roomCode, socket.id, tileIndex);
     if (!result) return;
 
@@ -584,6 +671,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('submit-blend-clue', ({ roomCode, word } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const room = submitBlendClue(roomCode, socket.id, word);
     if (!room) return socket.emit('error', 'Cannot submit clue now');
     socket.emit('blend-clue-accepted');
@@ -600,6 +688,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('submit-blend-vote', ({ roomCode, targetId } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const room = submitBlendVote(roomCode, socket.id, targetId);
     if (!room) return socket.emit('error', 'Cannot submit vote now');
     socket.emit('blend-vote-accepted');
@@ -612,6 +701,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('submit-blend-guess', ({ roomCode, guess } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const room = submitBlendGuess(roomCode, socket.id, guess);
     if (!room) return socket.emit('error', 'Cannot submit guess now');
     clearRoomTimer(roomCode);
@@ -632,6 +722,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('submit-liar-bid', ({ roomCode, qty, face } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const room = submitLiarBid(roomCode, socket.id, qty, face);
     if (!room) return socket.emit('error', 'Cannot bid now — wait your turn or raise the bid');
     clearRoomTimer(roomCode);
@@ -643,6 +734,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('submit-liar-call', ({ roomCode, kind } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const room = resolveLiarCall(roomCode, socket.id, kind);
     if (!room) return socket.emit('error', 'Cannot call now');
     clearRoomTimer(roomCode);
@@ -663,6 +755,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('submit-bluff-action', ({ roomCode, action } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const room = submitBluffAction(roomCode, socket.id, action);
     if (!room) return socket.emit('error', 'Cannot act now');
     clearRoomTimer(roomCode);
@@ -691,6 +784,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('submit-territory-pick', ({ roomCode, colIndex } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const result = submitTerritoryPick(roomCode, socket.id, colIndex);
     if (!result) return socket.emit('error', 'Cannot submit pick now');
     if (result.error) return socket.emit('error', result.error);
@@ -698,6 +792,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('place-territory-mine', ({ roomCode, row, col } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const result = placeTerritoryMine(roomCode, socket.id, row, col);
     if (!result) return socket.emit('error', 'Cannot place mine now');
     if (result.error) return socket.emit('error', result.error);
@@ -714,6 +809,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('submit-signal', ({ roomCode, signal } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     if (!signal?.trim()) return socket.emit('error', 'Signal cannot be empty');
     const room = submitSignal(roomCode, socket.id, signal);
     if (!room) return socket.emit('error', 'Cannot submit signal now');
@@ -724,6 +820,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('submit-guess', ({ roomCode, guessData } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const room = submitGuess(roomCode, socket.id, guessData);
     if (!room) return socket.emit('error', 'Cannot submit guess now');
 
