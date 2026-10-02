@@ -19,6 +19,8 @@ import BlendWordPhase from './components/BlendWordPhase';
 import BlendVotePhase from './components/BlendVotePhase';
 import BlendGuessPhase from './components/BlendGuessPhase';
 import BlendRevealPhase from './components/BlendRevealPhase';
+import LiarBidPhase from './components/LiarBidPhase';
+import LiarRevealPhase from './components/LiarRevealPhase';
 
 function LoadingScreen({ text }: { text: string }) {
   return (
@@ -64,6 +66,9 @@ export default function App() {
     submitBlendVote,
     submitBlendGuess,
     nextBlendRound,
+    submitLiarBid,
+    submitLiarCall,
+    nextLiarRound,
     nextRound,
     playAgain,
   } = useSocket();
@@ -101,6 +106,9 @@ export default function App() {
   const handleSubmitBlendVote = useCallback((targetId: string) => { if (roomCode) submitBlendVote(roomCode, targetId); }, [roomCode, submitBlendVote]);
   const handleSubmitBlendGuess = useCallback((guess: string) => { if (roomCode) submitBlendGuess(roomCode, guess); }, [roomCode, submitBlendGuess]);
   const handleNextBlendRound = useCallback(() => { if (roomCode) nextBlendRound(roomCode); }, [roomCode, nextBlendRound]);
+  const handleSubmitLiarBid = useCallback((qty: number, face: number) => { if (roomCode) submitLiarBid(roomCode, qty, face); }, [roomCode, submitLiarBid]);
+  const handleSubmitLiarCall = useCallback((kind: 'liar' | 'exact') => { if (roomCode) submitLiarCall(roomCode, kind); }, [roomCode, submitLiarCall]);
+  const handleNextLiarRound = useCallback(() => { if (roomCode) nextLiarRound(roomCode); }, [roomCode, nextLiarRound]);
   const handleNextRound = useCallback(() => { if (roomCode) nextRound(roomCode); }, [roomCode, nextRound]);
   const handlePlayAgain = useCallback(() => { if (roomCode) playAgain(roomCode); }, [roomCode, playAgain]);
 
@@ -185,6 +193,27 @@ export default function App() {
             isHost={isHost}
             isLastRound={isLastRound}
             onNextRound={handleNextBlendRound}
+          />
+        );
+
+      case 'liar-bid':
+        return (
+          <LiarBidPhase
+            roomState={roomState}
+            myId={myId}
+            onBid={handleSubmitLiarBid}
+            onCall={handleSubmitLiarCall}
+          />
+        );
+
+      case 'liar-reveal':
+        return (
+          <LiarRevealPhase
+            roomState={roomState}
+            myId={myId}
+            isHost={isHost}
+            isLastRound={isLastRound}
+            onNextRound={handleNextLiarRound}
           />
         );
 

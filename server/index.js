@@ -26,6 +26,10 @@ import {
   submitBlendGuess,
   expireBlendGuess,
   nextBlendRound,
+  submitLiarBid,
+  resolveLiarCall,
+  expireLiarBid,
+  nextLiarRound,
   submitTerritoryPick,
   placeTerritoryMine,
   nextTerritoryTurn,
@@ -53,6 +57,7 @@ import {
   BLEND_WORD_SEC_VALUE,
   BLEND_VOTE_SEC_VALUE,
   BLEND_GUESS_SEC_VALUE,
+  LIAR_BID_SEC_VALUE,
 } from './gameManager.js';
 
 // Fail-closed CORS: production requires CLIENT_ORIGIN, dev allows all.
@@ -194,6 +199,34 @@ function roomPublicState(room, forPlayerId = null) {
     }
   }
 
+  // Liar's Dice masking: each duelist sees only their own dice until reveal.
+  let publicLiarState = null;
+  if (room.liarState) {
+    const L = room.liarState;
+    const liarReveal = room.phase === 'liar-reveal' || room.phase === 'end';
+    const myDice = forPlayerId && L.dice[forPlayerId] ? [...L.dice[forPlayerId]] : [];
+    const dice = {};
+    if (liarReveal) {
+      for (const [pid, hand] of Object.entries(L.dice)) dice[pid] = [...hand];
+    } else if (forPlayerId) {
+      dice[forPlayerId] = myDice;
+    }
+    publicLiarState = {
+      dice,
+      diceEach: L.diceEach,
+      bids: L.bids.map(x => ({ ...x })),
+      toActId: L.toActId,
+      starterId: L.starterId,
+      winnerId: liarReveal ? L.winnerId : null,
+      winnerName: liarReveal ? L.winnerName : null,
+      loserId: liarReveal ? L.loserId : null,
+      reason: liarReveal ? L.reason : null,
+      challengedBid: liarReveal ? L.challengedBid : null,
+      actualCount: liarReveal ? L.actualCount : null,
+      points: liarReveal ? { ...L.points } : {},
+    };
+  }
+
   return {
     code: room.code,
     selectedGameId: room.selectedGameId || 'hidden-signal',
@@ -202,6 +235,7 @@ function roomPublicState(room, forPlayerId = null) {
     chromaState: room.chromaState || null,
     territoryState: publicTerritoryState,
     blendState: publicBlendState,
+    liarState: publicLiarState,
     endVote: room.endVote
       ? {
           initiatorId: room.endVote.initiatorId,
@@ -327,6 +361,16 @@ function autoResolveBlendVotes(code) {
   }
 }
 
+function startLiarBidPhase(code) {
+  const room = getRoom(code);
+  if (!room || room.phase !== 'liar-bid') return;
+  broadcastRoomState(room);
+  setRoomTimer(code, LIAR_BID_SEC_VALUE * 1000, () => {
+    const r = expireLiarBid(code);
+    if (r) broadcastRoomState(r);
+  });
+}
+
 function autoResolveRound(code) {
   const result = resolveRound(code);
   if (!result) return;
@@ -444,6 +488,15 @@ io.on('connection', (socket) => {
       return;
     }
 
+    if (gameId === 'liar-dice') {
+      if (room.players.length !== 2) return socket.emit('error', "Liar's Dice is a 2-player duel");
+      clearRoomTimer(roomCode);
+      const started = startGame(roomCode);
+      if (!started) return socket.emit('error', "Could not start Liar's Dice");
+      startLiarBidPhase(roomCode);
+      return;
+    }
+
     if (room.players.length < 4) return socket.emit('error', 'Need at least 4 players for Hidden Signal');
     const started = startGame(roomCode);
     if (!started) return socket.emit('error', 'Could not start game');
@@ -525,6 +578,37 @@ io.on('connection', (socket) => {
       return;
     }
     startBlendWordPhase(roomCode);
+  });
+
+  socket.on('submit-liar-bid', ({ roomCode, qty, face } = {}) => {
+    const room = submitLiarBid(roomCode, socket.id, qty, face);
+    if (!room) return socket.emit('error', 'Cannot bid now — wait your turn or raise the bid');
+    clearRoomTimer(roomCode);
+    broadcastRoomState(room);
+    setRoomTimer(roomCode, LIAR_BID_SEC_VALUE * 1000, () => {
+      const r = expireLiarBid(roomCode);
+      if (r) broadcastRoomState(r);
+    });
+  });
+
+  socket.on('submit-liar-call', ({ roomCode, kind } = {}) => {
+    const room = resolveLiarCall(roomCode, socket.id, kind);
+    if (!room) return socket.emit('error', 'Cannot call now');
+    clearRoomTimer(roomCode);
+    broadcastRoomState(room);
+  });
+
+  socket.on('next-liar-round', ({ roomCode } = {}) => {
+    const room = getRoom(roomCode);
+    if (!room || !isHost(room, socket.id)) return;
+    clearRoomTimer(roomCode);
+    const next = nextLiarRound(roomCode);
+    if (!next) return;
+    if (next.phase === 'end') {
+      broadcastRoomState(next);
+      return;
+    }
+    startLiarBidPhase(roomCode);
   });
 
   socket.on('submit-territory-pick', ({ roomCode, colIndex } = {}) => {

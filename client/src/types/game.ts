@@ -15,7 +15,9 @@ export type GamePhase =
   | 'blend-word'
   | 'blend-vote'
   | 'blend-guess'
-  | 'blend-reveal';
+  | 'blend-reveal'
+  | 'liar-bid'
+  | 'liar-reveal';
 
 export interface ChromaOptions {
   difficulty: 'easy' | 'medium' | 'hard';
@@ -179,6 +181,28 @@ export interface BlendGameState {
   points: Record<string, number>;  // only at reveal
 }
 
+export interface LiarBid {
+  playerId: string;
+  playerName: string;
+  qty: number;
+  face: number;
+}
+
+export interface LiarGameState {
+  dice: Record<string, number[]>;  // only your own hand until reveal
+  diceEach: number;
+  bids: LiarBid[];
+  toActId: string | null;
+  starterId: string | null;
+  winnerId: string | null;         // only at reveal
+  winnerName: string | null;       // only at reveal
+  loserId: string | null;          // only at reveal
+  reason: 'liar' | 'exact' | 'timeout' | null;  // only at reveal
+  challengedBid: { qty: number; face: number; bidderId: string } | null;
+  actualCount: number | null;      // only at reveal
+  points: Record<string, number>;  // only at reveal
+}
+
 export interface RoomState {
   code: string;
   selectedGameId: string;
@@ -187,6 +211,7 @@ export interface RoomState {
   chromaState: ChromaRoundState | null;
   territoryState: TerritoryGameState | null;
   blendState: BlendGameState | null;
+  liarState: LiarGameState | null;
   phase: GamePhase;
   round: number;
   players: Player[];

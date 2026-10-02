@@ -47,12 +47,15 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
 
   const canStart = selectedGame !== null &&
     playerCount >= (selectedGame?.minPlayers ?? 2) &&
+    playerCount <= (selectedGame?.maxPlayers ?? 12) &&
     (!isTerritoryPush || isEvenPlayers);
 
   const startBlockedReason = !selectedGame
     ? 'Choose a game above to continue'
     : playerCount < (selectedGame.minPlayers)
     ? `Need at least ${selectedGame.minPlayers - playerCount} more player${selectedGame.minPlayers - playerCount !== 1 ? 's' : ''} for ${selectedGame.name}`
+    : playerCount > (selectedGame.maxPlayers)
+    ? `${selectedGame.name} supports at most ${selectedGame.maxPlayers} players`
     : isTerritoryPush && !isEvenPlayers
     ? 'Territory Push requires an EVEN number of players (e.g. 2, 4, 6, 8...)'
     : null;

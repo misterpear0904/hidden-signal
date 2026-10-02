@@ -42,6 +42,9 @@ export interface SocketHookReturn {
   submitBlendVote: (roomCode: string, targetId: string) => void;
   submitBlendGuess: (roomCode: string, guess: string) => void;
   nextBlendRound: (roomCode: string) => void;
+  submitLiarBid: (roomCode: string, qty: number, face: number) => void;
+  submitLiarCall: (roomCode: string, kind: 'liar' | 'exact') => void;
+  nextLiarRound: (roomCode: string) => void;
   nextRound: (roomCode: string) => void;
   playAgain: (roomCode: string) => void;
 }
@@ -229,6 +232,18 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('next-blend-round', { roomCode: code });
   }, []);
 
+  const submitLiarBid = useCallback((code: string, qty: number, face: number) => {
+    socketRef.current?.emit('submit-liar-bid', { roomCode: code, qty, face });
+  }, []);
+
+  const submitLiarCall = useCallback((code: string, kind: 'liar' | 'exact') => {
+    socketRef.current?.emit('submit-liar-call', { roomCode: code, kind });
+  }, []);
+
+  const nextLiarRound = useCallback((code: string) => {
+    socketRef.current?.emit('next-liar-round', { roomCode: code });
+  }, []);
+
   return {
     socket,
     connected,
@@ -263,6 +278,9 @@ export function useSocket(): SocketHookReturn {
     submitBlendVote,
     submitBlendGuess,
     nextBlendRound,
+    submitLiarBid,
+    submitLiarCall,
+    nextLiarRound,
     nextRound,
     playAgain,
   };

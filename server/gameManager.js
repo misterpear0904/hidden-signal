@@ -58,6 +58,7 @@ export function createRoom(hostId, hostName) {
     chromaState: null,
     territoryState: null,
     blendState: null,
+    liarState: null,
     phase: 'lobby',          // lobby | role-reveal | signal | discuss | guess | reveal | end | chroma-play | chroma-reveal | territory-turn | territory-reveal | blend-word | blend-vote | blend-guess | blend-reveal
     round: 0,
     players: [{ id: hostId, name: hostName, score: 0, isHost: true, connected: true }],
@@ -119,7 +120,7 @@ export function kickPlayer(code, hostId, targetId) {
 export function selectGame(code, gameId) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'lobby') return null;
-  const allowed = ['hidden-signal', 'chroma-shift', 'territory-push', 'blend-in'];
+  const allowed = ['hidden-signal', 'chroma-shift', 'territory-push', 'blend-in', 'liar-dice'];
   if (!allowed.includes(gameId)) return null;
   room.selectedGameId = gameId;
   room.lastActivityMs = Date.now();
@@ -271,6 +272,15 @@ export function startGame(code) {
     return startBlendRound(room);
   }
 
+  if (room.selectedGameId === 'liar-dice') {
+    if (room.players.length !== 2) return null;
+    room.round = 1;
+    room.endVote = null;
+    room.liarState = null;
+    for (const p of room.players) p.score = 0;
+    return startLiarRound(room);
+  }
+
   if (room.players.length < 4) return null;
   room.round = 1;
   room.endVote = null;
@@ -288,6 +298,13 @@ const BLEND_ROUNDS = 5;
 const BLEND_VOTER_POINT = 1;
 const BLEND_ESCAPE_POINTS = 2;
 const BLEND_STEAL_POINTS = 2;
+
+// ─── Liar's Dice (2-player bluffing duel) tuning ────────────────────────────
+const LIAR_BID_SEC = 60;
+const LIAR_ROUNDS = 5;
+const LIAR_DICE_EACH = 3;
+const LIAR_WIN_POINTS = 1;
+const LIAR_EXACT_BONUS_POINTS = 2;
 
 const BLEND_WORDS = {
   Animals: ['Elephant', 'Penguin', 'Kangaroo', 'Octopus', 'Giraffe', 'Crocodile', 'Owl', 'Dolphin'],
@@ -564,6 +581,145 @@ export function nextBlendRound(code) {
 
   room.round += 1;
   return startBlendRound(room);
+}
+
+function rollLiarDice(n) {
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(1 + Math.floor(Math.random() * 6));
+  return out;
+}
+
+function startLiarRound(room) {
+  const dice = {};
+  for (const p of room.players) dice[p.id] = rollLiarDice(LIAR_DICE_EACH);
+  // Starter alternates each round for fairness
+  const starterId = room.players[(room.round - 1) % room.players.length].id;
+
+  room.liarState = {
+    dice,
+    diceEach: LIAR_DICE_EACH,
+    bids: [],               // { playerId, playerName, qty, face }
+    toActId: starterId,
+    starterId,
+    winnerId: null,
+    winnerName: null,
+    loserId: null,
+    reason: null,           // 'liar' | 'exact' | 'timeout'
+    challengedBid: null,
+    actualCount: null,
+    points: {},
+  };
+  room.phase = 'liar-bid';
+  room.timerEnd = Date.now() + LIAR_BID_SEC * 1000;
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+function liarTotalDice(room) {
+  return (room.liarState?.diceEach || LIAR_DICE_EACH) * room.players.length;
+}
+
+function awardLiarPoints(room, playerId, pts) {
+  const player = room.players.find(p => p.id === playerId);
+  if (!player) return;
+  player.score += pts;
+  room.liarState.points[playerId] = (room.liarState.points[playerId] || 0) + pts;
+}
+
+function liarOpponentId(room, playerId) {
+  const other = room.players.find(p => p.id !== playerId);
+  return other ? other.id : null;
+}
+
+export function submitLiarBid(code, playerId, qty, face) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'liar-bid' || !room.liarState) return null;
+  if (!room.players.some(p => p.id === playerId)) return null;
+  if (room.liarState.toActId !== playerId) return null;
+  if (!Number.isInteger(qty) || !Number.isInteger(face)) return null;
+  if (face < 1 || face > 6) return null;
+  if (qty < 1 || qty > liarTotalDice(room)) return null;
+
+  const last = room.liarState.bids[room.liarState.bids.length - 1];
+  if (last) {
+    const raised = qty > last.qty || (qty === last.qty && face > last.face);
+    if (!raised) return null;
+  }
+
+  const player = room.players.find(p => p.id === playerId);
+  room.liarState.bids.push({ playerId, playerName: player?.name || '???', qty, face });
+  room.liarState.toActId = liarOpponentId(room, playerId);
+  room.phase = 'liar-bid';
+  room.timerEnd = Date.now() + LIAR_BID_SEC * 1000;
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+export function resolveLiarCall(code, playerId, kind) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'liar-bid' || !room.liarState) return null;
+  if (kind !== 'liar' && kind !== 'exact') return null;
+  if (!room.players.some(p => p.id === playerId)) return null;
+  if (room.liarState.toActId !== playerId) return null;
+  const last = room.liarState.bids[room.liarState.bids.length - 1];
+  if (!last) return null; // nothing to challenge yet
+
+  let actual = 0;
+  for (const hand of Object.values(room.liarState.dice)) {
+    for (const d of hand) if (d === last.face) actual += 1;
+  }
+
+  const bidderId = last.playerId;
+  let winnerId;
+  let pts;
+  if (kind === 'liar') {
+    winnerId = actual < last.qty ? playerId : bidderId;
+    pts = LIAR_WIN_POINTS;
+  } else {
+    winnerId = actual === last.qty ? playerId : bidderId;
+    pts = winnerId === playerId ? LIAR_EXACT_BONUS_POINTS : LIAR_WIN_POINTS;
+  }
+
+  const winner = room.players.find(p => p.id === winnerId);
+  awardLiarPoints(room, winnerId, pts);
+  room.liarState.winnerId = winnerId;
+  room.liarState.winnerName = winner ? winner.name : '???';
+  room.liarState.loserId = winnerId === playerId ? bidderId : playerId;
+  room.liarState.reason = kind;
+  room.liarState.challengedBid = { qty: last.qty, face: last.face, bidderId };
+  room.liarState.actualCount = actual;
+  room.phase = 'liar-reveal';
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+export function expireLiarBid(code) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'liar-bid' || !room.liarState) return null;
+  // Player to act timed out: opponent takes the round
+  const winnerId = liarOpponentId(room, room.liarState.toActId) || room.liarState.toActId;
+  const winner = room.players.find(p => p.id === winnerId);
+  awardLiarPoints(room, winnerId, LIAR_WIN_POINTS);
+  room.liarState.winnerId = winnerId;
+  room.liarState.winnerName = winner ? winner.name : '???';
+  room.liarState.loserId = room.liarState.toActId;
+  room.liarState.reason = 'timeout';
+  room.phase = 'liar-reveal';
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+export function nextLiarRound(code) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'liar-reveal') return null;
+
+  if (room.round >= LIAR_ROUNDS) {
+    room.phase = 'end';
+    return room;
+  }
+
+  room.round += 1;
+  return startLiarRound(room);
 }
 
 export function triggerTerritoryMineDetonations(room, minesToTrigger) {
@@ -1107,6 +1263,7 @@ export function resetToLobby(room) {
   room.chromaState = null;
   room.territoryState = null;
   room.blendState = null;
+  room.liarState = null;
   room.timerEnd = null;
   room.endVote = null;
   room.lastActivityMs = Date.now();
@@ -1213,6 +1370,7 @@ export const GUESS_TIME_SEC = GUESS_TIME;
 export const BLEND_WORD_SEC_VALUE = BLEND_WORD_SEC;
 export const BLEND_VOTE_SEC_VALUE = BLEND_VOTE_SEC;
 export const BLEND_GUESS_SEC_VALUE = BLEND_GUESS_SEC;
+export const LIAR_BID_SEC_VALUE = LIAR_BID_SEC;
 export const CHROMA_RACE_MS_VALUE = CHROMA_RACE_MS;
 export const TOTAL_ROUNDS_COUNT = TOTAL_ROUNDS;
 export const ROOM_TTL_MS_VALUE = ROOM_TTL_MS;
