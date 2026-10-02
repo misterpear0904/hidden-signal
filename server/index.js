@@ -30,6 +30,9 @@ import {
   resolveLiarCall,
   expireLiarBid,
   nextLiarRound,
+  submitBluffAction,
+  expireBluffBet,
+  nextBluffRound,
   submitTerritoryPick,
   placeTerritoryMine,
   nextTerritoryTurn,
@@ -58,6 +61,7 @@ import {
   BLEND_VOTE_SEC_VALUE,
   BLEND_GUESS_SEC_VALUE,
   LIAR_BID_SEC_VALUE,
+  BLUFF_BET_SEC_VALUE,
 } from './gameManager.js';
 
 // Fail-closed CORS: production requires CLIENT_ORIGIN, dev allows all.
@@ -227,6 +231,33 @@ function roomPublicState(room, forPlayerId = null) {
     };
   }
 
+  // Bluff Card masking: each duelist sees only their own card until reveal.
+  let publicBluffState = null;
+  if (room.bluffState) {
+    const B = room.bluffState;
+    const bluffReveal = room.phase === 'bluff-reveal' || room.phase === 'end';
+    const cards = {};
+    if (bluffReveal) {
+      for (const [pid, card] of Object.entries(B.cards)) cards[pid] = card;
+    } else if (forPlayerId && B.cards[forPlayerId]) {
+      cards[forPlayerId] = B.cards[forPlayerId];
+    }
+    publicBluffState = {
+      cards,
+      firstId: B.firstId,
+      history: B.history.map(h => ({ ...h })),
+      toActId: B.toActId,
+      facingBet: (B.history[B.history.length - 1]?.action === 'bet'),
+      winnerId: bluffReveal ? B.winnerId : null,
+      winnerName: bluffReveal ? B.winnerName : null,
+      loserId: bluffReveal ? B.loserId : null,
+      reason: bluffReveal ? B.reason : null,
+      bluffWin: bluffReveal ? B.bluffWin : false,
+      showdownCards: bluffReveal ? B.showdownCards : null,
+      points: bluffReveal ? { ...B.points } : {},
+    };
+  }
+
   return {
     code: room.code,
     selectedGameId: room.selectedGameId || 'hidden-signal',
@@ -236,6 +267,7 @@ function roomPublicState(room, forPlayerId = null) {
     territoryState: publicTerritoryState,
     blendState: publicBlendState,
     liarState: publicLiarState,
+    bluffState: publicBluffState,
     endVote: room.endVote
       ? {
           initiatorId: room.endVote.initiatorId,
@@ -371,6 +403,16 @@ function startLiarBidPhase(code) {
   });
 }
 
+function startBluffBetPhase(code) {
+  const room = getRoom(code);
+  if (!room || room.phase !== 'bluff-bet') return;
+  broadcastRoomState(room);
+  setRoomTimer(code, BLUFF_BET_SEC_VALUE * 1000, () => {
+    const r = expireBluffBet(code);
+    if (r) broadcastRoomState(r);
+  });
+}
+
 function autoResolveRound(code) {
   const result = resolveRound(code);
   if (!result) return;
@@ -497,6 +539,15 @@ io.on('connection', (socket) => {
       return;
     }
 
+    if (gameId === 'bluff-card') {
+      if (room.players.length !== 2) return socket.emit('error', 'Bluff Card is a 2-player duel');
+      clearRoomTimer(roomCode);
+      const started = startGame(roomCode);
+      if (!started) return socket.emit('error', 'Could not start Bluff Card');
+      startBluffBetPhase(roomCode);
+      return;
+    }
+
     if (room.players.length < 4) return socket.emit('error', 'Need at least 4 players for Hidden Signal');
     const started = startGame(roomCode);
     if (!started) return socket.emit('error', 'Could not start game');
@@ -609,6 +660,34 @@ io.on('connection', (socket) => {
       return;
     }
     startLiarBidPhase(roomCode);
+  });
+
+  socket.on('submit-bluff-action', ({ roomCode, action } = {}) => {
+    const room = submitBluffAction(roomCode, socket.id, action);
+    if (!room) return socket.emit('error', 'Cannot act now');
+    clearRoomTimer(roomCode);
+    if (room.phase === 'bluff-reveal') {
+      broadcastRoomState(room);
+      return;
+    }
+    broadcastRoomState(room);
+    setRoomTimer(roomCode, BLUFF_BET_SEC_VALUE * 1000, () => {
+      const r = expireBluffBet(roomCode);
+      if (r) broadcastRoomState(r);
+    });
+  });
+
+  socket.on('next-bluff-round', ({ roomCode } = {}) => {
+    const room = getRoom(roomCode);
+    if (!room || !isHost(room, socket.id)) return;
+    clearRoomTimer(roomCode);
+    const next = nextBluffRound(roomCode);
+    if (!next) return;
+    if (next.phase === 'end') {
+      broadcastRoomState(next);
+      return;
+    }
+    startBluffBetPhase(roomCode);
   });
 
   socket.on('submit-territory-pick', ({ roomCode, colIndex } = {}) => {

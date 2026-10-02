@@ -59,6 +59,7 @@ export function createRoom(hostId, hostName) {
     territoryState: null,
     blendState: null,
     liarState: null,
+    bluffState: null,
     phase: 'lobby',          // lobby | role-reveal | signal | discuss | guess | reveal | end | chroma-play | chroma-reveal | territory-turn | territory-reveal | blend-word | blend-vote | blend-guess | blend-reveal
     round: 0,
     players: [{ id: hostId, name: hostName, score: 0, isHost: true, connected: true }],
@@ -120,7 +121,7 @@ export function kickPlayer(code, hostId, targetId) {
 export function selectGame(code, gameId) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'lobby') return null;
-  const allowed = ['hidden-signal', 'chroma-shift', 'territory-push', 'blend-in', 'liar-dice'];
+  const allowed = ['hidden-signal', 'chroma-shift', 'territory-push', 'blend-in', 'liar-dice', 'bluff-card'];
   if (!allowed.includes(gameId)) return null;
   room.selectedGameId = gameId;
   room.lastActivityMs = Date.now();
@@ -281,6 +282,15 @@ export function startGame(code) {
     return startLiarRound(room);
   }
 
+  if (room.selectedGameId === 'bluff-card') {
+    if (room.players.length !== 2) return null;
+    room.round = 1;
+    room.endVote = null;
+    room.bluffState = null;
+    for (const p of room.players) p.score = 0;
+    return startBluffRound(room);
+  }
+
   if (room.players.length < 4) return null;
   room.round = 1;
   room.endVote = null;
@@ -305,6 +315,13 @@ const LIAR_ROUNDS = 5;
 const LIAR_DICE_EACH = 3;
 const LIAR_WIN_POINTS = 1;
 const LIAR_EXACT_BONUS_POINTS = 2;
+
+// ─── Bluff Card (2-player Kuhn-style card duel) tuning ──────────────────────
+const BLUFF_BET_SEC = 30;
+const BLUFF_ROUNDS = 5;
+const BLUFF_WIN_POINTS = 1;
+const BLUFF_BLUFF_BONUS_POINTS = 2; // total for winning a fold with a Jack
+const BLUFF_RANKS = { J: 1, Q: 2, K: 3 };
 
 const BLEND_WORDS = {
   Animals: ['Elephant', 'Penguin', 'Kangaroo', 'Octopus', 'Giraffe', 'Crocodile', 'Owl', 'Dolphin'],
@@ -720,6 +737,122 @@ export function nextLiarRound(code) {
 
   room.round += 1;
   return startLiarRound(room);
+}
+
+function startBluffRound(room) {
+  const deck = shuffleInPlace(['J', 'Q', 'K']);
+  const cards = {};
+  room.players.forEach((p, i) => { cards[p.id] = deck[i]; });
+  // First to act alternates each round for fairness
+  const firstId = room.players[(room.round - 1) % room.players.length].id;
+
+  room.bluffState = {
+    cards,
+    firstId,
+    history: [],            // { playerId, playerName, action: 'check'|'bet'|'call'|'fold' }
+    toActId: firstId,
+    winnerId: null,
+    winnerName: null,
+    loserId: null,
+    reason: null,           // 'showdown' | 'fold' | 'timeout'
+    bluffWin: false,        // folded out holding a Jack
+    showdownCards: null,
+    points: {},
+  };
+  room.phase = 'bluff-bet';
+  room.timerEnd = Date.now() + BLUFF_BET_SEC * 1000;
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+function awardBluffPoints(room, playerId, pts) {
+  const player = room.players.find(p => p.id === playerId);
+  if (!player) return;
+  player.score += pts;
+  room.bluffState.points[playerId] = (room.bluffState.points[playerId] || 0) + pts;
+}
+
+function bluffOpponentId(room, playerId) {
+  const other = room.players.find(p => p.id !== playerId);
+  return other ? other.id : null;
+}
+
+function resolveBluffShowdown(room) {
+  const [a, b] = room.players;
+  const winnerId = BLUFF_RANKS[room.bluffState.cards[a.id]] > BLUFF_RANKS[room.bluffState.cards[b.id]] ? a.id : b.id;
+  const winner = room.players.find(p => p.id === winnerId);
+  awardBluffPoints(room, winnerId, BLUFF_WIN_POINTS);
+  room.bluffState.winnerId = winnerId;
+  room.bluffState.winnerName = winner ? winner.name : '???';
+  room.bluffState.loserId = winnerId === a.id ? b.id : a.id;
+  room.bluffState.reason = 'showdown';
+  room.bluffState.bluffWin = false;
+  room.bluffState.showdownCards = { [a.id]: room.bluffState.cards[a.id], [b.id]: room.bluffState.cards[b.id] };
+  room.phase = 'bluff-reveal';
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+function resolveBluffFold(room, folderId, timedOut) {
+  const bettor = [...room.bluffState.history].reverse().find(h => h.action === 'bet');
+  const winnerId = bettor ? bettor.playerId : bluffOpponentId(room, folderId);
+  const winner = room.players.find(p => p.id === winnerId);
+  // Successful bluff: folding out the opponent while holding a Jack
+  const bluffWin = room.bluffState.cards[winnerId] === 'J';
+  awardBluffPoints(room, winnerId, bluffWin ? BLUFF_BLUFF_BONUS_POINTS : BLUFF_WIN_POINTS);
+  room.bluffState.winnerId = winnerId;
+  room.bluffState.winnerName = winner ? winner.name : '???';
+  room.bluffState.loserId = folderId;
+  room.bluffState.reason = timedOut ? 'timeout' : 'fold';
+  room.bluffState.bluffWin = bluffWin;
+  room.phase = 'bluff-reveal';
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+export function submitBluffAction(code, playerId, action) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'bluff-bet' || !room.bluffState) return null;
+  if (!room.players.some(p => p.id === playerId)) return null;
+  if (room.bluffState.toActId !== playerId) return null;
+
+  const last = room.bluffState.history[room.bluffState.history.length - 1];
+  const facingBet = last?.action === 'bet';
+  if (!facingBet && action !== 'check' && action !== 'bet') return null;
+  if (facingBet && action !== 'fold' && action !== 'call') return null;
+
+  const player = room.players.find(p => p.id === playerId);
+  room.bluffState.history.push({ playerId, playerName: player?.name || '???', action });
+
+  if (action === 'fold') return resolveBluffFold(room, playerId, false);
+  if (action === 'call') return resolveBluffShowdown(room);
+  if (action === 'check' && last?.action === 'check') return resolveBluffShowdown(room);
+
+  room.bluffState.toActId = bluffOpponentId(room, playerId);
+  room.phase = 'bluff-bet';
+  room.timerEnd = Date.now() + BLUFF_BET_SEC * 1000;
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+export function expireBluffBet(code) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'bluff-bet' || !room.bluffState) return null;
+  // Player to act timed out: counts as folding
+  return resolveBluffFold(room, room.bluffState.toActId, true);
+}
+
+export function nextBluffRound(code) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'bluff-reveal') return null;
+
+  if (room.round >= BLUFF_ROUNDS) {
+    room.phase = 'end';
+    return room;
+  }
+
+  room.round += 1;
+  return startBluffRound(room);
 }
 
 export function triggerTerritoryMineDetonations(room, minesToTrigger) {
@@ -1264,6 +1397,7 @@ export function resetToLobby(room) {
   room.territoryState = null;
   room.blendState = null;
   room.liarState = null;
+  room.bluffState = null;
   room.timerEnd = null;
   room.endVote = null;
   room.lastActivityMs = Date.now();
@@ -1371,6 +1505,7 @@ export const BLEND_WORD_SEC_VALUE = BLEND_WORD_SEC;
 export const BLEND_VOTE_SEC_VALUE = BLEND_VOTE_SEC;
 export const BLEND_GUESS_SEC_VALUE = BLEND_GUESS_SEC;
 export const LIAR_BID_SEC_VALUE = LIAR_BID_SEC;
+export const BLUFF_BET_SEC_VALUE = BLUFF_BET_SEC;
 export const CHROMA_RACE_MS_VALUE = CHROMA_RACE_MS;
 export const TOTAL_ROUNDS_COUNT = TOTAL_ROUNDS;
 export const ROOM_TTL_MS_VALUE = ROOM_TTL_MS;

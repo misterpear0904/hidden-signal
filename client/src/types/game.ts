@@ -17,7 +17,9 @@ export type GamePhase =
   | 'blend-guess'
   | 'blend-reveal'
   | 'liar-bid'
-  | 'liar-reveal';
+  | 'liar-reveal'
+  | 'bluff-bet'
+  | 'bluff-reveal';
 
 export interface ChromaOptions {
   difficulty: 'easy' | 'medium' | 'hard';
@@ -203,6 +205,29 @@ export interface LiarGameState {
   points: Record<string, number>;  // only at reveal
 }
 
+export type BluffAction = 'check' | 'bet' | 'call' | 'fold';
+
+export interface BluffHistoryEntry {
+  playerId: string;
+  playerName: string;
+  action: BluffAction;
+}
+
+export interface BluffGameState {
+  cards: Record<string, 'J' | 'Q' | 'K'>;  // only your own card until reveal
+  firstId: string | null;
+  history: BluffHistoryEntry[];
+  toActId: string | null;
+  facingBet: boolean;
+  winnerId: string | null;         // only at reveal
+  winnerName: string | null;       // only at reveal
+  loserId: string | null;          // only at reveal
+  reason: 'showdown' | 'fold' | 'timeout' | null;  // only at reveal
+  bluffWin: boolean;
+  showdownCards: Record<string, 'J' | 'Q' | 'K'> | null;  // only at reveal
+  points: Record<string, number>;  // only at reveal
+}
+
 export interface RoomState {
   code: string;
   selectedGameId: string;
@@ -212,6 +237,7 @@ export interface RoomState {
   territoryState: TerritoryGameState | null;
   blendState: BlendGameState | null;
   liarState: LiarGameState | null;
+  bluffState: BluffGameState | null;
   phase: GamePhase;
   round: number;
   players: Player[];

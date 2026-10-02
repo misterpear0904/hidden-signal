@@ -21,6 +21,8 @@ import BlendGuessPhase from './components/BlendGuessPhase';
 import BlendRevealPhase from './components/BlendRevealPhase';
 import LiarBidPhase from './components/LiarBidPhase';
 import LiarRevealPhase from './components/LiarRevealPhase';
+import BluffBetPhase from './components/BluffBetPhase';
+import BluffRevealPhase from './components/BluffRevealPhase';
 
 function LoadingScreen({ text }: { text: string }) {
   return (
@@ -69,6 +71,8 @@ export default function App() {
     submitLiarBid,
     submitLiarCall,
     nextLiarRound,
+    submitBluffAction,
+    nextBluffRound,
     nextRound,
     playAgain,
   } = useSocket();
@@ -109,6 +113,8 @@ export default function App() {
   const handleSubmitLiarBid = useCallback((qty: number, face: number) => { if (roomCode) submitLiarBid(roomCode, qty, face); }, [roomCode, submitLiarBid]);
   const handleSubmitLiarCall = useCallback((kind: 'liar' | 'exact') => { if (roomCode) submitLiarCall(roomCode, kind); }, [roomCode, submitLiarCall]);
   const handleNextLiarRound = useCallback(() => { if (roomCode) nextLiarRound(roomCode); }, [roomCode, nextLiarRound]);
+  const handleSubmitBluffAction = useCallback((action: 'check' | 'bet' | 'call' | 'fold') => { if (roomCode) submitBluffAction(roomCode, action); }, [roomCode, submitBluffAction]);
+  const handleNextBluffRound = useCallback(() => { if (roomCode) nextBluffRound(roomCode); }, [roomCode, nextBluffRound]);
   const handleNextRound = useCallback(() => { if (roomCode) nextRound(roomCode); }, [roomCode, nextRound]);
   const handlePlayAgain = useCallback(() => { if (roomCode) playAgain(roomCode); }, [roomCode, playAgain]);
 
@@ -214,6 +220,26 @@ export default function App() {
             isHost={isHost}
             isLastRound={isLastRound}
             onNextRound={handleNextLiarRound}
+          />
+        );
+
+      case 'bluff-bet':
+        return (
+          <BluffBetPhase
+            roomState={roomState}
+            myId={myId}
+            onAction={handleSubmitBluffAction}
+          />
+        );
+
+      case 'bluff-reveal':
+        return (
+          <BluffRevealPhase
+            roomState={roomState}
+            myId={myId}
+            isHost={isHost}
+            isLastRound={isLastRound}
+            onNextRound={handleNextBluffRound}
           />
         );
 
