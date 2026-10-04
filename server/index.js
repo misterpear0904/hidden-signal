@@ -4,6 +4,7 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
+import { logger } from './logger.js';
 import {
   createRoom,
   joinRoom,
@@ -70,15 +71,15 @@ import {
 // so the service can start even if env var is missing, but logs a clear warning.
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || (process.env.NODE_ENV === 'production' ? '*' : '*');
 if (process.env.NODE_ENV === 'production' && !process.env.CLIENT_ORIGIN) {
-  console.warn('[config] WARNING: CLIENT_ORIGIN not set in production — allowing all origins temporarily. Set CLIENT_ORIGIN=https://hidden-signal-client.onrender.com in Render dashboard for security.');
+  logger.warn('CLIENT_ORIGIN not set in production — allowing all origins temporarily. Set CLIENT_ORIGIN=https://hidden-signal-client.onrender.com in Render dashboard for security.');
 }
 
-console.log(`[config] CORS origin: ${CLIENT_ORIGIN}`);
-console.log(`[config] NODE_ENV: ${process.env.NODE_ENV}`);
+logger.info('Server starting', { corsOrigin: CLIENT_ORIGIN, nodeEnv: process.env.NODE_ENV });
 
-// Rate limiting configuration - higher limit for initial connections, stricter for game actions
+// Rate limiting configuration - much higher limit for initial connections
+// Socket.io does ~10-20 requests during initial handshake + polling
 const MAX_ROOMS = 500;
-const MAX_EVENTS_PER_SECOND = 100;  // Increased for socket.io polling handshake
+const MAX_EVENTS_PER_SECOND = 200;  // Much higher for socket.io handshake
 const EVENT_WINDOW_MS = 1000;
 const eventCounts = new Map();
 
@@ -106,9 +107,17 @@ setInterval(() => {
   }
 }, 60 * 1000);
 
+// Health check endpoint for Render to keep service awake
+// Render's free tier spins down after 15 min inactivity
+// Ping this endpoint every 10 min via cron job (e.g., cron-job.org, uptimerobot)
 const app = express();
 app.use(cors({ origin: CLIENT_ORIGIN }));
 app.use(express.json());
+
+app.get('/health', (req, res) => {
+  logger.health.check('ok', { rooms: rooms.size, timestamp: Date.now() });
+  res.json({ status: 'ok', timestamp: Date.now(), rooms: rooms.size });
+});
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
@@ -139,9 +148,14 @@ function setRoomTimer(code, ms, cb) {
 // Periodic sweep of abandoned rooms (every 10 min)
 setInterval(() => {
   try {
+    const before = rooms.size;
     sweepInactiveRooms(Date.now());
+    const after = rooms.size;
+    if (before !== after) {
+      logger.info('room_sweep_completed', { removed: before - after, remaining: after });
+    }
   } catch (e) {
-    console.error('[sweep] failed', e);
+    logger.error('room_sweep_failed', { error: e?.message ?? e });
   }
 }, 10 * 60 * 1000);
 
@@ -520,25 +534,33 @@ function autoResolveRound(code) {
 // ─── Socket Events ──────────────────────────────────────────────────────────
 
 io.on('connection', (socket) => {
-  console.log(`[connect] ${socket.id}`);
+  logger.socket.connect(socket.id, { transport: socket.conn.transport.name });
 
   socket.on('create-room', ({ playerName } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    if (!checkRateLimit(socket.id)) {
+      logger.health.rateLimit(socket.id);
+      return socket.emit('error', 'Too many requests');
+    }
     if (rooms.size >= MAX_ROOMS) return socket.emit('error', 'Server at capacity, try again later');
     if (!playerName?.trim()) return socket.emit('error', 'Name required');
     const room = createRoom(socket.id, playerName.trim().substring(0, 20));
+    logger.room.create(room.code, socket.id, { playerName: playerName.trim().substring(0, 20) });
     socket.join(room.code);
     socket.emit('room-joined', { roomCode: room.code, playerId: socket.id });
     broadcastRoomState(room);
   });
 
   socket.on('join-room', ({ roomCode, playerName } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    if (!checkRateLimit(socket.id)) {
+      logger.health.rateLimit(socket.id);
+      return socket.emit('error', 'Too many requests');
+    }
     if (!playerName?.trim() || !roomCode?.trim()) return socket.emit('error', 'Name and code required');
     const code = roomCode.trim().toUpperCase();
     const result = joinRoom(code, socket.id, playerName.trim().substring(0, 20));
     if (result.error) return socket.emit('error', result.error);
 
+    logger.room.join(code, socket.id, { playerName: playerName.trim().substring(0, 20) });
     socket.join(code);
     socket.emit('room-joined', { roomCode: code, playerId: socket.id });
     broadcastRoomState(result.room);
@@ -587,12 +609,16 @@ io.on('connection', (socket) => {
   });
 
   socket.on('start-game', ({ roomCode } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    if (!checkRateLimit(socket.id)) {
+      logger.health.rateLimit(socket.id);
+      return socket.emit('error', 'Too many requests');
+    }
     const room = getRoom(roomCode);
     if (!room) return socket.emit('error', 'Room not found');
     if (!isHost(room, socket.id)) return socket.emit('error', 'Only the host can start');
 
     const gameId = room.selectedGameId || 'hidden-signal';
+    logger.game.action(roomCode, gameId, 'start', socket.id, { playerCount: room.players.length });
 
     if (gameId === 'chroma-shift') {
       if (room.players.length < 2) return socket.emit('error', 'Need at least 2 players for Chroma Shift');
@@ -891,8 +917,8 @@ io.on('connection', (socket) => {
     broadcastRoomState(room);
   });
 
-  socket.on('disconnect', () => {
-    console.log(`[disconnect] ${socket.id}`);
+  socket.on('disconnect', (reason) => {
+    logger.socket.disconnect(socket.id, reason);
     const room = playerDisconnected(socket.id);
     if (room) {
       broadcastRoomState(room);
@@ -900,12 +926,13 @@ io.on('connection', (socket) => {
       if (room.players.every(p => !p.connected)) {
         clearRoomTimer(room.code);
         deleteRoom(room.code);
-        console.log(`[cleanup] Room ${room.code} deleted`);
+        logger.info('room_deleted', { roomCode: room.code, reason: 'all_players_disconnected' });
       }
     }
   });
 });
 
 httpServer.listen(PORT, () => {
+  logger.info('Server started', { port: PORT, rooms: rooms.size });
   console.log(`🎮 Hidden Signal server running on port ${PORT}`);
 });

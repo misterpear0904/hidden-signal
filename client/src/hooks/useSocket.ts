@@ -126,6 +126,7 @@ export function useSocket(): SocketHookReturn {
     setRetryCount(prev => prev + 1);
     setConnectionStatus('reconnecting');
     setConnectError('Reconnecting...');
+    console.log('[socket] manual retry attempt', { retryCount: retryCount + 1 });
     
     // Force a new connection attempt
     s.connect();
@@ -146,6 +147,7 @@ export function useSocket(): SocketHookReturn {
 
     setConnectionStatus('connecting');
     setConnectError('Connecting to server...');
+    console.log('[socket] connecting to', SERVER_URL);
 
     const onConnect = () => { 
       setConnected(true); 
@@ -153,6 +155,7 @@ export function useSocket(): SocketHookReturn {
       setConnectionStatus('connected');
       setRetryCount(0);
       serverSleepingRef.current = false;
+      console.log('[socket] connected, id:', s.id);
       if (reconnectingRef.current) {
         reconnectingRef.current = false;
         // Request fresh room state on reconnect
@@ -164,6 +167,7 @@ export function useSocket(): SocketHookReturn {
     const onDisconnect = (reason: string) => {
       setConnected(false);
       reconnectingRef.current = true;
+      console.log('[socket] disconnected:', reason);
       if (reason === 'io server disconnect') {
         // Server intentionally disconnected us
         setConnectionStatus('failed');
@@ -186,11 +190,20 @@ export function useSocket(): SocketHookReturn {
     };
     const onConnectError = (err: Error) => {
       const msg = err?.message ?? 'Connection failed';
+      console.log('[socket] connect_error:', msg);
       if (msg.includes('503') || msg.includes('Service Unavailable')) {
         handleServerSleeping();
       } else if (msg.includes('429') || msg.includes('Too Many Requests')) {
-        setConnectError('Too many connection attempts. Please wait a moment and try again.');
+        setConnectError('Server is busy (too many requests). Waiting 10s before retry...');
         setConnectionStatus('failed');
+        // Auto-retry after 10 seconds for 429
+        setTimeout(() => {
+          if (socketRef.current) {
+            setRetryCount(prev => prev + 1);
+            setConnectionStatus('reconnecting');
+            socketRef.current?.connect();
+          }
+        }, 10000);
       } else {
         handleConnectionFailure(msg);
       }
