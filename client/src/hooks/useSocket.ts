@@ -71,6 +71,7 @@ export function useSocket(): SocketHookReturn {
   const [retryCount, setRetryCount] = useState(0);
   const [myId, setMyId] = useState<string>('');
   const [roomCode, setRoomCode] = useState<string>('');
+  const roomCodeRef = useRef<string>('');
   const [inRoom, setInRoom] = useState(false);
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [myRole, setMyRole] = useState<RoleData | null>(null);
@@ -79,6 +80,11 @@ export function useSocket(): SocketHookReturn {
   const reconnectingRef = useRef(false);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const serverSleepingRef = useRef(false);
+
+  // Keep roomCodeRef in sync with roomCode
+  useEffect(() => {
+    roomCodeRef.current = roomCode;
+  }, [roomCode]);
 
   const clearRetryTimeout = useCallback(() => {
     if (retryTimeoutRef.current) {
@@ -159,8 +165,8 @@ export function useSocket(): SocketHookReturn {
       if (reconnectingRef.current) {
         reconnectingRef.current = false;
         // Request fresh room state on reconnect
-        if (roomCode) {
-          s.emit('room-state-request', { roomCode });
+        if (roomCodeRef.current) {
+          s.emit('room-state-request', { roomCode: roomCodeRef.current });
         }
       }
     };
@@ -264,7 +270,7 @@ export function useSocket(): SocketHookReturn {
       s.disconnect();
       socketRef.current = null;
     };
-  }, [roomCode, handleServerSleeping, handleConnectionFailure, clearRetryTimeout]);
+  }, [handleServerSleeping, handleConnectionFailure, clearRetryTimeout]);
 
   const clearError = useCallback(() => setError(null), []);
 
