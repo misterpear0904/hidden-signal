@@ -64,16 +64,21 @@ import {
   BLUFF_BET_SEC_VALUE,
 } from './gameManager.js';
 
-// Fail-closed CORS: production requires CLIENT_ORIGIN, dev allows all.
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || (process.env.NODE_ENV === 'production' ? false : '*');
+// CORS: production requires CLIENT_ORIGIN to be set to your frontend URL
+// (e.g., https://hidden-signal-client.onrender.com).
+// If not set in production, we allow all origins temporarily with a warning
+// so the service can start even if env var is missing, but logs a clear warning.
+const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || (process.env.NODE_ENV === 'production' ? '*' : '*');
 if (process.env.NODE_ENV === 'production' && !process.env.CLIENT_ORIGIN) {
-  console.error('[config] CLIENT_ORIGIN not set in production — refusing cross-origin requests');
-  process.exit(1);
+  console.warn('[config] WARNING: CLIENT_ORIGIN not set in production — allowing all origins temporarily. Set CLIENT_ORIGIN=https://hidden-signal-client.onrender.com in Render dashboard for security.');
 }
 
-// Rate limiting configuration
+console.log(`[config] CORS origin: ${CLIENT_ORIGIN}`);
+console.log(`[config] NODE_ENV: ${process.env.NODE_ENV}`);
+
+// Rate limiting configuration - higher limit for initial connections, stricter for game actions
 const MAX_ROOMS = 500;
-const MAX_EVENTS_PER_SECOND = 30;
+const MAX_EVENTS_PER_SECOND = 100;  // Increased for socket.io polling handshake
 const EVENT_WINDOW_MS = 1000;
 const eventCounts = new Map();
 

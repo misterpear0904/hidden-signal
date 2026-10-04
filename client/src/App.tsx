@@ -39,6 +39,10 @@ function LoadingScreen({ text }: { text: string }) {
 export default function App() {
   const {
     connected,
+    connectionStatus,
+    connectError,
+    retryCount,
+    retryConnection,
     myId,
     roomCode,
     inRoom,
@@ -122,7 +126,17 @@ export default function App() {
   // ─── Phase Router ──────────────────────────────────────────────────────────
   const renderPhase = () => {
     if (!inRoom || !roomState) {
-      return <LandingPage onCreateRoom={handleCreate} onJoinRoom={handleJoin} connected={connected} />;
+      return (
+        <LandingPage
+          onCreateRoom={handleCreate}
+          onJoinRoom={handleJoin}
+          connected={connected}
+          connectionStatus={connectionStatus}
+          connectError={connectError}
+          retryCount={retryCount}
+          retryConnection={retryConnection}
+        />
+      );
     }
 
     switch (roomState.phase) {

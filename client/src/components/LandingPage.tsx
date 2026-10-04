@@ -5,9 +5,21 @@ interface Props {
   onCreateRoom: (name: string) => void;
   onJoinRoom: (code: string, name: string) => void;
   connected: boolean;
+  connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'server_sleeping' | 'failed';
+  connectError: string | null;
+  retryCount: number;
+  retryConnection: () => void;
 }
 
-export default function LandingPage({ onCreateRoom, onJoinRoom, connected }: Props) {
+export default function LandingPage({ 
+  onCreateRoom, 
+  onJoinRoom, 
+  connected, 
+  connectionStatus,
+  connectError,
+  retryCount,
+  retryConnection
+}: Props) {
   const [tab, setTab] = useState<'create' | 'join'>('create');
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
@@ -27,6 +39,47 @@ export default function LandingPage({ onCreateRoom, onJoinRoom, connected }: Pro
     onJoinRoom(code.trim().toUpperCase(), name.trim());
   };
 
+  const getConnectionStatusText = () => {
+    switch (connectionStatus) {
+      case 'connected': return 'Connected';
+      case 'connecting': return 'Connecting...';
+      case 'reconnecting': return `Reconnecting... (attempt ${retryCount})`;
+      case 'server_sleeping': return 'Server is waking up... (free tier spins down after inactivity, may take 60s)';
+      case 'failed': return 'Connection failed. Click to retry.';
+      case 'disconnected': return 'Disconnected';
+      default: return 'Disconnected';
+    }
+  };
+
+  const getConnectionStatusColor = () => {
+    switch (connectionStatus) {
+      case 'connected': return 'var(--green-400)';
+      case 'connecting':
+      case 'reconnecting': return 'var(--amber-400)';
+      case 'server_sleeping': return 'var(--amber-400)';
+      case 'failed': return 'var(--rose-400)';
+      default: return 'var(--text-muted)';
+    }
+  };
+
+  const getConnectionDotClass = () => {
+    switch (connectionStatus) {
+      case 'connected': return 'conn-dot online';
+      case 'connecting':
+      case 'reconnecting':
+      case 'server_sleeping': return 'conn-dot pulsing';
+      case 'failed': return 'conn-dot offline';
+      default: return 'conn-dot offline';
+    }
+  };
+
+  const isSubmitDisabled = () => {
+    if (!connected) return true;
+    if (name.trim().length < 1) return true;
+    if (tab === 'join' && code.trim().length < 4) return true;
+    return false;
+  };
+
   return (
     <div className="page">
       <div className="container animate-fade-up">
@@ -40,8 +93,26 @@ export default function LandingPage({ onCreateRoom, onJoinRoom, connected }: Pro
             A multiplayer party lounge for deception, hidden knowledge, and bluffing games
           </p>
           <div className="flex items-center justify-center gap-8 mt-12">
-            <div className={`conn-dot ${connected ? 'online' : 'offline'}`} />
-            <span className="text-xs text-muted">{connected ? 'Connected' : 'Connecting...'}</span>
+            <div className={getConnectionDotClass()} />
+            <span 
+              className="text-xs text-muted" 
+              style={{ 
+                color: getConnectionStatusColor(), 
+                fontWeight: 500,
+                cursor: connectionStatus === 'failed' ? 'pointer' : 'default'
+              }}
+              onClick={connectionStatus === 'failed' ? retryConnection : undefined}
+            >
+              {getConnectionStatusText()}
+            </span>
+            {connectionStatus === 'server_sleeping' && (
+              <span className="text-xs text-muted ml-8" style={{ animation: 'pulse 1.5s infinite' }}>
+                ⏳ Waking up...
+              </span>
+            )}
+            {retryCount > 0 && connectionStatus !== 'connected' && (
+              <span className="text-xs text-muted ml-8">(retry #{retryCount})</span>
+            )}
           </div>
         </div>
 

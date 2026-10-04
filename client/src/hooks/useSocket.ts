@@ -8,10 +8,20 @@ export type GuessData =
   | { guessedPartnerId: string }
   | { guessedPlayerId: string };
 
+export type ConnectionStatus = 
+  | 'disconnected' 
+  | 'connecting' 
+  | 'connected' 
+  | 'reconnecting' 
+  | 'server_sleeping' 
+  | 'failed';
+
 export interface SocketHookReturn {
   socket: Socket | null;
   connected: boolean;
+  connectionStatus: ConnectionStatus;
   connectError: string | null;
+  retryCount: number;
   myId: string;
   roomCode: string;
   inRoom: boolean;
@@ -49,13 +59,16 @@ export interface SocketHookReturn {
   nextBluffRound: (roomCode: string) => void;
   nextRound: (roomCode: string) => void;
   playAgain: (roomCode: string) => void;
+  retryConnection: () => void;
 }
 
 export function useSocket(): SocketHookReturn {
   const socketRef = useRef<Socket | null>(null);
   const [socket, setSocket] = useState<Socket | null>(null);
   const [connected, setConnected] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
   const [connectError, setConnectError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
   const [myId, setMyId] = useState<string>('');
   const [roomCode, setRoomCode] = useState<string>('');
   const [inRoom, setInRoom] = useState(false);
@@ -64,15 +77,82 @@ export function useSocket(): SocketHookReturn {
   const [roundReveal, setRoundReveal] = useState<RoundRevealData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const reconnectingRef = useRef(false);
+  const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const serverSleepingRef = useRef(false);
+
+  const clearRetryTimeout = useCallback(() => {
+    if (retryTimeoutRef.current) {
+      clearTimeout(retryTimeoutRef.current);
+      retryTimeoutRef.current = null;
+    }
+  }, []);
+
+  const updateConnectionStatus = useCallback((status: ConnectionStatus) => {
+    setConnectionStatus(status);
+    if (status === 'connected') {
+      setConnected(true);
+      setConnectError(null);
+      setRetryCount(0);
+      serverSleepingRef.current = false;
+    } else if (status === 'connecting' || status === 'reconnecting') {
+      setConnected(false);
+    } else if (status === 'server_sleeping') {
+      setConnected(false);
+    } else if (status === 'failed') {
+      setConnected(false);
+    } else {
+      setConnected(false);
+    }
+  }, []);
+
+  const handleServerSleeping = useCallback(() => {
+    serverSleepingRef.current = true;
+    setConnectionStatus('server_sleeping');
+    setConnectError('Server is waking up... This may take up to 60 seconds on free tier hosting.');
+  }, []);
+
+  const handleConnectionFailure = useCallback((reason?: string) => {
+    if (serverSleepingRef.current) return; // Don't override sleeping status
+    setConnectionStatus('failed');
+    const msg = reason || 'Unable to connect to server. The server may be sleeping (free tier spins down after inactivity).';
+    setConnectError(msg);
+  }, []);
+
+  const retryConnection = useCallback(() => {
+    clearRetryTimeout();
+    const s = socketRef.current;
+    if (!s) return;
+    
+    setRetryCount(prev => prev + 1);
+    setConnectionStatus('reconnecting');
+    setConnectError('Reconnecting...');
+    
+    // Force a new connection attempt
+    s.connect();
+  }, [clearRetryTimeout]);
 
   useEffect(() => {
-    const s = io(SERVER_URL, { autoConnect: true, reconnection: true, reconnectionAttempts: 10, reconnectionDelay: 1000 });
+    const s = io(SERVER_URL, { 
+      autoConnect: true, 
+      reconnection: true, 
+      reconnectionAttempts: 20, 
+      reconnectionDelay: 2000,
+      reconnectionDelayMax: 10000,
+      timeout: 30000,
+      transports: ['polling', 'websocket']
+    });
     socketRef.current = s;
     setSocket(s);
+
+    setConnectionStatus('connecting');
+    setConnectError('Connecting to server...');
 
     const onConnect = () => { 
       setConnected(true); 
       setConnectError(null);
+      setConnectionStatus('connected');
+      setRetryCount(0);
+      serverSleepingRef.current = false;
       if (reconnectingRef.current) {
         reconnectingRef.current = false;
         // Request fresh room state on reconnect
@@ -84,16 +164,37 @@ export function useSocket(): SocketHookReturn {
     const onDisconnect = (reason: string) => {
       setConnected(false);
       reconnectingRef.current = true;
-      // Don't clear room state on disconnect - wait for reconnection
-      // Only clear if it's a permanent disconnect (io.disconnect())
-      if (reason === 'io client disconnect') {
+      if (reason === 'io server disconnect') {
+        // Server intentionally disconnected us
+        setConnectionStatus('failed');
+        setConnectError('Disconnected by server. Please refresh the page.');
+      } else if (reason === 'ping timeout' || reason === 'transport close') {
+        // Network issue or server sleeping
+        setConnectionStatus('reconnecting');
+        setConnectError('Connection lost. Reconnecting...');
+      } else if (reason === 'io client disconnect') {
+        // User intentionally disconnected
+        setConnectionStatus('disconnected');
         setInRoom(false);
         setRoomState(null);
         setMyRole(null);
         setRoundReveal(null);
+      } else {
+        setConnectionStatus('reconnecting');
+        setConnectError(`Disconnected: ${reason}. Reconnecting...`);
       }
     };
-    const onConnectError = (err: Error) => setConnectError(err?.message ?? 'Connection failed');
+    const onConnectError = (err: Error) => {
+      const msg = err?.message ?? 'Connection failed';
+      if (msg.includes('503') || msg.includes('Service Unavailable')) {
+        handleServerSleeping();
+      } else if (msg.includes('429') || msg.includes('Too Many Requests')) {
+        setConnectError('Too many connection attempts. Please wait a moment and try again.');
+        setConnectionStatus('failed');
+      } else {
+        handleConnectionFailure(msg);
+      }
+    };
     const onRoomJoined = ({ roomCode: code, playerId }: { roomCode: string; playerId: string }) => {
       setMyId(playerId);
       setRoomCode(code);
@@ -136,6 +237,7 @@ export function useSocket(): SocketHookReturn {
     s.on('end-vote-failed', onEndVoteFailed);
 
     return () => {
+      clearRetryTimeout();
       s.off('connect', onConnect);
       s.off('disconnect', onDisconnect);
       s.off('connect_error', onConnectError);
@@ -149,7 +251,7 @@ export function useSocket(): SocketHookReturn {
       s.disconnect();
       socketRef.current = null;
     };
-  }, [roomCode]);
+  }, [roomCode, handleServerSleeping, handleConnectionFailure, clearRetryTimeout]);
 
   const clearError = useCallback(() => setError(null), []);
 
@@ -272,7 +374,9 @@ export function useSocket(): SocketHookReturn {
   return {
     socket,
     connected,
+    connectionStatus,
     connectError,
+    retryCount,
     myId,
     roomCode,
     inRoom,
@@ -310,5 +414,6 @@ export function useSocket(): SocketHookReturn {
     nextBluffRound,
     nextRound,
     playAgain,
+    retryConnection,
   };
 }
