@@ -54,6 +54,7 @@ import {
   submitEndVote,
   cancelEndVote,
   resetToLobby,
+  rooms,
   SIGNAL_TIME_SEC,
   DISCUSS_TIME_SEC,
   GUESS_TIME_SEC,

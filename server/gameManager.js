@@ -3,7 +3,7 @@
 import { assignRoles, calculateScores, generateRoomCode } from './gameLogic.js';
 
 // rooms: Map<roomCode, RoomState>
-const rooms = new Map();
+export const rooms = new Map();
 
 export const TOTAL_ROUNDS = 5;
 const HIDDEN_ROUNDS = 5;
