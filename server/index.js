@@ -150,10 +150,12 @@ function setRoomTimer(code, ms, cb) {
 setInterval(() => {
   try {
     const before = rooms.size;
+    const beforeCodes = Array.from(rooms.keys());
     sweepInactiveRooms(Date.now());
     const after = rooms.size;
     if (before !== after) {
-      logger.info('room_sweep_completed', { removed: before - after, remaining: after });
+      const removedCodes = beforeCodes.filter(c => !rooms.has(c));
+      logger.info('room_sweep_completed', { removed: before - after, remaining: after, removedCodes });
     }
   } catch (e) {
     logger.error('room_sweep_failed', { error: e?.message ?? e });
@@ -545,6 +547,7 @@ io.on('connection', (socket) => {
     if (rooms.size >= MAX_ROOMS) return socket.emit('error', 'Server at capacity, try again later');
     if (!playerName?.trim()) return socket.emit('error', 'Name required');
     const room = createRoom(socket.id, playerName.trim().substring(0, 20));
+    logger.info('room_created', { roomCode: room.code, hostId: socket.id, playerName: playerName.trim().substring(0, 20), roomsCount: rooms.size });
     logger.room.create(room.code, socket.id, { playerName: playerName.trim().substring(0, 20) });
     socket.join(room.code);
     socket.emit('room-joined', { roomCode: room.code, playerId: socket.id });
@@ -558,8 +561,12 @@ io.on('connection', (socket) => {
     }
     if (!playerName?.trim() || !roomCode?.trim()) return socket.emit('error', 'Name and code required');
     const code = roomCode.trim().toUpperCase();
+    logger.info('join_room_attempt', { code, playerName: playerName.trim().substring(0, 20), socketId: socket.id, roomsCount: rooms.size });
     const result = joinRoom(code, socket.id, playerName.trim().substring(0, 20));
-    if (result.error) return socket.emit('error', result.error);
+    if (result.error) {
+      logger.warn('join_room_failed', { code, error: result.error, roomsCount: rooms.size, existingRooms: Array.from(rooms.keys()) });
+      return socket.emit('error', result.error);
+    }
 
     logger.room.join(code, socket.id, { playerName: playerName.trim().substring(0, 20) });
     socket.join(code);
