@@ -310,7 +310,7 @@ export default function App() {
             roomState={roomState}
             myId={myId}
             isHost={isHost}
-            onPlayAgain={handlePlayAgain}
+            onRequestEndVote={handleRequestEndVote}
           />
         );
 

@@ -10,7 +10,49 @@ interface Props {
   onCall: (kind: 'liar' | 'exact') => void;
 }
 
+// More visible dice faces with colored backgrounds
 export const DICE_FACES = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
+
+export const DICE_COLORS = [
+  'linear-gradient(135deg, #ff6b6b, #ee5a5a)',  // 1 - Red
+  'linear-gradient(135deg, #4ecdc4, #45b7aa)',  // 2 - Teal
+  'linear-gradient(135deg, #ffe66d, #fcd53e)',  // 3 - Yellow
+  'linear-gradient(135deg, #a8e6cf, #7fcdcd)',  // 4 - Green
+  'linear-gradient(135deg, #ff8b94, #ff6b8a)',  // 5 - Pink
+  'linear-gradient(135deg, #c7ceea, #a8a4e8)',  // 6 - Purple
+];
+
+function DiceFace({ value, size = 'normal' }: { value: number; size?: 'normal' | 'large' | 'small' }) {
+  const sizeClasses = {
+    small: { size: 32, fontSize: 18 },
+    normal: { size: 56, fontSize: 28 },
+    large: { size: 80, fontSize: 42 },
+  };
+  const { size: s, fontSize } = sizeClasses[size];
+  const bg = DICE_COLORS[value - 1];
+  
+  return (
+    <div
+      style={{
+        width: s,
+        height: s,
+        borderRadius: 10,
+        background: `linear-gradient(135deg, ${bg.split(',')[0].replace('linear-gradient(135deg, ', '')}, ${bg.split(',')[1]})`,
+        border: '2px solid rgba(255,255,255,0.2)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)',
+        fontSize,
+        fontWeight: 800,
+        color: '#fff',
+        textShadow: '0 1px 2px rgba(0,0,0,0.5)',
+      }}
+    >
+      {'⚀⚁⚂⚃⚄⚅'[value - 1]}
+    </div>
+  );
+}
 
 export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) {
   const liar = roomState.liarState;

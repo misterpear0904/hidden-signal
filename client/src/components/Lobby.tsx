@@ -391,11 +391,11 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
                     boxShadow: chromaOptions.extremeMode ? '0 0 16px rgba(239,68,68,0.4)' : 'none',
                   }}
                 >
-                  {chromaOptions.extremeMode ? '8x8 ON 🔥' : 'OFF'}
+                  {chromaOptions.extremeMode ? '10x10 ON 🔥' : 'OFF'}
                 </button>
               ) : (
                 <span className="badge" style={{ background: chromaOptions.extremeMode ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.05)', color: chromaOptions.extremeMode ? 'var(--rose-400)' : 'var(--text-muted)' }}>
-                  {chromaOptions.extremeMode ? '8x8 🔥' : '5x5'} (Host Setting)
+                  {chromaOptions.extremeMode ? '10x10 🔥' : '5x5'} (Host Setting)
                 </span>
               )}
             </div>

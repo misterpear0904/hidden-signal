@@ -59,7 +59,7 @@ export const GAME_CATALOGUE: GameDefinition[] = [
     borderColor: 'rgba(6,182,212,0.35)',
     available: true,
     rules: [
-      { icon: '🧩', text: '25 tiles on screen starting with the same initial gradient' },
+      { icon: '🧩', text: '25 tiles on screen starting with the same initial gradient (100 tiles in Extreme 10x10)' },
       { icon: '👁️', text: 'Exactly ONE tile slowly changes its gradient over time — watch closely!' },
       { icon: '⚡', text: 'First player to click the correct changing tile wins the round!' },
       { icon: '⚠️', text: 'Clicking the wrong tile costs 1 point (-1 pt penalty) and round continues' },

@@ -108,9 +108,9 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
   const { chromaState, chromaOptions, round } = roomState;
   const difficulty = chromaOptions?.playerDifficulties?.[myId] || 'easy';
   const isExtreme = chromaOptions?.extremeMode ?? false;
-  const gridDim = isExtreme ? 8 : 5;
+  const gridDim = isExtreme ? 10 : 5;
   const totalTiles = gridDim * gridDim;
-  const tileSizePx = isExtreme ? 42 : 64;
+  const tileSizePx = isExtreme ? 34 : 64;
 
   const isReveal = roomState.phase === 'chroma-reveal';
   const [wrongFlash, setWrongFlash] = useState(false);
@@ -134,7 +134,7 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
     () => typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches,
     []
   );
-  // On phones + extreme 8x8, disable JS physics movement (biggest lag source).
+  // On phones + extreme 10x10, disable JS physics movement (biggest lag source).
   // Tiles stay in grid; color-shift gameplay is unchanged.
   const physicsEnabled = difficulty !== 'easy' && !prefersReducedMotion && !(isExtreme && isCoarsePointer);
   const useRepulsion = physicsEnabled && !isExtreme && totalTiles <= 25 && !isCoarsePointer;

@@ -5,7 +5,7 @@ interface Props {
   roomState: RoomState;
   myId: string;
   isHost: boolean;
-  onPlayAgain: () => void;
+  onRequestEndVote: () => void;
 }
 
 const MEDALS = ['🥇', '🥈', '🥉'];
@@ -22,7 +22,7 @@ function rankLabel(i: number): string {
   }
 }
 
-export default function FinalLeaderboard({ roomState, myId, isHost, onPlayAgain }: Props) {
+export default function FinalLeaderboard({ roomState, myId, isHost, onRequestEndVote }: Props) {
   const sorted = [...roomState.players].sort((a, b) => b.score - a.score);
   const topScore = sorted[0]?.score ?? 0;
   const winners = sorted.filter(p => p.score === topScore);
@@ -146,12 +146,12 @@ export default function FinalLeaderboard({ roomState, myId, isHost, onPlayAgain 
           </div>
         </div>
 
-        {/* Back to Lobby */}
+        {/* Back to Lobby (via vote) */}
         {isHost ? (
           <button
             className="btn btn-primary btn-lg btn-full"
-            onClick={onPlayAgain}
-            id="play-again-btn"
+            onClick={onRequestEndVote}
+            id="back-to-lobby-btn"
           >
             🏠 Back to Lobby
           </button>
