@@ -209,7 +209,7 @@ export interface LiarGameState {
   points: Record<string, number>;  // only at reveal
 }
 
-export type BluffAction = 'check' | 'bet' | 'call' | 'fold';
+export type BluffAction = 'check' | 'bet' | 'raise' | 'call' | 'fold';
 
 export interface BluffHistoryEntry {
   playerId: string;
@@ -218,7 +218,7 @@ export interface BluffHistoryEntry {
 }
 
 export interface BluffGameState {
-  cards: Record<string, 'J' | 'Q' | 'K'>;  // only your own card until reveal
+  cards: Record<string, 'Joker' | 'J' | 'Q' | 'K'>;  // only your own card until reveal
   firstId: string | null;
   history: BluffHistoryEntry[];
   toActId: string | null;
@@ -228,7 +228,7 @@ export interface BluffGameState {
   loserId: string | null;          // only at reveal
   reason: 'showdown' | 'fold' | 'timeout' | null;  // only at reveal
   bluffWin: boolean;
-  showdownCards: Record<string, 'J' | 'Q' | 'K'> | null;  // only at reveal
+  showdownCards: Record<string, 'Joker' | 'J' | 'Q' | 'K'> | null;  // only at reveal
   points: Record<string, number>;  // only at reveal
 }
 

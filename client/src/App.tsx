@@ -1,7 +1,7 @@
 import { useEffect, useCallback } from 'react';
 import './index.css';
 import { useSocket, type GuessData } from './hooks/useSocket';
-import type { ChromaOptions, TerritoryOptions, LiarOptions } from './types/game';
+import type { ChromaOptions, TerritoryOptions, LiarOptions, BluffAction } from './types/game';
 import { TOTAL_ROUNDS } from './constants';
 import ErrorBoundary from './components/ErrorBoundary';
 import LandingPage from './components/LandingPage';
@@ -120,7 +120,7 @@ export default function App() {
   const handleSubmitLiarBid = useCallback((qty: number, face: number) => { if (roomCode) submitLiarBid(roomCode, qty, face); }, [roomCode, submitLiarBid]);
   const handleSubmitLiarCall = useCallback((kind: 'liar' | 'exact') => { if (roomCode) submitLiarCall(roomCode, kind); }, [roomCode, submitLiarCall]);
   const handleNextLiarRound = useCallback(() => { if (roomCode) nextLiarRound(roomCode); }, [roomCode, nextLiarRound]);
-  const handleSubmitBluffAction = useCallback((action: 'check' | 'bet' | 'call' | 'fold') => { if (roomCode) submitBluffAction(roomCode, action); }, [roomCode, submitBluffAction]);
+  const handleSubmitBluffAction = useCallback((action: BluffAction) => { if (roomCode) submitBluffAction(roomCode, action); }, [roomCode, submitBluffAction]);
   const handleNextBluffRound = useCallback(() => { if (roomCode) nextBluffRound(roomCode); }, [roomCode, nextBluffRound]);
   const handleNextRound = useCallback(() => { if (roomCode) nextRound(roomCode); }, [roomCode, nextRound]);
   const handlePlayAgain = useCallback(() => { if (roomCode) playAgain(roomCode); }, [roomCode, playAgain]);

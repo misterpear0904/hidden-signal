@@ -8,8 +8,8 @@ interface Props {
   onAction: (action: BluffAction) => void;
 }
 
-export function PlayingCard({ rank, hidden, small }: { rank?: 'J' | 'Q' | 'K'; hidden?: boolean; small?: boolean }) {
-  const isRed = rank === 'Q' || rank === 'K';
+export function PlayingCard({ rank, hidden, small }: { rank?: 'Joker' | 'J' | 'Q' | 'K'; hidden?: boolean; small?: boolean }) {
+  const isRed = rank === 'Q' || rank === 'K' || rank === 'Joker';
   return (
     <div
       style={{
@@ -33,7 +33,7 @@ export function PlayingCard({ rank, hidden, small }: { rank?: 'J' | 'Q' | 'K'; h
         <>
           <span style={{ fontSize: small ? '1.6rem' : '3rem', lineHeight: 1 }}>{rank}</span>
           <span style={{ fontSize: small ? '0.6rem' : '0.7rem', letterSpacing: '0.1em' }}>
-            {rank === 'J' ? 'JACK' : rank === 'Q' ? 'QUEEN' : 'KING'}
+            {rank === 'J' ? 'JACK' : rank === 'Q' ? 'QUEEN' : rank === 'K' ? 'KING' : 'JOKER'}
           </span>
         </>
       )}
@@ -44,6 +44,7 @@ export function PlayingCard({ rank, hidden, small }: { rank?: 'J' | 'Q' | 'K'; h
 const ACTION_LABEL: Record<BluffAction, string> = {
   check: '➖ Checked',
   bet: '💰 Bet',
+  raise: '📈 Raise',
   call: '📞 Called',
   fold: '🏳️ Folded',
 };
@@ -100,7 +101,7 @@ export default function BluffBetPhase({ roomState, myId, onAction }: Props) {
             </div>
           </div>
           <p className="text-xs text-muted text-center mt-12" style={{ fontStyle: 'italic' }}>
-            Deck: J · Q · K — one card each, higher card wins showdowns
+            Deck: Joker · J · Q · K — one card each, Joker beats King, loses to Q/J, higher card wins showdowns
           </p>
         </div>
 

@@ -322,7 +322,8 @@ const BLUFF_BET_SEC = 30;
 const BLUFF_ROUNDS = 5;
 const BLUFF_WIN_POINTS = 1;
 const BLUFF_BLUFF_BONUS_POINTS = 2; // total for winning a fold with a Jack
-const BLUFF_RANKS = { J: 1, Q: 2, K: 3 };
+// Joker beats King, loses to Queen and Jack
+const BLUFF_RANKS = { Joker: 4, J: 1, Q: 2, K: 3 };
 
 const BLEND_WORDS = {
   Animals: ['Elephant', 'Penguin', 'Kangaroo', 'Octopus', 'Giraffe', 'Crocodile', 'Owl', 'Dolphin'],
@@ -743,8 +744,9 @@ export function nextLiarRound(code) {
   return startLiarRound(room);
 }
 
-function startBluffRound(room) {
-  const deck = shuffleInPlace(['J', 'Q', 'K']);
+export function startBluffRound(room) {
+  // Deck includes Joker (beats King, loses to Q/J)
+  const deck = shuffleInPlace(['Joker', 'J', 'Q', 'K']);
   const cards = {};
   room.players.forEach((p, i) => { cards[p.id] = deck[i]; });
   // First to act alternates each round for fairness
@@ -753,7 +755,7 @@ function startBluffRound(room) {
   room.bluffState = {
     cards,
     firstId,
-    history: [],            // { playerId, playerName, action: 'check'|'bet'|'call'|'fold' }
+    history: [],            // { playerId, playerName, action: 'check'|'bet'|'raise'|'call'|'fold' }
     toActId: firstId,
     winnerId: null,
     winnerName: null,
@@ -762,6 +764,7 @@ function startBluffRound(room) {
     bluffWin: false,        // folded out holding a Jack
     showdownCards: null,
     points: {},
+    betCount: 0,            // track number of bets/raises for scoring
   };
   room.phase = 'bluff-bet';
   room.timerEnd = Date.now() + BLUFF_BET_SEC * 1000;
@@ -781,9 +784,21 @@ function bluffOpponentId(room, playerId) {
   return other ? other.id : null;
 }
 
-function resolveBluffShowdown(room) {
+export function resolveBluffShowdown(room) {
+  console.log('DEBUG resolveBluffShowdown - room:', room);
+  console.log('DEBUG resolveBluffShowdown - room.players:', room.players);
+  console.log('DEBUG resolveBluffShowdown - room.players type:', typeof room.players, Array.isArray(room.players));
   const [a, b] = room.players;
-  const winnerId = BLUFF_RANKS[room.bluffState.cards[a.id]] > BLUFF_RANKS[room.bluffState.cards[b.id]] ? a.id : b.id;
+  const cardA = room.bluffState.cards[a.id];
+  const cardB = room.bluffState.cards[b.id];
+  
+  // Custom comparison: Joker beats King, loses to Queen and Jack
+  function cardValue(card) {
+    if (card === 'Joker') return 3.5; // Between King (3) and Queen (2)
+    return BLUFF_RANKS[card] || 0;
+  }
+  
+  const winnerId = cardValue(cardA) > cardValue(cardB) ? a.id : b.id;
   const winner = room.players.find(p => p.id === winnerId);
   awardBluffPoints(room, winnerId, BLUFF_WIN_POINTS);
   room.bluffState.winnerId = winnerId;
@@ -791,13 +806,13 @@ function resolveBluffShowdown(room) {
   room.bluffState.loserId = winnerId === a.id ? b.id : a.id;
   room.bluffState.reason = 'showdown';
   room.bluffState.bluffWin = false;
-  room.bluffState.showdownCards = { [a.id]: room.bluffState.cards[a.id], [b.id]: room.bluffState.cards[b.id] };
+  room.bluffState.showdownCards = { [a.id]: cardA, [b.id]: cardB };
   room.phase = 'bluff-reveal';
   room.lastActivityMs = Date.now();
   return room;
 }
 
-function resolveBluffFold(room, folderId, timedOut) {
+export function resolveBluffFold(room, folderId, timedOut) {
   const bettor = [...room.bluffState.history].reverse().find(h => h.action === 'bet');
   const winnerId = bettor ? bettor.playerId : bluffOpponentId(room, folderId);
   const winner = room.players.find(p => p.id === winnerId);
@@ -821,12 +836,13 @@ export function submitBluffAction(code, playerId, action) {
   if (room.bluffState.toActId !== playerId) return null;
 
   const last = room.bluffState.history[room.bluffState.history.length - 1];
-  const facingBet = last?.action === 'bet';
+  const facingBet = last?.action === 'bet' || last?.action === 'raise';
   if (!facingBet && action !== 'check' && action !== 'bet') return null;
-  if (facingBet && action !== 'fold' && action !== 'call') return null;
+  if (facingBet && action !== 'fold' && action !== 'call' && action !== 'raise') return null;
 
   const player = room.players.find(p => p.id === playerId);
   room.bluffState.history.push({ playerId, playerName: player?.name || '???', action });
+  room.bluffState.betCount = (room.bluffState.betCount || 0) + (action === 'bet' || action === 'raise' ? 1 : 0);
 
   if (action === 'fold') return resolveBluffFold(room, playerId, false);
   if (action === 'call') return resolveBluffShowdown(room);

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
-import type { RoomState, RoleData, RoundRevealData, ChromaOptions, TerritoryOptions, LiarOptions } from '../types/game';
+import type { RoomState, RoleData, RoundRevealData, ChromaOptions, TerritoryOptions, LiarOptions, BluffAction } from '../types/game';
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
 
@@ -56,7 +56,7 @@ export interface SocketHookReturn {
   submitLiarBid: (roomCode: string, qty: number, face: number) => void;
   submitLiarCall: (roomCode: string, kind: 'liar' | 'exact') => void;
   nextLiarRound: (roomCode: string) => void;
-  submitBluffAction: (roomCode: string, action: 'check' | 'bet' | 'call' | 'fold') => void;
+  submitBluffAction: (roomCode: string, action: BluffAction) => void;
   nextBluffRound: (roomCode: string) => void;
   nextRound: (roomCode: string) => void;
   playAgain: (roomCode: string) => void;
@@ -387,7 +387,7 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('next-liar-round', { roomCode: code });
   }, []);
 
-  const submitBluffAction = useCallback((code: string, action: 'check' | 'bet' | 'call' | 'fold') => {
+  const submitBluffAction = useCallback((code: string, action: BluffAction) => {
     socketRef.current?.emit('submit-bluff-action', { roomCode: code, action });
   }, []);
 
