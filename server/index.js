@@ -656,7 +656,7 @@ io.on('connection', (socket) => {
     }
 
     if (gameId === 'liar-dice') {
-      if (room.players.length !== 2) return socket.emit('error', "Liar's Dice is a 2-player duel");
+      if (room.players.length < 2 || room.players.length > 12) return socket.emit('error', "Liar's Dice requires 2-12 players");
       clearRoomTimer(roomCode);
       const started = startGame(roomCode);
       if (!started) return socket.emit('error', "Could not start Liar's Dice");

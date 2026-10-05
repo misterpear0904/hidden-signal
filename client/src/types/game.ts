@@ -32,6 +32,10 @@ export interface TerritoryOptions {
   extremeMode: boolean;
 }
 
+export interface LiarOptions {
+  extremeMode: boolean;
+}
+
 export interface TerritoryShotEvent {
   id: string;
   playerId: string;
@@ -233,6 +237,7 @@ export interface RoomState {
   selectedGameId: string;
   chromaOptions: ChromaOptions;
   territoryOptions?: TerritoryOptions;
+  liarOptions?: LiarOptions;
   chromaState: ChromaRoundState | null;
   territoryState: TerritoryGameState | null;
   blendState: BlendGameState | null;

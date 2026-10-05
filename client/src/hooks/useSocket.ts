@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
-import type { RoomState, RoleData, RoundRevealData, ChromaOptions, TerritoryOptions } from '../types/game';
+import type { RoomState, RoleData, RoundRevealData, ChromaOptions, TerritoryOptions, LiarOptions } from '../types/game';
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
 
@@ -36,6 +36,7 @@ export interface SocketHookReturn {
   selectGame: (roomCode: string, gameId: string) => void;
   updateChromaOptions: (roomCode: string, options: Partial<ChromaOptions>) => void;
   updateTerritoryOptions: (roomCode: string, options: Partial<TerritoryOptions>) => void;
+  updateLiarOptions: (roomCode: string, options: Partial<LiarOptions>) => void;
   setPlayerDifficulty: (roomCode: string, difficulty: 'easy' | 'medium' | 'hard') => void;
   submitChromaGuess: (roomCode: string, tileIndex: number) => void;
   nextChromaRound: (roomCode: string) => void;
@@ -314,6 +315,10 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('update-territory-options', { roomCode: code, options });
   }, []);
 
+  const updateLiarOptions = useCallback((code: string, options: Partial<LiarOptions>) => {
+    socketRef.current?.emit('update-liar-options', { roomCode: code, options });
+  }, []);
+
   const setPlayerDifficulty = useCallback((code: string, difficulty: 'easy' | 'medium' | 'hard') => {
     socketRef.current?.emit('set-player-difficulty', { roomCode: code, difficulty });
   }, []);
@@ -410,6 +415,7 @@ export function useSocket(): SocketHookReturn {
     selectGame,
     updateChromaOptions,
     updateTerritoryOptions,
+    updateLiarOptions,
     setPlayerDifficulty,
     submitChromaGuess,
     nextChromaRound,

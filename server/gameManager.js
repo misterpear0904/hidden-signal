@@ -274,7 +274,7 @@ export function startGame(code) {
   }
 
   if (room.selectedGameId === 'liar-dice') {
-    if (room.players.length !== 2) return null;
+    if (room.players.length < 2 || room.players.length > 12) return null;
     room.round = 1;
     room.endVote = null;
     room.liarState = null;
@@ -309,10 +309,11 @@ const BLEND_VOTER_POINT = 1;
 const BLEND_ESCAPE_POINTS = 2;
 const BLEND_STEAL_POINTS = 2;
 
-// ─── Liar's Dice (2-player bluffing duel) tuning ────────────────────────────
+// ─── Liar's Dice (2-12 player bluffing game) tuning ──────────────────────────
 const LIAR_BID_SEC = 60;
 const LIAR_ROUNDS = 5;
 const LIAR_DICE_EACH = 3;
+const LIAR_EXTREME_DICE_EACH = 9;  // 3x starting dice for extreme mode
 const LIAR_WIN_POINTS = 1;
 const LIAR_EXACT_BONUS_POINTS = 2;
 
@@ -607,14 +608,16 @@ function rollLiarDice(n) {
 }
 
 function startLiarRound(room) {
+  const isExtreme = room.liarOptions?.extremeMode === true;
+  const diceEach = isExtreme ? LIAR_EXTREME_DICE_EACH : LIAR_DICE_EACH;
   const dice = {};
-  for (const p of room.players) dice[p.id] = rollLiarDice(LIAR_DICE_EACH);
+  for (const p of room.players) dice[p.id] = rollLiarDice(diceEach);
   // Starter alternates each round for fairness
   const starterId = room.players[(room.round - 1) % room.players.length].id;
 
   room.liarState = {
     dice,
-    diceEach: LIAR_DICE_EACH,
+    diceEach,
     bids: [],               // { playerId, playerName, qty, face }
     toActId: starterId,
     starterId,
@@ -625,6 +628,7 @@ function startLiarRound(room) {
     challengedBid: null,
     actualCount: null,
     points: {},
+    isExtreme,
   };
   room.phase = 'liar-bid';
   room.timerEnd = Date.now() + LIAR_BID_SEC * 1000;

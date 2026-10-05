@@ -146,18 +146,18 @@ export default function FinalLeaderboard({ roomState, myId, isHost, onPlayAgain 
           </div>
         </div>
 
-        {/* Play Again */}
+        {/* Back to Lobby */}
         {isHost ? (
           <button
             className="btn btn-primary btn-lg btn-full"
             onClick={onPlayAgain}
             id="play-again-btn"
           >
-            🔄 Play Again
+            🏠 Back to Lobby
           </button>
         ) : (
           <div className="glass text-center" style={{ padding: '20px', borderRadius: 'var(--radius-lg)' }}>
-            <p className="text-muted text-sm">Waiting for host to start a new game...</p>
+            <p className="text-muted text-sm">Waiting for host to return to lobby...</p>
           </div>
         )}
       </div>

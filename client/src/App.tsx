@@ -1,7 +1,7 @@
 import { useEffect, useCallback } from 'react';
 import './index.css';
 import { useSocket, type GuessData } from './hooks/useSocket';
-import type { ChromaOptions, TerritoryOptions } from './types/game';
+import type { ChromaOptions, TerritoryOptions, LiarOptions } from './types/game';
 import { TOTAL_ROUNDS } from './constants';
 import ErrorBoundary from './components/ErrorBoundary';
 import LandingPage from './components/LandingPage';
@@ -57,6 +57,7 @@ export default function App() {
     selectGame,
     updateChromaOptions,
     updateTerritoryOptions,
+    updateLiarOptions,
     setPlayerDifficulty,
     submitChromaGuess,
     nextChromaRound,
@@ -98,6 +99,7 @@ export default function App() {
   const handleSelectGame = useCallback((gameId: string) => { if (roomCode) selectGame(roomCode, gameId); }, [roomCode, selectGame]);
   const handleUpdateChromaOptions = useCallback((options: Partial<ChromaOptions>) => { if (roomCode) updateChromaOptions(roomCode, options); }, [roomCode, updateChromaOptions]);
   const handleUpdateTerritoryOptions = useCallback((options: Partial<TerritoryOptions>) => { if (roomCode) updateTerritoryOptions(roomCode, options); }, [roomCode, updateTerritoryOptions]);
+  const handleUpdateLiarOptions = useCallback((options: Partial<LiarOptions>) => { if (roomCode) updateLiarOptions(roomCode, options); }, [roomCode, updateLiarOptions]);
   const handleSetPlayerDifficulty = useCallback((diff: 'easy' | 'medium' | 'hard') => { if (roomCode) setPlayerDifficulty(roomCode, diff); }, [roomCode, setPlayerDifficulty]);
   const handleStartGame = useCallback(() => { if (roomCode) startGame(roomCode); }, [roomCode, startGame]);
   const handleGuessChromaTile = useCallback((tileIndex: number) => { if (roomCode) submitChromaGuess(roomCode, tileIndex); }, [roomCode, submitChromaGuess]);
@@ -148,6 +150,7 @@ export default function App() {
             onSelectGame={handleSelectGame}
             onUpdateChromaOptions={handleUpdateChromaOptions}
             onUpdateTerritoryOptions={handleUpdateTerritoryOptions}
+            onUpdateLiarOptions={handleUpdateLiarOptions}
             onSetPlayerDifficulty={handleSetPlayerDifficulty}
             onKickPlayer={handleKickPlayer}
             onStartGame={handleStartGame}

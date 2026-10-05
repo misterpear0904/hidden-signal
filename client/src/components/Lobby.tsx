@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { RoomState, ChromaOptions, TerritoryOptions } from '../types/game';
+import type { RoomState, ChromaOptions, TerritoryOptions, LiarOptions } from '../types/game';
 import GameSelect, { GAME_CATALOGUE } from './GameSelect';
 import { avatarColor, avatarInitial } from '../constants';
 
@@ -9,16 +9,19 @@ interface Props {
   onSelectGame: (gameId: string) => void;
   onUpdateChromaOptions: (options: Partial<ChromaOptions>) => void;
   onUpdateTerritoryOptions: (options: Partial<TerritoryOptions>) => void;
+  onUpdateLiarOptions: (options: Partial<LiarOptions>) => void;
   onSetPlayerDifficulty: (difficulty: 'easy' | 'medium' | 'hard') => void;
   onKickPlayer: (targetId: string) => void;
   onStartGame: () => void;
 }
 
-export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOptions, onUpdateTerritoryOptions, onSetPlayerDifficulty, onKickPlayer, onStartGame }: Props) {
+export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOptions, onUpdateTerritoryOptions, onUpdateLiarOptions, onSetPlayerDifficulty, onKickPlayer, onStartGame }: Props) {
   const me = roomState.players.find(p => p.id === myId);
   const isHost = me?.isHost ?? false;
   const playerCount = roomState.players.length;
   const [copied, setCopied] = useState(false);
+
+  const liarOptions = roomState.liarOptions || { extremeMode: false };
 
   const copyCode = async () => {
     const done = () => {
@@ -393,6 +396,73 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
               ) : (
                 <span className="badge" style={{ background: chromaOptions.extremeMode ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.05)', color: chromaOptions.extremeMode ? 'var(--rose-400)' : 'var(--text-muted)' }}>
                   {chromaOptions.extremeMode ? '8x8 🔥' : '5x5'} (Host Setting)
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Liar's Dice Game Options Panel ── */}
+        {selectedGameId === 'liar-dice' && (
+          <div className="glass p-24 animate-fade-up" style={{ borderRadius: 'var(--radius-xl)', marginBottom: 24, border: '1px solid rgba(74,222,128,0.3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+              <span style={{ fontSize: '1.4rem' }}>🎲</span>
+              <div>
+                <h3 className="heading-md" style={{ fontSize: '1.1rem', margin: 0 }}>Liar's Dice Settings</h3>
+                <p className="text-xs text-muted">Configure dice count and game intensity!</p>
+              </div>
+            </div>
+
+            {/* Extreme Mode Host Toggle */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '16px 18px',
+              background: liarOptions.extremeMode ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.03)',
+              borderRadius: 'var(--radius-lg)',
+              border: `1px solid ${liarOptions.extremeMode ? 'rgba(239,68,68,0.45)' : 'var(--border)'}`,
+              transition: 'all 0.2s',
+            }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontWeight: 700, fontSize: '0.95rem', color: liarOptions.extremeMode ? 'var(--rose-400)' : 'var(--text-primary)' }}>
+                    🔥 Extreme Mode (9 Dice Each)
+                  </span>
+                  {liarOptions.extremeMode && (
+                    <span className="badge badge-rose" style={{ fontSize: '0.6rem' }}>3x Dice 🔥</span>
+                  )}
+                </div>
+                <div className="text-xs text-muted" style={{ marginTop: 4, lineHeight: 1.4 }}>
+                  {liarOptions.extremeMode
+                    ? 'ON: 9 dice each (3x normal)! Bigger bluffs, wilder calls, more chaos!'
+                    : 'OFF: Standard 3 dice each.'}
+                </div>
+              </div>
+
+              {isHost ? (
+                <button
+                  type="button"
+                  id="liar-extreme-mode-toggle"
+                  onClick={() => onUpdateLiarOptions({ extremeMode: !liarOptions.extremeMode })}
+                  style={{
+                    padding: '8px 18px',
+                    borderRadius: 'var(--radius-full)',
+                    background: liarOptions.extremeMode ? 'var(--rose-400)' : 'rgba(255,255,255,0.1)',
+                    color: liarOptions.extremeMode ? '#fff' : 'var(--text-muted)',
+                    fontWeight: 700,
+                    fontSize: '0.85rem',
+                    border: 'none',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    boxShadow: liarOptions.extremeMode ? '0 0 16px rgba(239,68,68,0.45)' : 'none',
+                  }}
+                >
+                  {liarOptions.extremeMode ? '9 Dice ON 🔥' : 'OFF'}
+                </button>
+              ) : (
+                <span className="badge" style={{ background: liarOptions.extremeMode ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.05)', color: liarOptions.extremeMode ? 'var(--rose-400)' : 'var(--text-muted)' }}>
+                  {liarOptions.extremeMode ? '9 Dice 🔥' : '3 Dice'} (Host Setting)
                 </span>
               )}
             </div>
