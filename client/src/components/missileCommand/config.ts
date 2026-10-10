@@ -28,18 +28,23 @@ export interface BuildOption {
 
 export const BUILD_OPTIONS: BuildOption[] = [
   { key: 'economy', label: 'Generator', emoji: '💰', cost: 50, desc: '+2 credits/s at Lv1 (up to +20/s at Lv5). Upgrades snowball your economy.', buildingType: 'economy' },
-  { key: 'shield', label: 'Shield Gen', emoji: '🛡️', cost: 40, desc: '150 shield HP at Lv1 (up to 1000). Circular aura ≈ 13 squares, fully blocks blasts while charged. Slowly self-repairs.', buildingType: 'shield' },
-  { key: 'healer', label: 'Shield Healer', emoji: '💚', cost: 45, desc: 'Repairs 8 shield HP/s at Lv1 (up to 65/s). Heals ONE shield at a time — the weakest in its ≈ 5-square aura.', buildingType: 'healer' },
+  { key: 'shield', label: 'Shield Gen', emoji: '🛡️', cost: 40, desc: '150 shield HP at Lv1 (up to 1000). Dashed aura ≈ 25 squares, fully blocks blasts while charged. Slowly self-repairs.', buildingType: 'shield' },
+  { key: 'healer', label: 'Shield Healer', emoji: '💚', cost: 45, desc: 'Repairs 8 shield HP/s at Lv1 (up to 65/s). Heals ONE shield at a time — the weakest in its ≈ 13-square aura.', buildingType: 'healer' },
   { key: 'launcher_single', label: 'Single', emoji: '🎯', cost: 120, desc: '120 dmg for 30cr/missile. Stockpile up to 3, fire the volley at 1 square.', buildingType: 'launcher', launcherType: 'single' },
   { key: 'launcher_scatter', label: 'Scatter', emoji: '💥', cost: 150, desc: '5 × 35 dmg for 45cr/missile. Stockpile up to 3, volley hits a plus of squares per missile.', buildingType: 'launcher', launcherType: 'scatter' },
   { key: 'launcher_cluster', label: 'Cluster', emoji: '☄️', cost: 170, desc: '4 bomblets × 45 dmg for 60cr/missile. Stockpile up to 3, each missile blasts a plus.', buildingType: 'launcher', launcherType: 'cluster' },
 ];
 
 // Coverage cell counts for Manhattan ranges (1 + 4 + 8 + ... + 4*range)
-export const SHIELD_COVER_CELLS = 13; // range 2
-export const HEALER_COVER_CELLS = 5; // range 1
+export const SHIELD_COVER_CELLS = 25; // range 3
+export const HEALER_COVER_CELLS = 13; // range 2
 export const CORE_INCOME_FALLBACK = 5;
 export const MAX_STOCK = 3;
+
+// Build durations (seconds) by target level — mirrors server buildMs.
+export const BUILD_SECONDS: Record<number, number> = { 1: 3, 2: 5, 3: 10, 4: 20, 5: 30 };
+// Missile build time (seconds) — mirrors server loadMs.
+export const LOAD_SECONDS = 5;
 
 // Level tables for display (mirror server/missileCommand.js)
 export const STATS = {

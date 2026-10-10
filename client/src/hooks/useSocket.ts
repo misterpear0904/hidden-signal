@@ -65,6 +65,7 @@ export interface SocketHookReturn {
   buildMissileBuilding: (roomCode: string, action: MissileBuildAction) => void;
   upgradeMissileBuilding: (roomCode: string, action: MissileUpgradeAction) => void;
   loadMissile: (roomCode: string, action: MissileLoadAction) => void;
+  toggleAutobuild: (roomCode: string, action: MissileLoadAction) => void;
   launchMissile: (roomCode: string, action: MissileLaunchAction) => void;
   updateMissileCommandOptions: (roomCode: string, options: Partial<MissileCommandOptions>) => void;
 }
@@ -418,6 +419,10 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('load-missile', { roomCode: code, launcherId: action.launcherId });
   }, []);
 
+  const toggleAutobuild = useCallback((code: string, action: MissileLoadAction) => {
+    socketRef.current?.emit('toggle-autobuild', { roomCode: code, launcherId: action.launcherId });
+  }, []);
+
   const updateMissileCommandOptions = useCallback((code: string, options: Partial<MissileCommandOptions>) => {
     socketRef.current?.emit('update-missile-command-options', { roomCode: code, options });
   }, []);
@@ -471,6 +476,7 @@ export function useSocket(): SocketHookReturn {
     buildMissileBuilding,
     upgradeMissileBuilding,
     loadMissile,
+    toggleAutobuild,
     launchMissile,
     updateMissileCommandOptions,
   };

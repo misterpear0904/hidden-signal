@@ -14,11 +14,16 @@ export const MISSILE_CONFIG = {
   // Grid per island (odd columns so the core sits in the very middle)
   gridCols: 13,
   gridRows: 7,
-  // Manhattan ranges (no diagonals): shield aura covers 13 squares, healer 5
-  shieldTiles: 2, // |dx|+|dy| <= 2 → 13-square aura
-  healerTiles: 1, // |dx|+|dy| <= 1 → 5-square (plus) aura
+  // Manhattan ranges (no diagonals): shield aura covers 25 squares, healer 13
+  shieldTiles: 3, // |dx|+|dy| <= 3 → 25-square aura
+  healerTiles: 2, // |dx|+|dy| <= 2 → 13-square aura
   // Missile stockpiling per launcher
   maxStock: 3,
+  // Time to build one missile (each launcher builds one at a time)
+  loadMs: 5000,
+  // Build durations (ms) by target level — each building/upgrade runs its own
+  // timer, so everything constructs in parallel.
+  buildMs: { 1: 3000, 2: 5000, 3: 10000, 4: 20000, 5: 30000 },
   // Core baseline economy
   coreIncomePerSec: 5,
   // Core
@@ -159,6 +164,7 @@ export function createMissileCommandState(playerIds, options = {}) {
     healerTiles: MISSILE_CONFIG.healerTiles,
     coreIncomePerSec: MISSILE_CONFIG.coreIncomePerSec,
     buildings,
+    pending: {}, // construction sites & in-progress upgrades, keyed by id
     missiles: [],
     resources,
     gameStartTime: now,
@@ -178,7 +184,60 @@ function buildCostFor(buildingType, launcherType) {
 }
 
 function occupiedCell(state, side, gx, gy, ignoreId = null) {
-  return Object.values(state.buildings).some(b => b.side === side && b.gx === gx && b.gy === gy && b.id !== ignoreId);
+  if (Object.values(state.buildings).some(b => b.side === side && b.gx === gx && b.gy === gy && b.id !== ignoreId)) return true;
+  // Construction sites reserve their cell too
+  return Object.values(state.pending ?? {}).some(p => p.kind === 'build' && p.side === side && p.gx === gx && p.gy === gy);
+}
+
+function pendingUpgradeFor(state, buildingId) {
+  return Object.values(state.pending ?? {}).find(p => p.kind === 'upgrade' && p.upgradeOf === buildingId) || null;
+}
+
+// Create the level-1 building for a finished construction site.
+function materializeBuilding(state, p) {
+  const stats = baseStatsFor(p.type, p.launcherType, 1);
+  const b = { id: p.id, type: p.type, side: p.side, gx: p.gx, gy: p.gy, level: 1, ownerId: p.ownerId, hp: stats.hp ?? MISSILE_CONFIG.buildingHpFallback, maxHp: stats.hp ?? MISSILE_CONFIG.buildingHpFallback };
+  if (p.type === 'economy') b.incomePerSec = stats.incomePerSec;
+  if (p.type === 'shield') { b.shieldHp = stats.maxShieldHp; b.maxShieldHp = stats.maxShieldHp; }
+  if (p.type === 'healer') { b.healPerSec = stats.healPerSec; b.healTargetId = null; }
+  if (p.type === 'launcher') {
+    b.launcherType = p.launcherType;
+    b.missileCost = stats.missileCost;
+    b.missileDamage = stats.missileDamage;
+    b.blast = stats.blast;
+    b.missileSpeed = stats.missileSpeed;
+    b.cooldownMs = stats.cooldownMs;
+    b.lastFiredAt = 0;
+    b.stock = 0;
+    b.maxStock = MISSILE_CONFIG.maxStock;
+    b.loadingUntil = 0;
+    b.autobuild = false;
+  }
+  state.buildings[p.id] = b;
+  return b;
+}
+
+// Apply a finished upgrade to a building (it kept working at old stats meanwhile).
+function applyLevelUp(state, b) {
+  b.level += 1;
+  const stats = baseStatsFor(b.type, b.launcherType, b.level);
+  b.maxHp = stats.hp ?? b.maxHp;
+  b.hp = Math.min(b.maxHp, (b.hp ?? b.maxHp) + Math.round(b.maxHp * 0.4)); // heal chunk on upgrade
+  if (b.type === 'economy') b.incomePerSec = stats.incomePerSec;
+  if (b.type === 'shield') {
+    const prevMax = b.maxShieldHp;
+    b.maxShieldHp = stats.maxShieldHp;
+    b.shieldHp = Math.min(b.maxShieldHp, (b.shieldHp ?? prevMax) + Math.round(b.maxShieldHp * 0.5));
+  }
+  if (b.type === 'healer') { b.healPerSec = stats.healPerSec; }
+  if (b.type === 'launcher') {
+    b.missileCost = stats.missileCost;
+    b.missileDamage = stats.missileDamage;
+    b.blast = stats.blast;
+    b.cooldownMs = stats.cooldownMs;
+    b.missileSpeed = stats.missileSpeed;
+  }
+  return b;
 }
 
 export function missileBuildBuilding(state, playerId, action) {
@@ -198,26 +257,18 @@ export function missileBuildBuilding(state, playerId, action) {
   const cost = buildCostFor(buildingType, launcherType);
   if ((state.resources[playerId] ?? 0) < cost) return { error: `Need ${cost} credits` };
 
+  // Pay upfront; the site finishes after the Lv1 build time. Runs in parallel
+  // with everything else.
   state.resources[playerId] -= cost;
-  const id = uid('b');
-  const stats = baseStatsFor(buildingType, launcherType, 1);
-  const b = { id, type: buildingType, side, gx, gy, level: 1, ownerId: playerId, hp: stats.hp ?? MISSILE_CONFIG.buildingHpFallback, maxHp: stats.hp ?? MISSILE_CONFIG.buildingHpFallback };
-  if (buildingType === 'economy') b.incomePerSec = stats.incomePerSec;
-  if (buildingType === 'shield') { b.shieldHp = stats.maxShieldHp; b.maxShieldHp = stats.maxShieldHp; }
-  if (buildingType === 'healer') { b.healPerSec = stats.healPerSec; }
-  if (buildingType === 'launcher') {
-    b.launcherType = launcherType;
-    b.missileCost = stats.missileCost;
-    b.missileDamage = stats.missileDamage;
-    b.blast = stats.blast;
-    b.missileSpeed = stats.missileSpeed;
-    b.cooldownMs = stats.cooldownMs;
-    b.lastFiredAt = 0;
-    b.stock = 0;
-    b.maxStock = MISSILE_CONFIG.maxStock;
-  }
-  state.buildings[id] = b;
-  return { building: b };
+  const now = Date.now();
+  const site = {
+    id: uid('c'), kind: 'build', type: buildingType, launcherType: buildingType === 'launcher' ? launcherType : undefined,
+    side, gx, gy, ownerId: playerId, targetLevel: 1,
+    completeAt: now + (MISSILE_CONFIG.buildMs[1] ?? 3000),
+  };
+  if (!state.pending) state.pending = {};
+  state.pending[site.id] = site;
+  return { pending: site };
 }
 
 function upgradeCostFor(b) {
@@ -239,28 +290,23 @@ export function missileUpgradeBuilding(state, playerId, buildingId) {
   if (b.ownerId !== playerId) return { error: 'Not your building' };
   if (b.type === 'core') return { error: 'Core cannot be upgraded' };
   if (b.level >= MISSILE_CONFIG.maxLevel) return { error: 'Already max level' };
+  if (pendingUpgradeFor(state, buildingId)) return { error: 'Upgrade already in progress' };
   const cost = upgradeCostFor(b);
   if ((state.resources[playerId] ?? 0) < cost) return { error: `Need ${cost} credits to upgrade` };
+  // Pay upfront; the building keeps working at its old level until the upgrade
+  // timer finishes. Each upgrade runs its own timer (parallel upgrades OK).
   state.resources[playerId] -= cost;
-  b.level += 1;
-  const stats = baseStatsFor(b.type, b.launcherType, b.level);
-  b.maxHp = stats.hp ?? b.maxHp;
-  b.hp = Math.min(b.maxHp, (b.hp ?? b.maxHp) + Math.round(b.maxHp * 0.4)); // heal chunk on upgrade
-  if (b.type === 'economy') b.incomePerSec = stats.incomePerSec;
-  if (b.type === 'shield') {
-    const prevMax = b.maxShieldHp;
-    b.maxShieldHp = stats.maxShieldHp;
-    b.shieldHp = Math.min(b.maxShieldHp, (b.shieldHp ?? prevMax) + Math.round(b.maxShieldHp * 0.5));
-  }
-  if (b.type === 'healer') { b.healPerSec = stats.healPerSec; }
-  if (b.type === 'launcher') {
-    b.missileCost = stats.missileCost;
-    b.missileDamage = stats.missileDamage;
-    b.blast = stats.blast;
-    b.cooldownMs = stats.cooldownMs;
-    b.missileSpeed = stats.missileSpeed;
-  }
-  return { building: b };
+  const targetLevel = b.level + 1;
+  const now = Date.now();
+  const job = {
+    id: uid('c'), kind: 'upgrade', type: b.type, launcherType: b.launcherType,
+    side: b.side, gx: b.gx, gy: b.gy, ownerId: playerId, targetLevel,
+    upgradeOf: buildingId,
+    completeAt: now + (MISSILE_CONFIG.buildMs[targetLevel] ?? 5000),
+  };
+  if (!state.pending) state.pending = {};
+  state.pending[job.id] = job;
+  return { pending: job };
 }
 
 // Build one full shot pattern (single missile / scatter pellets / cluster bus).
@@ -315,8 +361,8 @@ function buildShotPattern(state, launcher, side, enemySide, targetGx, targetGy, 
   return [m];
 }
 
-// Pay to load one missile into a launcher's stockpile (max 3). Loading takes
-// the launcher's reload — firing happens separately via missileLaunch.
+// Pay to start building one missile in a launcher's stockpile (max 3).
+// Takes loadMs to finish (one at a time); completion happens in the tick.
 export function missileLoadMissile(state, playerId, launcherId) {
   if (state.winnerId) return { error: 'Game is over' };
   const side = missileSideForPlayer(state, playerId);
@@ -327,16 +373,27 @@ export function missileLoadMissile(state, playerId, launcherId) {
   const maxStock = launcher.maxStock ?? MISSILE_CONFIG.maxStock;
   if ((launcher.stock ?? 0) >= maxStock) return { error: `Stockpile full (${maxStock})` };
   const now = Date.now();
-  if (now - (launcher.lastFiredAt || 0) < (launcher.cooldownMs || 4000)) {
-    const wait = Math.ceil(((launcher.cooldownMs || 4000) - (now - (launcher.lastFiredAt || 0))) / 1000);
-    return { error: `Reloading… ${wait}s` };
+  if ((launcher.loadingUntil ?? 0) > now) {
+    const wait = Math.ceil((launcher.loadingUntil - now) / 1000);
+    return { error: `Missile already building… ${wait}s` };
   }
   if ((state.resources[playerId] ?? 0) < (launcher.missileCost || 0)) {
     return { error: `Need ${launcher.missileCost} credits to build a missile` };
   }
   state.resources[playerId] -= launcher.missileCost;
-  launcher.stock = (launcher.stock ?? 0) + 1;
-  launcher.lastFiredAt = now;
+  launcher.loadingUntil = now + (MISSILE_CONFIG.loadMs ?? 5000);
+  return { building: launcher };
+}
+
+// Flip a launcher's autobuild flag (auto-loads whenever stock isn't full
+// and the owner can afford it).
+export function missileToggleAutobuild(state, playerId, launcherId) {
+  if (state.winnerId) return { error: 'Game is over' };
+  if (!missileSideForPlayer(state, playerId)) return { error: 'You are not in this match' };
+  const launcher = state.buildings[launcherId];
+  if (!launcher || launcher.type !== 'launcher') return { error: 'Launcher not found' };
+  if (launcher.ownerId !== playerId) return { error: 'Not your launcher' };
+  launcher.autobuild = !launcher.autobuild;
   return { building: launcher };
 }
 
@@ -429,6 +486,49 @@ export function tickMissileCommand(state, now = Date.now()) {
   const last = state.lastEconomyTick || now;
   const dt = Math.max(0, Math.min(5, (now - last) / 1000));
   state.lastEconomyTick = now;
+
+  // 0. Construction & upgrades completing now (each runs its own timer)
+  if (state.pending) {
+    for (const [pid, p] of Object.entries(state.pending)) {
+      if (p.completeAt > now) continue;
+      delete state.pending[pid];
+      if (p.kind === 'build') {
+        if (!occupiedCell(state, p.side, p.gx, p.gy)) {
+          const b = materializeBuilding(state, p);
+          events.push({ type: 'built', id: b.id });
+        }
+      } else if (p.kind === 'upgrade') {
+        const b = state.buildings[p.upgradeOf];
+        // Only apply if the building survived and is still the expected level
+        if (b && b.type !== 'core' && b.level === p.targetLevel - 1) {
+          applyLevelUp(state, b);
+          events.push({ type: 'upgraded', id: b.id, level: b.level });
+        }
+      }
+    }
+  }
+
+  // 0b. Missile builds finishing now (one at a time per launcher), then
+  // autobuild kicks off the next one where enabled and affordable.
+  for (const b of Object.values(state.buildings)) {
+    if (b.type !== 'launcher') continue;
+    if ((b.loadingUntil ?? 0) > 0 && (b.loadingUntil ?? 0) <= now) {
+      const maxStock = b.maxStock ?? MISSILE_CONFIG.maxStock;
+      if ((b.stock ?? 0) < maxStock) {
+        b.stock = (b.stock ?? 0) + 1;
+        events.push({ type: 'missile-ready', id: b.id, stock: b.stock });
+      }
+      b.loadingUntil = 0;
+    }
+  }
+  for (const b of Object.values(state.buildings)) {
+    if (b.type !== 'launcher' || !b.autobuild) continue;
+    if ((b.loadingUntil ?? 0) > now) continue;
+    if ((b.stock ?? 0) >= (b.maxStock ?? MISSILE_CONFIG.maxStock)) continue;
+    if ((state.resources[b.ownerId] ?? 0) < (b.missileCost || 0)) continue;
+    state.resources[b.ownerId] -= b.missileCost;
+    b.loadingUntil = now + (MISSILE_CONFIG.loadMs ?? 5000);
+  }
 
   // 1. Economy income (continuous) — generators plus each living core's baseline
   for (const b of Object.values(state.buildings)) {

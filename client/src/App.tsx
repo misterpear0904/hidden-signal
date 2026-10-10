@@ -85,6 +85,7 @@ export default function App() {
     buildMissileBuilding,
     upgradeMissileBuilding,
     loadMissile,
+    toggleAutobuild,
     launchMissile,
     updateMissileCommandOptions,
   } = useSocket();
@@ -134,6 +135,7 @@ export default function App() {
   const handleUpgradeMissile = useCallback((buildingId: string) => { if (roomCode) upgradeMissileBuilding(roomCode, { buildingId }); }, [roomCode, upgradeMissileBuilding]);
   const handleLaunchMissile = useCallback((action: MissileLaunchAction) => { if (roomCode) launchMissile(roomCode, action); }, [roomCode, launchMissile]);
   const handleLoadMissile = useCallback((action: MissileLoadAction) => { if (roomCode) loadMissile(roomCode, action); }, [roomCode, loadMissile]);
+  const handleToggleAutobuild = useCallback((launcherId: string) => { if (roomCode) toggleAutobuild(roomCode, { launcherId }); }, [roomCode, toggleAutobuild]);
   const handleUpdateMissileCommandOptions = useCallback((options: Partial<MissileCommandOptions>) => { if (roomCode) updateMissileCommandOptions(roomCode, options); }, [roomCode, updateMissileCommandOptions]);
 
   // ─── Phase Router ──────────────────────────────────────────────────────────
@@ -284,6 +286,7 @@ export default function App() {
             onBuild={handleBuildMissile}
             onUpgrade={handleUpgradeMissile}
             onLoad={handleLoadMissile}
+            onToggleAutobuild={handleToggleAutobuild}
             onLaunch={handleLaunchMissile}
             onPlayAgain={handlePlayAgain}
           />

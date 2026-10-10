@@ -15,7 +15,7 @@ import type {
   MissileLaunchAction,
   MissileLoadAction,
 } from '../../types/game';
-import { WORLD, WATER_Y, TOP_RECT, BOTTOM_RECT, cellRect, BUILD_OPTIONS, STATS, BUILDING_META, upgradeCostFor, SHIELD_COVER_CELLS, HEALER_COVER_CELLS, CORE_INCOME_FALLBACK, MAX_STOCK } from './config';
+import { WORLD, WATER_Y, TOP_RECT, BOTTOM_RECT, cellRect, BUILD_OPTIONS, STATS, BUILDING_META, upgradeCostFor, SHIELD_COVER_CELLS, HEALER_COVER_CELLS, CORE_INCOME_FALLBACK, MAX_STOCK, BUILD_SECONDS, LOAD_SECONDS } from './config';
 
 interface Props {
   roomState: RoomState;
@@ -24,6 +24,7 @@ interface Props {
   onBuild: (action: MissileBuildAction) => void;
   onUpgrade: (buildingId: string) => void;
   onLoad: (action: MissileLoadAction) => void;
+  onToggleAutobuild: (launcherId: string) => void;
   onLaunch: (action: MissileLaunchAction) => void;
   onPlayAgain: () => void;
 }
@@ -44,23 +45,22 @@ function worldToCell(wx: number, wy: number, cols: number, rows: number): Cell |
   return null;
 }
 
-// Coverage bars (Manhattan range, no diagonals): one rounded bar per covered
-// row, so the aura only ever touches tiles that actually get coverage.
-function coverageRows(side: 'top' | 'bottom', gx: number, gy: number, range: number, cols: number, rows: number) {
-  const r = side === 'top' ? TOP_RECT : BOTTOM_RECT;
-  const cw = r.w / cols, ch = r.h / rows;
-  const out: Array<{ x: number; y: number; w: number; h: number }> = [];
-  for (let dy = -range; dy <= range; dy++) {
-    const yy = gy + dy;
-    if (yy < 0 || yy >= rows) continue;
-    const span = range - Math.abs(dy);
-    const x0 = Math.max(0, gx - span), x1 = Math.min(cols - 1, gx + span);
-    out.push({ x: r.x + x0 * cw + 3, y: r.y + yy * ch + 3, w: (x1 - x0 + 1) * cw - 6, h: ch - 6 });
+// Every cell covered by a Manhattan range — coverage is drawn per tile so
+// there is never any ambiguity about half-covered squares.
+function coveredCells(gx: number, gy: number, range: number, cols: number, rows: number): Array<{ gx: number; gy: number }> {
+  const out: Array<{ gx: number; gy: number }> = [];
+  for (let dx = -range; dx <= range; dx++) {
+    for (let dy = -range; dy <= range; dy++) {
+      if (Math.abs(dx) + Math.abs(dy) > range) continue;
+      const cx = gx + dx, cy = gy + dy;
+      if (cx < 0 || cx >= cols || cy < 0 || cy >= rows) continue;
+      out.push({ gx: cx, gy: cy });
+    }
   }
   return out;
 }
 
-export default function MissileCommandGame({ roomState, myId, isHost, onBuild, onUpgrade, onLoad, onLaunch, onPlayAgain }: Props) {
+export default function MissileCommandGame({ roomState, myId, isHost, onBuild, onUpgrade, onLoad, onToggleAutobuild, onLaunch, onPlayAgain }: Props) {
   const mc = roomState.missileCommandState;
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -75,6 +75,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   const gestureRef = useRef({
     pointers: new Map<number, { x: number; y: number }>(),
     downPos: null as { x: number; y: number } | null,
+    tapTol: 10,
     moved: false,
     pinchDist: 0,
     pinchZoom: 1,
@@ -212,6 +213,8 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     (e.target as Element).setPointerCapture?.(e.pointerId);
     if (g.pointers.size === 1) {
       g.downPos = { x: e.clientX, y: e.clientY };
+      // Touch jitter is much larger than mouse — be generous so single taps register.
+      g.tapTol = e.pointerType === 'touch' ? 26 : 10;
       g.moved = false;
     } else if (g.pointers.size === 2) {
       const [a, b] = [...g.pointers.values()];
@@ -239,7 +242,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     }
     if (g.downPos) {
       const total = Math.hypot(e.clientX - g.downPos.x, e.clientY - g.downPos.y);
-      if (total > 10) g.moved = true;
+      if (total > g.tapTol) g.moved = true;
       if (g.moved && rect) {
         const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
         setCenter(c => ({ x: c.x - (dx / rect.width) * vbW, y: c.y - (dy / rect.height) * vbH }));
@@ -396,52 +399,77 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                 </g>
               ))}
 
-              {/* Shield coverage auras — exact covered tiles only */}
+              {/* Shield coverage — every covered tile highlighted, no ambiguity */}
               {buildings.filter(b => b.type === 'shield').map(b => {
                 const isMine = b.ownerId === myId;
                 const pct = (b.shieldHp ?? 0) / (b.maxShieldHp ?? 1);
+                const charged = pct > 0;
                 const isSel = selected?.id === b.id;
                 const tint = isMine ? '56,189,248' : '251,113,133';
                 return (
                   <g key={`sh-${b.id}`} pointerEvents="none">
-                    {coverageRows(b.side, b.gx, b.gy, shieldTiles, cols, rows).map((rc, i) => (
-                      <rect key={i} x={rc.x} y={rc.y} width={rc.w} height={rc.h} rx={rc.h / 2}
-                        fill={`rgba(${tint},${isSel ? 0.22 : 0.09})`}
-                        stroke={`rgba(${tint},${isSel ? 0.8 : 0.35})`} strokeWidth={isSel ? 2 : 1}
-                        strokeDasharray={pct <= 0 ? '5 7' : undefined}
-                        opacity={pct <= 0 ? 0.4 : 1} />
-                    ))}
+                    {coveredCells(b.gx, b.gy, shieldTiles, cols, rows).map(c => {
+                      const r = cellRect(b.side, c.gx, c.gy, cols, rows);
+                      return (
+                        <rect key={`${c.gx}-${c.gy}`} x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={7}
+                          fill={`rgba(${tint},${!charged ? 0.04 : isSel ? 0.30 : 0.16})`}
+                          stroke={`rgba(${tint},${!charged ? 0.3 : isSel ? 1 : 0.7})`} strokeWidth={isSel ? 2.5 : 1.5}
+                          strokeDasharray={!charged ? '5 7' : undefined} />
+                      );
+                    })}
                   </g>
                 );
               })}
 
-              {/* Shield Healer coverage auras — exact covered tiles only */}
-              {buildings.filter(b => b.type === 'healer' && b.ownerId === myId).map(b => {
-                const isSel = selected?.id === b.id;
-                return (
-                  <g key={`he-${b.id}`} pointerEvents="none">
-                    {coverageRows(b.side, b.gx, b.gy, healerTiles, cols, rows).map((rc, i) => (
-                      <rect key={i} x={rc.x} y={rc.y} width={rc.w} height={rc.h} rx={rc.h / 2}
-                        fill={`rgba(74,222,128,${isSel ? 0.22 : 0.08})`}
-                        stroke={`rgba(74,222,128,${isSel ? 0.8 : 0.35})`} strokeWidth={isSel ? 2 : 1} />
-                    ))}
-                  </g>
-                );
-              })}
+              {/* Shield Healer coverage — only shown while the healer is selected */}
+              {buildings.filter(b => b.type === 'healer' && b.ownerId === myId && selected?.id === b.id).map(b => (
+                <g key={`he-${b.id}`} pointerEvents="none">
+                  {coveredCells(b.gx, b.gy, healerTiles, cols, rows).map(c => {
+                    const r = cellRect(b.side, c.gx, c.gy, cols, rows);
+                    return (
+                      <rect key={`${c.gx}-${c.gy}`} x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={7}
+                        fill="rgba(74,222,128,0.24)"
+                        stroke="rgba(74,222,128,0.9)" strokeWidth={2} />
+                    );
+                  })}
+                </g>
+              ))}
 
-              {/* Heal beams: healer → weakest shield in range */}
+              {/* Heal effect: beam + traveling pulses + ripple on the shield being healed */}
               {buildings.filter(b => b.type === 'healer' && b.ownerId === myId && b.healTargetId).map(h => {
                 const t = mc.buildings[h.healTargetId!];
                 if (!t) return null;
                 const hr = cellRect(h.side, h.gx, h.gy, cols, rows);
                 const tr = cellRect(t.side, t.gx, t.gy, cols, rows);
                 const mx = (hr.cx + tr.cx) / 2, my = (hr.cy + tr.cy) / 2;
+                const path = `M ${hr.cx} ${hr.cy} L ${tr.cx} ${tr.cy}`;
                 return (
                   <g key={`beam-${h.id}`} pointerEvents="none">
+                    {/* wide soft beam */}
                     <line x1={hr.cx} y1={hr.cy} x2={tr.cx} y2={tr.cy}
-                      stroke="#4ade80" strokeWidth={4} strokeLinecap="round"
-                      strokeDasharray="10 8" className="mc-beam" opacity={0.9} />
-                    <circle cx={mx} cy={my} r={14} fill="rgba(74,222,128,0.3)" stroke="#4ade80" strokeWidth={2} />
+                      stroke="#4ade80" strokeWidth={9} strokeLinecap="round" opacity={0.22} />
+                    {/* flowing dashed core */}
+                    <line x1={hr.cx} y1={hr.cy} x2={tr.cx} y2={tr.cy}
+                      stroke="#bbf7d0" strokeWidth={3.5} strokeLinecap="round"
+                      strokeDasharray="10 8" className="mc-beam" opacity={0.95} />
+                    {/* energy pulses traveling healer → shield */}
+                    <circle r={6} fill="#4ade80" opacity={0.95}>
+                      <animateMotion dur="1.1s" repeatCount="indefinite" path={path} />
+                    </circle>
+                    <circle r={6} fill="#bbf7d0" opacity={0.95}>
+                      <animateMotion dur="1.1s" begin="-0.55s" repeatCount="indefinite" path={path} />
+                    </circle>
+                    {/* ripple where the healing lands */}
+                    <circle cx={tr.cx} cy={tr.cy} r={10} fill="none" stroke="#4ade80" strokeWidth={3}>
+                      <animate attributeName="r" values="10;30" dur="1.3s" repeatCount="indefinite" />
+                      <animate attributeName="opacity" values="0.8;0" dur="1.3s" repeatCount="indefinite" />
+                    </circle>
+                    <circle cx={tr.cx} cy={tr.cy} r={10} fill="none" stroke="#bbf7d0" strokeWidth={2}>
+                      <animate attributeName="r" values="10;30" dur="1.3s" begin="-0.65s" repeatCount="indefinite" />
+                      <animate attributeName="opacity" values="0.6;0" dur="1.3s" begin="-0.65s" repeatCount="indefinite" />
+                    </circle>
+                    {/* badge */}
+                    <circle cx={mx} cy={my} r={14} fill="rgba(6,40,20,0.85)" stroke="#4ade80" strokeWidth={2} />
                     <text x={mx} y={my} textAnchor="middle" dominantBaseline="central" fontSize={15} fontWeight={900}>💚</text>
                   </g>
                 );
@@ -514,11 +542,43 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                         <rect x={r.x + 6} y={r.y + 12} width={(r.w - 12) * Math.max(0, Math.min(1, shieldPct))} height={6} rx={3} fill="#38bdf8" />
                       </g>
                     )}
-                    {b.type === 'launcher' && isMine && (
+                    {b.type === 'launcher' && isMine && ((b.loadingUntil ?? 0) > Date.now() || (b.stock ?? 0) > 0) && (
                       <text x={r.x + r.w - 8} y={r.y + 18} textAnchor="end" fontSize={15}>
-                        {Date.now() - (b.lastFiredAt ?? 0) < (b.cooldownMs ?? 4000) ? '⏳' : '✅'}
+                        {(b.loadingUntil ?? 0) > Date.now() ? '⏳' : `🚀${b.stock ?? 0}`}
                       </text>
                     )}
+                  </g>
+                );
+              })}
+
+              {/* Construction sites & upgrade progress */}
+              {Object.values(mc.pending ?? {}).map(p => {
+                const r = cellRect(p.side, p.gx, p.gy, cols, rows);
+                const secsLeft = Math.max(0, (p.completeAt - Date.now()) / 1000);
+                const isMine = p.ownerId === myId;
+                if (p.kind === 'build') {
+                  const meta = BUILDING_META[p.type];
+                  return (
+                    <g key={p.id} pointerEvents="none">
+                      <rect x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={10}
+                        fill={isMine ? 'rgba(251,191,36,0.12)' : 'rgba(251,113,133,0.12)'}
+                        stroke={isMine ? '#fbbf24' : '#fb7185'} strokeWidth={2.5} strokeDasharray="8 6" />
+                      <text x={r.cx} y={r.cy - 2} textAnchor="middle" dominantBaseline="central" fontSize={24}>🚧</text>
+                      <text x={r.cx} y={r.y + r.h - 10} textAnchor="middle" fontSize={13} fontWeight={900} fill="#fbbf24"
+                        stroke="rgba(0,0,0,0.8)" strokeWidth={3} paintOrder="stroke">
+                        {meta.emoji} {secsLeft.toFixed(0)}s
+                      </text>
+                    </g>
+                  );
+                }
+                // upgrade in progress → badge on the building's cell
+                return (
+                  <g key={p.id} pointerEvents="none">
+                    <rect x={r.x + 4} y={r.y + 4} width={Math.min(150, r.w - 8)} height={22} rx={11}
+                      fill="rgba(0,0,0,0.7)" stroke="#a78bfa" strokeWidth={1.5} />
+                    <text x={r.x + 12} y={r.y + 15} fontSize={13} fontWeight={800} fill="#c4b5fd">
+                      ⏳ Lv{p.targetLevel} {secsLeft.toFixed(0)}s
+                    </text>
                   </g>
                 );
               })}
@@ -556,7 +616,8 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                 ⭐ Your <b>Core pays +{coreIncome}/s</b> baseline — defend it!<br />
                 🛡️ Shields <b>fully block</b> blasts while charged (≈ 13 squares, dashed blue). Hide Generators inside!<br />
                 💚 Shield Healers fix <b>one shield at a time</b> (weakest first — green beam).<br />
-                🚀 <b>Load up to {MAX_STOCK} missiles</b> per launcher, then <b>FIRE the whole volley</b> at the ⭐ Core!
+                🚀 <b>Load up to {MAX_STOCK} missiles</b> per launcher — each takes {LOAD_SECONDS}s (watch the progress bar), or flip <b>🤖 Autobuild</b> per launcher to auto-load! Then <b>FIRE the whole volley</b> at the ⭐ Core!<br />
+                ⏱ Buildings take time: <b>3s → 5s → 10s → 20s → 30s</b> by level. Build many in parallel!
               </div>
               {isTargeting && (
                 <button type="button" className="btn btn-sm btn-secondary btn-full" style={{ marginTop: 8 }} onClick={() => setTargetLauncherId(null)}>
@@ -573,25 +634,56 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                   const stock = l.stock ?? 0;
                   const maxStock = l.maxStock ?? MAX_STOCK;
                   const hasStock = stock > 0;
+                  const stockFull = stock >= maxStock;
+                  const loadUntil = l.loadingUntil ?? 0;
+                  const loading = loadUntil > Date.now();
+                  const loadSecsLeft = loading ? Math.max(0, (loadUntil - Date.now()) / 1000) : 0;
+                  const loadPct = loading ? Math.min(1, Math.max(0, 1 - (loadUntil - Date.now()) / (LOAD_SECONDS * 1000))) : 0;
+                  const broke = myResources < (l.missileCost ?? 0);
+                  // Always clickable — the server validates and explains (no dead buttons).
+                  const loadLabel = stockFull ? 'FULL' : loading ? `${loadSecsLeft.toFixed(0)}s` : broke ? 'NO CR' : `＋${l.missileCost}cr`;
                   return (
-                    <button
-                      key={l.id}
-                      type="button"
-                      onClick={() => { if (hasStock) startTargeting(l.id); else setSelectedId(l.id); }}
-                      title={hasStock ? 'Tap to pick a target and fire the volley' : 'Tap to open and load missiles'}
+                    <div key={l.id}>
+                    <div
                       style={{
-                        display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 10,
+                        display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', borderRadius: 10,
                         background: hasStock ? 'rgba(251,113,133,0.12)' : 'rgba(255,255,255,0.03)',
                         border: `1px solid ${hasStock ? 'rgba(251,113,133,0.5)' : 'var(--border)'}`,
                         color: '#fff', fontSize: '0.8rem', fontWeight: 600,
                       }}
                     >
-                      <span style={{ fontSize: '1.2rem' }}>{l.launcherType === 'single' ? '🎯' : l.launcherType === 'scatter' ? '💥' : '☄️'}</span>
-                      <span style={{ flex: 1, textAlign: 'left' }}>
-                        Lv{l.level} {l.launcherType} • {'●'.repeat(stock)}{'○'.repeat(Math.max(0, maxStock - stock))}
-                      </span>
-                      <span>{hasStock ? `FIRE ×${stock}` : 'LOAD ▸'}</span>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => { if (hasStock) startTargeting(l.id); else setSelectedId(l.id); }}
+                        title={hasStock ? 'Tap to pick a target and fire the volley' : 'Tap to open and load missiles'}
+                        style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, color: '#fff', textAlign: 'left' }}
+                      >
+                        <span style={{ fontSize: '1.2rem' }}>{l.launcherType === 'single' ? '🎯' : l.launcherType === 'scatter' ? '💥' : '☄️'}</span>
+                        <span style={{ flex: 1 }}>
+                          Lv{l.level} {l.launcherType} • {'●'.repeat(stock)}{'○'.repeat(Math.max(0, maxStock - stock))}{l.autobuild ? ' 🤖' : ''}
+                        </span>
+                        <span>{hasStock ? `FIRE ×${stock}` : 'OPEN ▸'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onLoad({ launcherId: l.id })}
+                        title={stockFull ? 'Stockpile full' : loading ? `Building… ${loadSecsLeft.toFixed(1)}s left` : broke ? `Need ${l.missileCost}cr` : `Build 1 missile for ${l.missileCost}cr (~${LOAD_SECONDS}s)`}
+                        style={{
+                          minWidth: 64, padding: '8px 10px', borderRadius: 8, fontWeight: 800, fontSize: '0.75rem',
+                          background: 'rgba(74,222,128,0.2)',
+                          border: '1px solid rgba(74,222,128,0.5)',
+                          color: '#fff',
+                        }}
+                      >
+                        {loading ? `🔨 ${loadSecsLeft.toFixed(0)}s` : loadLabel}
+                      </button>
+                    </div>
+                    {loading && (
+                      <div style={{ height: 5, background: 'rgba(255,255,255,0.1)', borderRadius: 3, marginTop: 4, overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${loadPct * 100}%`, background: 'linear-gradient(90deg,#4ade80,#22d3ee)', transition: 'width 0.2s linear' }} />
+                      </div>
+                    )}
+                    </div>
                   );
                 })}
                 {myBuildings.filter(b => b.type === 'launcher').length === 0 && (
@@ -623,7 +715,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                   >
                     <div style={{ fontSize: '2rem' }}>{o.emoji}</div>
                     <div style={{ fontWeight: 800, fontSize: '0.9rem', margin: '4px 0' }}>{o.label}</div>
-                    <div style={{ fontWeight: 800, fontSize: '0.85rem', color: afford ? 'var(--amber-400)' : 'var(--rose-400)', marginBottom: 4 }}>{o.cost} credits</div>
+                    <div style={{ fontWeight: 800, fontSize: '0.85rem', color: afford ? 'var(--amber-400)' : 'var(--rose-400)', marginBottom: 4 }}>{o.cost} credits • ⏱ 3s</div>
                     <div className="text-xs text-muted" style={{ lineHeight: 1.4 }}>{o.desc}</div>
                   </button>
                 );
@@ -641,8 +733,10 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
               myResources={myResources}
               upgradeCost={upgradeCost}
               coreIncome={coreIncome}
+              pendingUp={Object.values(mc.pending ?? {}).find(p => p.kind === 'upgrade' && p.upgradeOf === selected.id) ?? null}
               onUpgrade={() => { onUpgrade(selected.id); setSelectedId(null); }}
               onLoad={() => onLoad({ launcherId: selected.id })}
+              onToggleAutobuild={() => onToggleAutobuild(selected.id)}
               onFire={() => startTargeting(selected.id)}
             />
           </Modal>
@@ -696,14 +790,16 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
   );
 }
 
-function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, onUpgrade, onLoad, onFire }: {
+function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendingUp, onUpgrade, onLoad, onToggleAutobuild, onFire }: {
   b: MissileBuilding;
   isMine: boolean;
   myResources: number;
   upgradeCost: number | null;
   coreIncome: number;
+  pendingUp: { targetLevel: number; completeAt: number } | null;
   onUpgrade: () => void;
   onLoad: () => void;
+  onToggleAutobuild: () => void;
   onFire: () => void;
 }) {
   const rows: Array<[string, string]> = [];
@@ -712,15 +808,15 @@ function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, onUpgr
     rows.push(['❤ Structure', `${Math.ceil(b.hp ?? 0)} / ${b.maxHp} HP`]);
     rows.push(['📍 Square', `(${b.gx + 1}, ${b.gy + 1}) — 1×1`]);
   } else if (b.type === 'shield') {
-    rows.push(['🛡️ Shield pool', `${Math.ceil(b.shieldHp ?? 0)} / ${b.maxShieldHp}`]);
-    rows.push(['📏 Coverage', `≈ ${SHIELD_COVER_CELLS} squares (range 2, no diagonals)`]);
+    rows.push(['🛡️ Shield pool', `${Math.ceil(b.shieldHp ?? 0)} / ${b.maxShieldHp}${b.level < 5 ? ` (Lv${b.level + 1} → ${STATS.shield.hp[b.level + 1]})` : ' (MAX)'}`]);
+    rows.push(['📏 Coverage', `≈ ${SHIELD_COVER_CELLS} squares (range 3, no diagonals)`]);
     rows.push(['🧱 Blocking', 'Full block while charged — overflow only']);
     rows.push(['💚 Self-repair', `+${+(STATS.healer.heal[b.level] / 8).toFixed(1)}/s (1/8 of healer)`]);
     rows.push(['❤ Structure', `${Math.ceil(b.hp ?? 0)} / ${b.maxHp} HP`]);
   } else if (b.type === 'healer') {
     rows.push(['💚 Heal rate', `${b.healPerSec}/s${b.level < 5 ? ` (Lv${b.level + 1} → ${STATS.healer.heal[b.level + 1]}/s)` : ' (MAX)'}`]);
     rows.push(['🎯 Repairs', 'ONE shield at a time — weakest % in range']);
-    rows.push(['📏 Coverage', `≈ ${HEALER_COVER_CELLS} squares (range 1, no diagonals)`]);
+    rows.push(['📏 Coverage', `≈ ${HEALER_COVER_CELLS} squares (range 2, no diagonals)`]);
     rows.push(['❤ Structure', `${Math.ceil(b.hp ?? 0)} / ${b.maxHp} HP`]);
   } else if (b.type === 'launcher') {
     const key = b.launcherType === 'single' ? 'single' : b.launcherType === 'scatter' ? 'scatter' : 'cluster';
@@ -728,21 +824,27 @@ function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, onUpgr
     const blastTxt = b.launcherType === 'single' ? '1 square per missile' : b.launcherType === 'scatter' ? 'plus of 5 squares per missile' : '4 bomblets, plus-shaped blasts per missile';
     const stock = b.stock ?? 0;
     const maxStock = b.maxStock ?? MAX_STOCK;
-    rows.push(['📦 Stockpile', `${'●'.repeat(stock)}${'○'.repeat(Math.max(0, maxStock - stock))} ${stock}/${maxStock} loaded`]);
+    const loading = (b.loadingUntil ?? 0) > Date.now();
+    rows.push(['📦 Stockpile', `${'●'.repeat(stock)}${'○'.repeat(Math.max(0, maxStock - stock))} ${stock}/${maxStock} loaded${loading ? ' (+1 building…)' : ''}`]);
     rows.push(['🚀 Missile', `${b.launcherType} — ${b.missileDamage} dmg / ${b.missileCost}cr each`]);
     rows.push(['💥 Blast', blastTxt]);
-    rows.push(['⏱ Reload', `${((b.cooldownMs ?? 0) / 1000).toFixed(1)}s per missile built`]);
+    rows.push(['🔨 Build time', `${LOAD_SECONDS}s per missile (one at a time)`]);
     if (b.level < 5) rows.push(['⬆ Next level', `dmg ${tbl.dmg[b.level + 1]} • ${tbl.cost[b.level + 1]}cr/missile`]);
   } else if (b.type === 'core') {
     rows.push(['⭐ Core HP', `${Math.ceil(b.coreHp ?? 0)} / ${b.maxCoreHp}`]);
     rows.push(['💰 Income', `+${coreIncome}/s baseline economy`]);
     rows.push(['💚 Regen', `+${b.coreRegenPerSec}/s (slow — keep shields up!)`]);
   }
-  const reloading = b.type === 'launcher' && (Date.now() - (b.lastFiredAt ?? 0) < (b.cooldownMs ?? 4000));
+  const loadUntil = (b.loadingUntil ?? 0);
+  const loading = b.type === 'launcher' && loadUntil > Date.now();
+  const loadSecsLeft = loading ? Math.max(0, (loadUntil - Date.now()) / 1000) : 0;
+  const loadPct = loading ? Math.min(1, Math.max(0, 1 - (loadUntil - Date.now()) / (LOAD_SECONDS * 1000))) : 0;
   const stock = b.stock ?? 0;
   const maxStock = b.maxStock ?? MAX_STOCK;
   const stockFull = stock >= maxStock;
-  const canLoad = isMine && b.type === 'launcher' && !stockFull && !reloading && myResources >= (b.missileCost ?? 0);
+  const broke = myResources < (b.missileCost ?? 0);
+  const upSecs = pendingUp ? Math.max(0, (pendingUp.completeAt - Date.now()) / 1000) : 0;
+  const nextUpSecs = b.level < 5 ? (BUILD_SECONDS[b.level + 1] ?? 5) : 0;
   return (
     <div>
       {!isMine && <div className="badge badge-rose" style={{ marginBottom: 8 }}>ENEMY BUILDING</div>}
@@ -756,24 +858,52 @@ function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, onUpgr
       {isMine && b.type !== 'core' && (
         <button
           type="button"
-          className={`btn btn-full ${upgradeCost !== null && myResources >= upgradeCost ? 'btn-primary' : 'btn-secondary'}`}
-          disabled={upgradeCost === null || myResources < upgradeCost}
+          className={`btn btn-full ${!pendingUp && upgradeCost !== null && myResources >= upgradeCost ? 'btn-primary' : 'btn-secondary'}`}
+          disabled={!!pendingUp || upgradeCost === null || myResources < upgradeCost}
           onClick={onUpgrade}
           style={{ marginBottom: 8, padding: '14px' }}
         >
-          {upgradeCost === null ? '⭐ MAX LEVEL' : `⬆ Upgrade to Lv${b.level + 1} (${upgradeCost}cr)`}
+          {pendingUp
+            ? `⏳ Upgrading to Lv${pendingUp.targetLevel}… ${upSecs.toFixed(0)}s left`
+            : upgradeCost === null ? '⭐ MAX LEVEL' : `⬆ Upgrade to Lv${b.level + 1} (${upgradeCost}cr, ${nextUpSecs}s)`}
         </button>
+      )}
+      {isMine && b.type === 'launcher' && (
+        loading ? (
+          <div style={{ marginBottom: 8, padding: '12px 14px', background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.4)', borderRadius: 'var(--radius-md)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: '0.9rem', marginBottom: 6 }}>
+              <span>🔨 Building missile…</span>
+              <span>{loadSecsLeft.toFixed(1)}s</span>
+            </div>
+            <div style={{ height: 8, background: 'rgba(255,255,255,0.1)', borderRadius: 4, overflow: 'hidden' }}>
+              <div style={{ height: '100%', width: `${loadPct * 100}%`, background: 'linear-gradient(90deg,#4ade80,#22d3ee)', transition: 'width 0.2s linear' }} />
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-full btn-secondary"
+            onClick={onLoad}
+            style={{ marginBottom: 8, padding: '14px' }}
+            title={stockFull ? 'Stockpile full' : broke ? `Need ${b.missileCost}cr` : `Build 1 missile for ${b.missileCost}cr (~${LOAD_SECONDS}s)`}
+          >
+            {stockFull ? `📦 Stockpile full (${maxStock}/${maxStock})` : broke ? `🔨 Build missile — need ${b.missileCost}cr` : `🔨 Build missile (${b.missileCost}cr)`}
+          </button>
+        )
       )}
       {isMine && b.type === 'launcher' && (
         <button
           type="button"
-          className={`btn btn-full ${canLoad ? 'btn-secondary' : 'btn-secondary'}`}
-          disabled={!canLoad}
-          onClick={onLoad}
-          style={{ marginBottom: 8, padding: '14px' }}
-          title={stockFull ? 'Stockpile full' : reloading ? 'Reloading' : `Build 1 missile for ${b.missileCost}cr`}
+          onClick={onToggleAutobuild}
+          title={b.autobuild ? 'Autobuild ON — tap to stop auto-loading missiles' : 'Autobuild OFF — tap to auto-load whenever affordable'}
+          style={{
+            width: '100%', marginBottom: 8, padding: '12px 14px', borderRadius: 'var(--radius-md)',
+            fontWeight: 800, fontSize: '0.9rem', color: '#fff',
+            background: b.autobuild ? 'rgba(74,222,128,0.18)' : 'rgba(255,255,255,0.04)',
+            border: `2px solid ${b.autobuild ? 'rgba(74,222,128,0.6)' : 'var(--border)'}`,
+          }}
         >
-          {stockFull ? `📦 Stockpile full (${maxStock}/${maxStock})` : reloading ? '⏳ Reloading…' : `🔨 Build missile (${b.missileCost}cr)`}
+          {b.autobuild ? '🤖 Autobuild: ON (tap to stop)' : '🤖 Autobuild: OFF (tap to auto-load)'}
         </button>
       )}
       {isMine && b.type === 'launcher' && (

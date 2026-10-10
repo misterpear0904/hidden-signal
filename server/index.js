@@ -19,6 +19,7 @@ import {
   buildMissileBuilding,
   upgradeMissileBuilding,
   loadMissile,
+  toggleAutobuild,
   launchMissile,
   tickMissileRoom,
   setPlayerDifficulty,
@@ -666,6 +667,15 @@ io.on('connection', (socket) => {
     const id = typeof launcherId === 'string' ? launcherId : launcherId?.launcherId;
     const result = loadMissile(roomCode, socket.id, id);
     if (!result) return socket.emit('error', 'Cannot load now');
+    if (result.error) return socket.emit('error', result.error);
+    broadcastRoomState(result.room);
+  });
+
+  socket.on('toggle-autobuild', ({ roomCode, launcherId } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const id = typeof launcherId === 'string' ? launcherId : launcherId?.launcherId;
+    const result = toggleAutobuild(roomCode, socket.id, id);
+    if (!result) return socket.emit('error', 'Cannot toggle now');
     if (result.error) return socket.emit('error', result.error);
     broadcastRoomState(result.room);
   });

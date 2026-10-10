@@ -7,6 +7,7 @@ import {
   missileBuildBuilding,
   missileUpgradeBuilding,
   missileLoadMissile,
+  missileToggleAutobuild,
   missileLaunch,
   tickMissileCommand,
   missileSideForPlayer,
@@ -1572,7 +1573,7 @@ export function buildMissileBuilding(code, playerId, action) {
   const res = missileBuildBuilding(room.missileCommandState, playerId, action);
   if (res.error) return { room, error: res.error };
   room.lastActivityMs = Date.now();
-  return { room, building: res.building };
+  return { room, pending: res.pending };
 }
 
 export function upgradeMissileBuilding(code, playerId, buildingId) {
@@ -1582,7 +1583,7 @@ export function upgradeMissileBuilding(code, playerId, buildingId) {
   const res = missileUpgradeBuilding(room.missileCommandState, playerId, buildingId);
   if (res.error) return { room, error: res.error };
   room.lastActivityMs = Date.now();
-  return { room, building: res.building };
+  return { room, pending: res.pending };
 }
 
 export function launchMissile(code, playerId, action) {
@@ -1600,6 +1601,16 @@ export function loadMissile(code, playerId, launcherId) {
   if (!room || !room.missileCommandState) return null;
   if (room.phase !== 'missile-command-play') return null;
   const res = missileLoadMissile(room.missileCommandState, playerId, launcherId);
+  if (res.error) return { room, error: res.error };
+  room.lastActivityMs = Date.now();
+  return { room, building: res.building };
+}
+
+export function toggleAutobuild(code, playerId, launcherId) {
+  const room = rooms.get(code);
+  if (!room || !room.missileCommandState) return null;
+  if (room.phase !== 'missile-command-play') return null;
+  const res = missileToggleAutobuild(room.missileCommandState, playerId, launcherId);
   if (res.error) return { room, error: res.error };
   room.lastActivityMs = Date.now();
   return { room, building: res.building };

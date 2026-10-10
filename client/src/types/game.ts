@@ -166,6 +166,8 @@ export interface MissileBuilding {
   missileSpeed?: number;
   stock?: number;
   maxStock?: number;
+  loadingUntil?: number; // timestamp — a missile finishes building at this time
+  autobuild?: boolean; // auto-load whenever stock isn't full and affordable
   cooldownMs?: number;
   lastFiredAt?: number;
   
@@ -197,6 +199,20 @@ export interface MissileInFlight {
   subMissiles?: Array<{ gx: number; gy: number; x: number; y: number; damage: number }>;
 }
 
+export interface ConstructionSite {
+  id: string;
+  kind: 'build' | 'upgrade';
+  type: MissileBuildingType;
+  launcherType?: MissileLauncherType;
+  side: PlayerSide;
+  gx: number;
+  gy: number;
+  ownerId: string;
+  targetLevel: number;
+  completeAt: number;
+  upgradeOf?: string; // building id, when kind === 'upgrade'
+}
+
 export interface MissileCommandState {
   sides: { top: string; bottom: string };
   gridCols: number;
@@ -205,6 +221,7 @@ export interface MissileCommandState {
   healerTiles: number;
   coreIncomePerSec?: number;
   buildings: Record<string, MissileBuilding>;
+  pending: Record<string, ConstructionSite>;
   missiles: MissileInFlight[];
   resources: Record<string, number>;
   gameStartTime: number;
