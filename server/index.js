@@ -21,6 +21,7 @@ import {
   loadMissile,
   toggleAutobuild,
   launchMissile,
+  launchMissileType,
   tickMissileRoom,
   setPlayerDifficulty,
   submitChromaGuess,
@@ -676,6 +677,16 @@ io.on('connection', (socket) => {
     const id = typeof launcherId === 'string' ? launcherId : launcherId?.launcherId;
     const result = toggleAutobuild(roomCode, socket.id, id);
     if (!result) return socket.emit('error', 'Cannot toggle now');
+    if (result.error) return socket.emit('error', result.error);
+    broadcastRoomState(result.room);
+  });
+
+  socket.on('launch-missile-type', ({ roomCode, launcherType, targetGx, targetGy } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const gx = typeof targetGx === 'number' ? targetGx : targetGx?.gx;
+    const gy = typeof targetGy === 'number' ? targetGy : targetGy?.gy;
+    const result = launchMissileType(roomCode, socket.id, launcherType, gx, gy);
+    if (!result) return socket.emit('error', 'Cannot launch now');
     if (result.error) return socket.emit('error', result.error);
     broadcastRoomState(result.room);
   });

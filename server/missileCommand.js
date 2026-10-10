@@ -3,7 +3,7 @@
 // delegates to these functions so the game can be removed cleanly.
 //
 // GRID MODEL: each island is a GRID_COLS x GRID_ROWS grid. Every building
-// occupies exactly 1x1 cell. Shields cover a square of cells (Chebyshev
+// occupies exactly 1x1 cell. Shields cover Manhattan ranges (no diagonals).
 // distance <= shieldTiles), so coverage is obvious on the grid.
 
 export const MISSILE_CONFIG = {
@@ -39,7 +39,6 @@ export const MISSILE_CONFIG = {
     healer: { build: 45, upgrade: [0, 55, 110, 190, 290, 0] },
     launcher_single: { build: 120 },
     launcher_scatter: { build: 150 },
-    launcher_cluster: { build: 170 },
   },
   economy: {
     // income per sec by level 1..5 — snowballs hard
@@ -47,7 +46,7 @@ export const MISSILE_CONFIG = {
     hp: [0, 100, 150, 210, 280, 360],
   },
   shield: {
-    hp: [0, 150, 300, 500, 750, 1000],
+    hp: [0, 300, 600, 1000, 1500, 2000],
     buildingHp: [0, 120, 180, 250, 330, 420],
   },
   healer: {
@@ -58,30 +57,20 @@ export const MISSILE_CONFIG = {
     single: {
       missileCost: [0, 30, 45, 65, 90, 120],
       damage: [0, 120, 200, 300, 420, 560],
-      blast: 0, // tiles (Chebyshev) — hits the single target cell
+      blast: 0, // tiles (Manhattan) — hits the single target cell
       cooldownMs: [0, 4000, 3800, 3500, 3200, 2800],
-      speed: 0.55, // normalized units/sec
+      speed: 0.1375, // slow cruise — time to see and react
       hp: [0, 120, 180, 250, 330, 420],
     },
     scatter: {
       missileCost: [0, 45, 65, 90, 120, 155],
-      // per-pellet damage, 5 pellets each hitting 1 cell
+      // per-pellet damage, 5 pellets each hitting 1 cell — best total damage
       damage: [0, 35, 55, 80, 110, 145],
       pellets: 5,
       blast: 0,
       cooldownMs: [0, 6000, 5700, 5400, 5000, 4600],
-      speed: 0.5,
+      speed: 0.125,
       hp: [0, 120, 180, 250, 330, 420],
-    },
-    cluster: {
-      missileCost: [0, 60, 85, 115, 150, 190],
-      // total damage split across 4 sub-munitions, each blasts 3x3
-      damage: [0, 180, 280, 400, 540, 700],
-      submunitions: 4,
-      blast: 1,
-      cooldownMs: [0, 8000, 7600, 7200, 6700, 6200],
-      speed: 0.42,
-      hp: [0, 130, 190, 260, 340, 430],
     },
   },
   buildingHpFallback: 120,
@@ -246,8 +235,8 @@ export function missileBuildBuilding(state, playerId, action) {
   if (state.winnerId) return { error: 'Game is over' };
   const { buildingType, launcherType, gx, gy } = action || {};
   if (!['economy', 'shield', 'healer', 'launcher'].includes(buildingType)) return { error: 'Invalid building type' };
-  if (buildingType === 'launcher' && !['single', 'scatter', 'cluster'].includes(launcherType)) {
-    return { error: 'Pick a launcher type: single, scatter or cluster' };
+  if (buildingType === 'launcher' && !['single', 'scatter'].includes(launcherType)) {
+    return { error: 'Pick a launcher type: single or scatter' };
   }
   if (!isValidCell(gx, gy)) return { error: 'Invalid grid square' };
   if (occupiedCell(state, side, gx, gy)) return { error: 'Square occupied — pick an empty square' };
@@ -309,8 +298,8 @@ export function missileUpgradeBuilding(state, playerId, buildingId) {
   return { pending: job };
 }
 
-// Build one full shot pattern (single missile / scatter pellets / cluster bus).
-// Does NOT push to state or stagger — used by missileLaunch per banked shot.
+// Build one full shot pattern (single missile / scatter pellets).
+// Does NOT push to state or stagger — used per banked shot when firing.
 function buildShotPattern(state, launcher, side, enemySide, targetGx, targetGy, now) {
   const from = cellToWorld(launcher.side, launcher.gx, launcher.gy);
   const to = cellToWorld(enemySide, targetGx, targetGy);
@@ -325,7 +314,7 @@ function buildShotPattern(state, launcher, side, enemySide, targetGx, targetGy, 
     targetGx: cellGx, targetGy: cellGy,
     currentX: from.x, currentY: from.y,
     damage: dmg, blast,
-    speed: launcher.missileSpeed || 0.5,
+    speed: launcher.missileSpeed || 0.1375,
     createdAt: now,
     deployAt: now,
   });
@@ -333,32 +322,16 @@ function buildShotPattern(state, launcher, side, enemySide, targetGx, targetGy, 
   if (launcher.launcherType === 'single') {
     return [mk(targetGx, targetGy, to.x, to.y, launcher.missileDamage, launcher.blast)];
   }
-  if (launcher.launcherType === 'scatter') {
-    // 5 pellets: target + orthogonal neighbors (off-island neighbors are wasted)
-    const cells = [{ gx: targetGx, gy: targetGy }];
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const gx = targetGx + dx, gy = targetGy + dy;
-      if (isValidCell(gx, gy)) cells.push({ gx, gy });
-    }
-    return cells.map(c => {
-      const w = cellToWorld(enemySide, c.gx, c.gy);
-      return mk(c.gx, c.gy, w.x, w.y, launcher.missileDamage, launcher.blast);
-    });
-  }
-  // cluster: bus flies to target, then sub-munitions hit neighboring cells
-  const m = mk(targetGx, targetGy, to.x, to.y, launcher.missileDamage, launcher.blast);
-  const per = m.damage / MISSILE_CONFIG.launchers.cluster.submunitions;
-  const spread = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1]];
-  const subs = [];
-  for (const [dx, dy] of spread) {
-    if (subs.length >= MISSILE_CONFIG.launchers.cluster.submunitions) break;
+  // scatter: 5 pellets on target + orthogonal neighbors (off-island = wasted)
+  const cells = [{ gx: targetGx, gy: targetGy }];
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
     const gx = targetGx + dx, gy = targetGy + dy;
-    if (!isValidCell(gx, gy)) continue;
-    const w = cellToWorld(enemySide, gx, gy);
-    subs.push({ gx, gy, x: w.x, y: w.y, damage: per });
+    if (isValidCell(gx, gy)) cells.push({ gx, gy });
   }
-  m.subMissiles = subs;
-  return [m];
+  return cells.map(c => {
+    const w = cellToWorld(enemySide, c.gx, c.gy);
+    return mk(c.gx, c.gy, w.x, w.y, launcher.missileDamage, launcher.blast);
+  });
 }
 
 // Pay to start building one missile in a launcher's stockpile (max 3).
@@ -397,8 +370,24 @@ export function missileToggleAutobuild(state, playerId, launcherId) {
   return { building: launcher };
 }
 
-// Fire EVERYTHING stockpiled in a launcher as one volley. Banked shots deploy
-// 300ms apart so they strike in quick succession. Stock is fully consumed.
+// Fire one launcher's entire stockpile at a cell. Banked shots deploy 300ms
+// apart (plus a base offset so multi-launcher volleys ripple outward).
+function fireVolley(state, launcher, enemySide, targetGx, targetGy, now, baseDelay = 0) {
+  const stock = launcher.stock ?? 0;
+  if (stock <= 0) return [];
+  launcher.stock = 0;
+  launcher.lastFiredAt = now;
+  const added = [];
+  for (let i = 0; i < stock; i++) {
+    const pattern = buildShotPattern(state, launcher, launcher.side, enemySide, targetGx, targetGy, now);
+    for (const m of pattern) m.deployAt = now + baseDelay + i * 300;
+    added.push(...pattern);
+  }
+  state.missiles.push(...added);
+  return added;
+}
+
+// Fire EVERYTHING stockpiled in one launcher as a volley. Stock is consumed.
 export function missileLaunch(state, playerId, action) {
   if (state.winnerId) return { error: 'Game is over' };
   const side = missileSideForPlayer(state, playerId);
@@ -408,20 +397,33 @@ export function missileLaunch(state, playerId, action) {
   if (!launcher || launcher.type !== 'launcher') return { error: 'Launcher not found' };
   if (launcher.ownerId !== playerId) return { error: 'Not your launcher' };
   if (!isValidCell(targetGx, targetGy)) return { error: 'Invalid target square' };
-  const stock = launcher.stock ?? 0;
-  if (stock <= 0) return { error: 'No missiles stockpiled — build some first' };
-  const now = Date.now();
-  launcher.stock = 0;
-  launcher.lastFiredAt = now;
-
+  if ((launcher.stock ?? 0) <= 0) return { error: 'No missiles stockpiled — build some first' };
   const enemySide = side === 'top' ? 'bottom' : 'top';
+  const added = fireVolley(state, launcher, enemySide, targetGx, targetGy, Date.now());
+  return { missiles: added };
+}
+
+// Fire ALL loaded launchers of one type at the same cell ("launch all").
+// Each launcher's full stock goes; launchers ripple 300ms apart per missile.
+export function missileLaunchType(state, playerId, launcherType, targetGx, targetGy) {
+  if (state.winnerId) return { error: 'Game is over' };
+  const side = missileSideForPlayer(state, playerId);
+  if (!side) return { error: 'You are not in this match' };
+  if (!['single', 'scatter'].includes(launcherType)) return { error: 'Invalid launcher type' };
+  if (!isValidCell(targetGx, targetGy)) return { error: 'Invalid target square' };
+  const launchers = Object.values(state.buildings).filter(
+    b => b.type === 'launcher' && b.ownerId === playerId && b.launcherType === launcherType && (b.stock ?? 0) > 0,
+  );
+  if (launchers.length === 0) return { error: `No loaded ${launcherType} launchers` };
+  const enemySide = side === 'top' ? 'bottom' : 'top';
+  const now = Date.now();
   const added = [];
-  for (let i = 0; i < stock; i++) {
-    const pattern = buildShotPattern(state, launcher, side, enemySide, targetGx, targetGy, now);
-    for (const m of pattern) m.deployAt = now + i * 300;
-    added.push(...pattern);
+  let delay = 0;
+  for (const launcher of launchers) {
+    const n = launcher.stock ?? 0;
+    added.push(...fireVolley(state, launcher, enemySide, targetGx, targetGy, now, delay));
+    delay += n * 300;
   }
-  state.missiles.push(...added);
   return { missiles: added };
 }
 
@@ -442,9 +444,11 @@ function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage) {
   };
 
   const destroyed = [];
+  let hitAny = false;
   for (const b of buildings) {
     const d = cellDist(b.gx, b.gy, gx, gy);
     if (d > blast) continue;
+    hitAny = true;
     // falloff: center full, edge 60%
     const falloff = blast === 0 ? 1 : 1 - (d / (blast + 1)) * 0.4;
     let dmg = damage * falloff;
@@ -475,6 +479,18 @@ function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage) {
   // Delete destroyed non-core buildings; cores persist at 0 HP (see win check).
   for (const id of destroyed) {
     if (state.buildings[id]?.type !== 'core') delete state.buildings[id];
+  }
+  // Empty covered tile: the shield still intercepts the blast — nearest
+  // covering shield with charge takes the full center damage.
+  if (!hitAny) {
+    let guard = null;
+    let guardD = Infinity;
+    for (const s of shields) {
+      if ((s.shieldHp ?? 0) <= 0) continue;
+      const d = cellDist(s.gx, s.gy, gx, gy);
+      if (d <= shieldTiles && d < guardD) { guard = s; guardD = d; }
+    }
+    if (guard) guard.shieldHp = Math.max(0, (guard.shieldHp ?? 0) - damage);
   }
   return destroyed;
 }
@@ -586,17 +602,9 @@ export function tickMissileCommand(state, now = Date.now()) {
       // impact!
       const ownerSide = missileSideForPlayer(state, m.ownerId);
       const enemySide = ownerSide === 'top' ? 'bottom' : 'top';
-      if (m.launcherType === 'cluster' && m.subMissiles?.length) {
-        for (const s of m.subMissiles) {
-          const destroyed = applyExplosion(state, m.ownerId, enemySide, s.gx, s.gy, m.blast, s.damage);
-          if (destroyed.length) events.push({ type: 'destroyed', ids: destroyed });
-        }
-        events.push({ type: 'impact', gx: m.targetGx, gy: m.targetGy, kind: 'cluster' });
-      } else {
-        const destroyed = applyExplosion(state, m.ownerId, enemySide, m.targetGx, m.targetGy, m.blast, m.damage);
-        if (destroyed.length) events.push({ type: 'destroyed', ids: destroyed });
-        events.push({ type: 'impact', gx: m.targetGx, gy: m.targetGy, kind: m.launcherType });
-      }
+      const destroyed = applyExplosion(state, m.ownerId, enemySide, m.targetGx, m.targetGy, m.blast, m.damage);
+      if (destroyed.length) events.push({ type: 'destroyed', ids: destroyed });
+      events.push({ type: 'impact', gx: m.targetGx, gy: m.targetGy, kind: m.launcherType });
     } else {
       m.currentX += (dx / d) * step;
       m.currentY += (dy / d) * step;

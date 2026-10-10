@@ -9,6 +9,7 @@ import {
   missileLoadMissile,
   missileToggleAutobuild,
   missileLaunch,
+  missileLaunchType,
   tickMissileCommand,
   missileSideForPlayer,
   missileIncomePerSec,
@@ -1591,6 +1592,16 @@ export function launchMissile(code, playerId, action) {
   if (!room || !room.missileCommandState) return null;
   if (room.phase !== 'missile-command-play') return null;
   const res = missileLaunch(room.missileCommandState, playerId, action);
+  if (res.error) return { room, error: res.error };
+  room.lastActivityMs = Date.now();
+  return { room, missiles: res.missiles };
+}
+
+export function launchMissileType(code, playerId, launcherType, targetGx, targetGy) {
+  const room = rooms.get(code);
+  if (!room || !room.missileCommandState) return null;
+  if (room.phase !== 'missile-command-play') return null;
+  const res = missileLaunchType(room.missileCommandState, playerId, launcherType, targetGx, targetGy);
   if (res.error) return { room, error: res.error };
   room.lastActivityMs = Date.now();
   return { room, missiles: res.missiles };

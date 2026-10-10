@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
-import type { RoomState, RoleData, RoundRevealData, ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileUpgradeAction, MissileLaunchAction, MissileLoadAction, MissileCommandOptions } from '../types/game';
+import type { RoomState, RoleData, RoundRevealData, ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileUpgradeAction, MissileLaunchAction, MissileTypeLaunchAction, MissileLoadAction, MissileCommandOptions } from '../types/game';
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
 
@@ -67,6 +67,7 @@ export interface SocketHookReturn {
   loadMissile: (roomCode: string, action: MissileLoadAction) => void;
   toggleAutobuild: (roomCode: string, action: MissileLoadAction) => void;
   launchMissile: (roomCode: string, action: MissileLaunchAction) => void;
+  launchMissileType: (roomCode: string, action: MissileTypeLaunchAction) => void;
   updateMissileCommandOptions: (roomCode: string, options: Partial<MissileCommandOptions>) => void;
 }
 
@@ -415,6 +416,10 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('launch-missile', { roomCode: code, action });
   }, []);
 
+  const launchMissileType = useCallback((code: string, action: MissileTypeLaunchAction) => {
+    socketRef.current?.emit('launch-missile-type', { roomCode: code, ...action });
+  }, []);
+
   const loadMissile = useCallback((code: string, action: MissileLoadAction) => {
     socketRef.current?.emit('load-missile', { roomCode: code, launcherId: action.launcherId });
   }, []);
@@ -478,6 +483,7 @@ export function useSocket(): SocketHookReturn {
     loadMissile,
     toggleAutobuild,
     launchMissile,
+    launchMissileType,
     updateMissileCommandOptions,
   };
 }

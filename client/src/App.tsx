@@ -1,7 +1,7 @@
 import { useEffect, useCallback } from 'react';
 import './index.css';
 import { useSocket, type GuessData } from './hooks/useSocket';
-import type { ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileLaunchAction, MissileLoadAction, MissileCommandOptions } from './types/game';
+import type { ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileLaunchAction, MissileTypeLaunchAction, MissileLoadAction, MissileCommandOptions } from './types/game';
 import { TOTAL_ROUNDS } from './constants';
 import ErrorBoundary from './components/ErrorBoundary';
 import LandingPage from './components/LandingPage';
@@ -87,6 +87,7 @@ export default function App() {
     loadMissile,
     toggleAutobuild,
     launchMissile,
+    launchMissileType,
     updateMissileCommandOptions,
   } = useSocket();
 
@@ -134,6 +135,7 @@ export default function App() {
   const handleBuildMissile = useCallback((action: MissileBuildAction) => { if (roomCode) buildMissileBuilding(roomCode, action); }, [roomCode, buildMissileBuilding]);
   const handleUpgradeMissile = useCallback((buildingId: string) => { if (roomCode) upgradeMissileBuilding(roomCode, { buildingId }); }, [roomCode, upgradeMissileBuilding]);
   const handleLaunchMissile = useCallback((action: MissileLaunchAction) => { if (roomCode) launchMissile(roomCode, action); }, [roomCode, launchMissile]);
+  const handleLaunchMissileType = useCallback((action: MissileTypeLaunchAction) => { if (roomCode) launchMissileType(roomCode, action); }, [roomCode, launchMissileType]);
   const handleLoadMissile = useCallback((action: MissileLoadAction) => { if (roomCode) loadMissile(roomCode, action); }, [roomCode, loadMissile]);
   const handleToggleAutobuild = useCallback((launcherId: string) => { if (roomCode) toggleAutobuild(roomCode, { launcherId }); }, [roomCode, toggleAutobuild]);
   const handleUpdateMissileCommandOptions = useCallback((options: Partial<MissileCommandOptions>) => { if (roomCode) updateMissileCommandOptions(roomCode, options); }, [roomCode, updateMissileCommandOptions]);
@@ -288,6 +290,7 @@ export default function App() {
             onLoad={handleLoadMissile}
             onToggleAutobuild={handleToggleAutobuild}
             onLaunch={handleLaunchMissile}
+            onLaunchType={handleLaunchMissileType}
             onPlayAgain={handlePlayAgain}
           />
         );

@@ -133,7 +133,7 @@ export interface TerritoryGameState {
 // ─── Missile Command Types ────────────────────────────────
 
 export type MissileBuildingType = 'economy' | 'shield' | 'healer' | 'launcher' | 'core';
-export type MissileLauncherType = 'single' | 'scatter' | 'cluster';
+export type MissileLauncherType = 'single' | 'scatter';
 export type PlayerSide = 'top' | 'bottom';
 
 export interface MissileBuilding {
@@ -243,6 +243,12 @@ export interface MissileUpgradeAction {
 
 export interface MissileLaunchAction {
   launcherId: string;
+  targetGx: number;
+  targetGy: number;
+}
+
+export interface MissileTypeLaunchAction {
+  launcherType: MissileLauncherType;
   targetGx: number;
   targetGy: number;
 }

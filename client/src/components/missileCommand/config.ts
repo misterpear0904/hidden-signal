@@ -28,11 +28,10 @@ export interface BuildOption {
 
 export const BUILD_OPTIONS: BuildOption[] = [
   { key: 'economy', label: 'Generator', emoji: '💰', cost: 50, desc: '+2 credits/s at Lv1 (up to +20/s at Lv5). Upgrades snowball your economy.', buildingType: 'economy' },
-  { key: 'shield', label: 'Shield Gen', emoji: '🛡️', cost: 40, desc: '150 shield HP at Lv1 (up to 1000). Dashed aura ≈ 25 squares, fully blocks blasts while charged. Slowly self-repairs.', buildingType: 'shield' },
+  { key: 'shield', label: 'Shield Gen', emoji: '🛡️', cost: 40, desc: '300 shield HP at Lv1 (up to 2000). Aura ≈ 25 squares, fully blocks blasts while charged. Slowly self-repairs.', buildingType: 'shield' },
   { key: 'healer', label: 'Shield Healer', emoji: '💚', cost: 45, desc: 'Repairs 8 shield HP/s at Lv1 (up to 65/s). Heals ONE shield at a time — the weakest in its ≈ 13-square aura.', buildingType: 'healer' },
   { key: 'launcher_single', label: 'Single', emoji: '🎯', cost: 120, desc: '120 dmg for 30cr/missile. Stockpile up to 3, fire the volley at 1 square.', buildingType: 'launcher', launcherType: 'single' },
-  { key: 'launcher_scatter', label: 'Scatter', emoji: '💥', cost: 150, desc: '5 × 35 dmg for 45cr/missile. Stockpile up to 3, volley hits a plus of squares per missile.', buildingType: 'launcher', launcherType: 'scatter' },
-  { key: 'launcher_cluster', label: 'Cluster', emoji: '☄️', cost: 170, desc: '4 bomblets × 45 dmg for 60cr/missile. Stockpile up to 3, each missile blasts a plus.', buildingType: 'launcher', launcherType: 'cluster' },
+  { key: 'launcher_scatter', label: 'Scatter', emoji: '💥', cost: 150, desc: '5 × 35 dmg (175 total!) for 45cr/missile. Highest total damage — best shield-breaker.', buildingType: 'launcher', launcherType: 'scatter' },
 ];
 
 // Coverage cell counts for Manhattan ranges (1 + 4 + 8 + ... + 4*range)
@@ -49,11 +48,10 @@ export const LOAD_SECONDS = 5;
 // Level tables for display (mirror server/missileCommand.js)
 export const STATS = {
   economy: { income: [0, 2, 5, 9, 14, 20], upgrade: [0, 60, 120, 220, 350, 0] },
-  shield: { hp: [0, 150, 300, 500, 750, 1000], upgrade: [0, 50, 100, 180, 280, 0] },
+  shield: { hp: [0, 300, 600, 1000, 1500, 2000], upgrade: [0, 50, 100, 180, 280, 0] },
   healer: { heal: [0, 8, 16, 28, 44, 65], upgrade: [0, 55, 110, 190, 290, 0] },
   single: { cost: [0, 30, 45, 65, 90, 120], dmg: [0, 120, 200, 300, 420, 560], cd: [0, 4, 3.8, 3.5, 3.2, 2.8] },
   scatter: { cost: [0, 45, 65, 90, 120, 155], dmg: [0, 35, 55, 80, 110, 145], cd: [0, 6, 5.7, 5.4, 5, 4.6] },
-  cluster: { cost: [0, 60, 85, 115, 150, 190], dmg: [0, 180, 280, 400, 540, 700], cd: [0, 8, 7.6, 7.2, 6.7, 6.2] },
 };
 
 export function launcherUpgradeCost(buildCost: number, level: number): number {
