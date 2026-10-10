@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
-import type { RoomState, RoleData, RoundRevealData, ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileUpgradeAction, MissileLaunchAction, MissileTypeLaunchAction, MissileLoadAction, MissileCommandOptions } from '../types/game';
+import type { RoomState, RoleData, RoundRevealData, ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileUpgradeAction, MissileLaunchAction, MissileTypeLaunchAction, MissileLoadAction, MissileKeepFireAction, MissileCommandOptions } from '../types/game';
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
 
@@ -30,6 +30,8 @@ export interface SocketHookReturn {
   roundReveal: RoundRevealData | null;
   error: string | null;
   clearError: () => void;
+  clearRoomExpired: () => void;
+  roomExpired: { roomCode: string; reason: string } | null;
   createRoom: (playerName: string) => void;
   joinRoom: (roomCode: string, playerName: string) => void;
   startGame: (roomCode: string) => void;
@@ -68,6 +70,7 @@ export interface SocketHookReturn {
   toggleAutobuild: (roomCode: string, action: MissileLoadAction) => void;
   launchMissile: (roomCode: string, action: MissileLaunchAction) => void;
   launchMissileType: (roomCode: string, action: MissileTypeLaunchAction) => void;
+  setKeepFire: (roomCode: string, action: MissileKeepFireAction) => void;
   updateMissileCommandOptions: (roomCode: string, options: Partial<MissileCommandOptions>) => void;
 }
 
@@ -86,9 +89,11 @@ export function useSocket(): SocketHookReturn {
   const [myRole, setMyRole] = useState<RoleData | null>(null);
   const [roundReveal, setRoundReveal] = useState<RoundRevealData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [roomExpired, setRoomExpired] = useState<{ roomCode: string; reason: string } | null>(null);
   const reconnectingRef = useRef(false);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const serverSleepingRef = useRef(false);
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Keep roomCodeRef in sync with roomCode
   useEffect(() => {
@@ -100,6 +105,10 @@ export function useSocket(): SocketHookReturn {
       clearTimeout(retryTimeoutRef.current);
       retryTimeoutRef.current = null;
     }
+  }, []);
+
+  const clearRoomExpired = useCallback(() => {
+    setRoomExpired(null);
   }, []);
 
   const updateConnectionStatus = useCallback((status: ConnectionStatus) => {
@@ -178,8 +187,19 @@ export function useSocket(): SocketHookReturn {
           s.emit('room-state-request', { roomCode: roomCodeRef.current });
         }
       }
+      // Start heartbeat to detect dead rooms
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+      heartbeatRef.current = setInterval(() => {
+        if (s.connected && roomCodeRef.current) {
+          s.emit('heartbeat', { roomCode: roomCodeRef.current, timestamp: Date.now() });
+        }
+      }, 10000); // every 10 seconds
     };
     const onDisconnect = (reason: string) => {
+      if (heartbeatRef.current) {
+        clearInterval(heartbeatRef.current);
+        heartbeatRef.current = null;
+      }
       setConnected(false);
       reconnectingRef.current = true;
       console.log('[socket] disconnected:', reason);
@@ -252,6 +272,15 @@ export function useSocket(): SocketHookReturn {
     const onEndVoteFailed = ({ declinedBy }: { declinedBy: string }) => {
       setError(`${declinedBy} voted to keep playing — end-game vote failed`);
     };
+    const onRoomExpired = ({ roomCode: code, reason }: { roomCode: string; reason: string }) => {
+      console.log('[socket] room expired:', { code, reason });
+      setRoomExpired({ roomCode: code, reason });
+      setInRoom(false);
+      setRoomState(null);
+      setMyRole(null);
+      setRoundReveal(null);
+      setRoomCode(code ?? '');
+    };
 
     s.on('connect', onConnect);
     s.on('disconnect', onDisconnect);
@@ -263,9 +292,14 @@ export function useSocket(): SocketHookReturn {
     s.on('error', onError);
     s.on('kicked', onKicked);
     s.on('end-vote-failed', onEndVoteFailed);
+    s.on('room-expired', onRoomExpired);
 
     return () => {
       clearRetryTimeout();
+      if (heartbeatRef.current) {
+        clearInterval(heartbeatRef.current);
+        heartbeatRef.current = null;
+      }
       s.off('connect', onConnect);
       s.off('disconnect', onDisconnect);
       s.off('connect_error', onConnectError);
@@ -276,6 +310,7 @@ export function useSocket(): SocketHookReturn {
       s.off('error', onError);
       s.off('kicked', onKicked);
       s.off('end-vote-failed', onEndVoteFailed);
+      s.off('room-expired', onRoomExpired);
       s.disconnect();
       socketRef.current = null;
     };
@@ -428,6 +463,10 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('toggle-autobuild', { roomCode: code, launcherId: action.launcherId });
   }, []);
 
+  const setKeepFire = useCallback((code: string, action: MissileKeepFireAction) => {
+    socketRef.current?.emit('set-keep-fire', { roomCode: code, action });
+  }, []);
+
   const updateMissileCommandOptions = useCallback((code: string, options: Partial<MissileCommandOptions>) => {
     socketRef.current?.emit('update-missile-command-options', { roomCode: code, options });
   }, []);
@@ -446,6 +485,8 @@ export function useSocket(): SocketHookReturn {
     roundReveal,
     error,
     clearError,
+    clearRoomExpired,
+    roomExpired,
     createRoom,
     joinRoom,
     startGame,
@@ -484,6 +525,7 @@ export function useSocket(): SocketHookReturn {
     toggleAutobuild,
     launchMissile,
     launchMissileType,
+    setKeepFire,
     updateMissileCommandOptions,
   };
 }

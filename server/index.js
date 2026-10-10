@@ -5,6 +5,17 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import { logger } from './logger.js';
+
+// Helper: get room or emit room-expired and return null
+function getRoomOrExpire(socket, roomCode) {
+  const room = getRoom(roomCode);
+  if (!room) {
+    socket.emit('room-expired', { roomCode, reason: 'Room no longer exists (server restart or expired)' });
+    return null;
+  }
+  return room;
+}
+
 import {
   createRoom,
   joinRoom,
@@ -22,6 +33,7 @@ import {
   toggleAutobuild,
   launchMissile,
   launchMissileType,
+  setKeepFire,
   tickMissileRoom,
   setPlayerDifficulty,
   submitChromaGuess,
@@ -643,6 +655,8 @@ io.on('connection', (socket) => {
 
   socket.on('build-missile-building', ({ roomCode, action } = {}) => {
     if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const room = getRoomOrExpire(socket, roomCode);
+    if (!room) return;
     const result = buildMissileBuilding(roomCode, socket.id, action);
     if (!result) return socket.emit('error', 'Cannot build now');
     if (result.error) return socket.emit('error', result.error);
@@ -651,6 +665,8 @@ io.on('connection', (socket) => {
 
   socket.on('upgrade-missile-building', ({ roomCode, action } = {}) => {
     if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const room = getRoomOrExpire(socket, roomCode);
+    if (!room) return;
     const buildingId = typeof action === 'string' ? action : action?.buildingId;
     const result = upgradeMissileBuilding(roomCode, socket.id, buildingId);
     if (!result) return socket.emit('error', 'Cannot upgrade now');
@@ -660,6 +676,8 @@ io.on('connection', (socket) => {
 
   socket.on('launch-missile', ({ roomCode, action } = {}) => {
     if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const room = getRoomOrExpire(socket, roomCode);
+    if (!room) return;
     const result = launchMissile(roomCode, socket.id, action);
     if (!result) return socket.emit('error', 'Cannot launch now');
     if (result.error) return socket.emit('error', result.error);
@@ -668,6 +686,8 @@ io.on('connection', (socket) => {
 
   socket.on('load-missile', ({ roomCode, launcherId } = {}) => {
     if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const room = getRoomOrExpire(socket, roomCode);
+    if (!room) return;
     const id = typeof launcherId === 'string' ? launcherId : launcherId?.launcherId;
     const result = loadMissile(roomCode, socket.id, id);
     if (!result) return socket.emit('error', 'Cannot load now');
@@ -677,6 +697,8 @@ io.on('connection', (socket) => {
 
   socket.on('toggle-autobuild', ({ roomCode, launcherId } = {}) => {
     if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const room = getRoomOrExpire(socket, roomCode);
+    if (!room) return;
     const id = typeof launcherId === 'string' ? launcherId : launcherId?.launcherId;
     const result = toggleAutobuild(roomCode, socket.id, id);
     if (!result) return socket.emit('error', 'Cannot toggle now');
@@ -686,12 +708,35 @@ io.on('connection', (socket) => {
 
   socket.on('launch-missile-type', ({ roomCode, launcherType, targetGx, targetGy } = {}) => {
     if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const room = getRoomOrExpire(socket, roomCode);
+    if (!room) return;
     const gx = typeof targetGx === 'number' ? targetGx : targetGx?.gx;
     const gy = typeof targetGy === 'number' ? targetGy : targetGy?.gy;
     const result = launchMissileType(roomCode, socket.id, launcherType, gx, gy);
     if (!result) return socket.emit('error', 'Cannot launch now');
     if (result.error) return socket.emit('error', result.error);
     broadcastRoomState(result.room);
+  });
+
+  socket.on('set-keep-fire', ({ roomCode, action } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const room = getRoomOrExpire(socket, roomCode);
+    if (!room) return;
+    const result = setKeepFire(roomCode, socket.id, action);
+    if (!result) return socket.emit('error', 'Cannot set keep-fire now');
+    if (result.error) return socket.emit('error', result.error);
+    broadcastRoomState(result.room);
+  });
+
+  // Heartbeat: client pings to keep room alive and detect server restarts
+  socket.on('heartbeat', ({ roomCode, timestamp }) => {
+    const room = getRoom(roomCode);
+    if (!room) {
+      socket.emit('room-expired', { roomCode, reason: 'Room no longer exists (server restart or expired)' });
+      return;
+    }
+    // Acknowledge heartbeat with server time
+    socket.emit('heartbeat-ack', { serverTime: Date.now(), clientTimestamp: timestamp });
   });
 
   socket.on('set-player-difficulty', ({ roomCode, difficulty } = {}) => {
@@ -706,7 +751,10 @@ io.on('connection', (socket) => {
       return socket.emit('error', 'Too many requests');
     }
     const room = getRoom(roomCode);
-    if (!room) return socket.emit('error', 'Room not found');
+    if (!room) {
+      socket.emit('room-expired', { roomCode, reason: 'Room no longer exists (server restart or expired)' });
+      return socket.emit('error', 'Room not found');
+    }
     if (!isHost(room, socket.id)) return socket.emit('error', 'Only the host can start');
 
     const gameId = room.selectedGameId || 'hidden-signal';

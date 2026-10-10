@@ -37,18 +37,26 @@ export const MISSILE_CONFIG = {
     // Upgrade costs are near-exponential by current level (cost to go level -> level+1).
     economy: { build: 50, upgrade: [0, 60, 150, 375, 900, 0] },
     shield: { build: 40, upgrade: [0, 50, 125, 300, 700, 0] },
+    shield_heavy: { build: 40, upgrade: [0, 50, 125, 300, 700, 0] },
     healer: { build: 45, upgrade: [0, 55, 140, 330, 750, 0] },
     launcher_single: { build: 120 },
     launcher_scatter: { build: 150 },
   },
   economy: {
-    // income per sec by level 1..5 — snowballs hard
-    income: [0, 2, 5, 9, 14, 20],
+    // income per sec by level 1..5 — snowballs hard (tuned down slightly)
+    income: [0, 2, 4, 7, 11, 15],
     hp: [0, 100, 150, 210, 280, 360],
   },
   shield: {
-    hp: [0, 300, 600, 1000, 1500, 2000],
-    buildingHp: [0, 120, 180, 250, 330, 420],
+    tiles: 3, // aura radius (Manhattan, no diagonals) → 25 squares
+    hp: [0, 375, 750, 1250, 1875, 2500],
+    buildingHp: [0, 150, 225, 313, 413, 525],
+  },
+  shield_heavy: {
+    // 2-tile range, 2x HP
+    tiles: 2, // → 13 squares
+    hp: [0, 750, 1500, 2500, 3750, 5000],
+    buildingHp: [0, 300, 450, 626, 826, 1050],
   },
   healer: {
     healPerSec: [0, 8, 16, 28, 44, 65],
@@ -110,10 +118,20 @@ export function cellToWorld(side, gx, gy) {
   return { x, y };
 }
 
+// Both shield variants share the whole shield pipeline (aura, pool, blocking,
+// healing). Heavy is just 2x pool for a smaller aura — it MUST be included
+// everywhere a shield is checked or it degenerates into a plain building.
+function isShieldType(type) {
+  return type === 'shield' || type === 'shield_heavy';
+}
+
 function baseStatsFor(type, launcherType, level) {
   const L = Math.max(1, Math.min(5, level));
   if (type === 'economy') return { incomePerSec: MISSILE_CONFIG.economy.income[L], hp: MISSILE_CONFIG.economy.hp[L] };
-  if (type === 'shield') return { maxShieldHp: MISSILE_CONFIG.shield.hp[L], hp: MISSILE_CONFIG.shield.buildingHp[L] };
+  if (isShieldType(type)) {
+    const cfg = MISSILE_CONFIG[type];
+    return { maxShieldHp: cfg.hp[L], shieldTiles: cfg.tiles, hp: cfg.buildingHp[L] };
+  }
   if (type === 'healer') return { healPerSec: MISSILE_CONFIG.healer.healPerSec[L], hp: MISSILE_CONFIG.healer.hp[L] };
   if (type === 'launcher') {
     const cfg = MISSILE_CONFIG.launchers[launcherType];
@@ -157,6 +175,9 @@ export function createMissileCommandState(playerIds, options = {}) {
     buildings,
     pending: {}, // construction sites & in-progress upgrades, keyed by id
     missiles: [],
+    // Keep-firing locks, keyed by playerId. `null`/absent = off. Otherwise
+    // { targetGx, targetGy, launcherType, since } — see missileSetKeepFire.
+    keepFire: {},
     resources,
     gameStartTime: now,
     lastEconomyTick: now,
@@ -171,6 +192,7 @@ function buildingCountFor(state, playerId) {
 
 function buildCostFor(buildingType, launcherType) {
   if (buildingType === 'launcher') return MISSILE_CONFIG.costs[`launcher_${launcherType}`]?.build ?? 150;
+  if (buildingType === 'shield_heavy') return MISSILE_CONFIG.costs.shield_heavy?.build ?? 40;
   return MISSILE_CONFIG.costs[buildingType]?.build ?? 50;
 }
 
@@ -189,7 +211,7 @@ function materializeBuilding(state, p) {
   const stats = baseStatsFor(p.type, p.launcherType, 1);
   const b = { id: p.id, type: p.type, side: p.side, gx: p.gx, gy: p.gy, level: 1, ownerId: p.ownerId, hp: stats.hp ?? MISSILE_CONFIG.buildingHpFallback, maxHp: stats.hp ?? MISSILE_CONFIG.buildingHpFallback };
   if (p.type === 'economy') b.incomePerSec = stats.incomePerSec;
-  if (p.type === 'shield') { b.shieldHp = stats.maxShieldHp; b.maxShieldHp = stats.maxShieldHp; }
+  if (isShieldType(p.type)) { b.shieldHp = stats.maxShieldHp; b.maxShieldHp = stats.maxShieldHp; b.shieldTiles = stats.shieldTiles; }
   if (p.type === 'healer') { b.healPerSec = stats.healPerSec; b.healTargetId = null; }
   if (p.type === 'launcher') {
     b.launcherType = p.launcherType;
@@ -215,9 +237,10 @@ function applyLevelUp(state, b) {
   b.maxHp = stats.hp ?? b.maxHp;
   b.hp = Math.min(b.maxHp, (b.hp ?? b.maxHp) + Math.round(b.maxHp * 0.4)); // heal chunk on upgrade
   if (b.type === 'economy') b.incomePerSec = stats.incomePerSec;
-  if (b.type === 'shield') {
+  if (isShieldType(b.type)) {
     const prevMax = b.maxShieldHp;
     b.maxShieldHp = stats.maxShieldHp;
+    b.shieldTiles = stats.shieldTiles;
     b.shieldHp = Math.min(b.maxShieldHp, (b.shieldHp ?? prevMax) + Math.round(b.maxShieldHp * 0.5));
   }
   if (b.type === 'healer') { b.healPerSec = stats.healPerSec; }
@@ -236,7 +259,7 @@ export function missileBuildBuilding(state, playerId, action) {
   if (!side) return { error: 'You are not in this match' };
   if (state.winnerId) return { error: 'Game is over' };
   const { buildingType, launcherType, gx, gy } = action || {};
-  if (!['economy', 'shield', 'healer', 'launcher'].includes(buildingType)) return { error: 'Invalid building type' };
+  if (!['economy', 'shield', 'shield_heavy', 'healer', 'launcher'].includes(buildingType)) return { error: 'Invalid building type' };
   if (buildingType === 'launcher' && !['single', 'scatter'].includes(launcherType)) {
     return { error: 'Pick a launcher type: single or scatter' };
   }
@@ -436,22 +459,57 @@ export function missileLaunchType(state, playerId, launcherType, targetGx, targe
   return { missiles: added };
 }
 
+// Arm or clear a "keep firing" lock. While armed, EVERY missile that finishes
+// loading is auto-launched at the locked tile — the player never taps again.
+// One lock per player; the launcher type is part of the lock so the ALL 🎯 /
+// ALL 💥 choice is baked into it.
+export function missileSetKeepFire(state, playerId, action) {
+  if (state.winnerId) return { error: 'Game is over' };
+  const side = missileSideForPlayer(state, playerId);
+  if (!side) return { error: 'You are not in this match' };
+  if (!state.keepFire) state.keepFire = {};
+  if (!action || action.armed !== true) {
+    state.keepFire[playerId] = null;
+    return { keepFire: null };
+  }
+  const { targetGx, targetGy, launcherType } = action;
+  if (!isValidCell(targetGx, targetGy)) return { error: 'Invalid target square' };
+  if (!['single', 'scatter'].includes(launcherType)) return { error: 'Invalid launcher type' };
+  state.keepFire[playerId] = { targetGx, targetGy, launcherType, since: Date.now() };
+  return { keepFire: state.keepFire[playerId] };
+}
+
 // Apply explosion damage centered on an enemy grid cell with Manhattan radius.
 function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage) {
   const buildings = Object.values(state.buildings).filter(b => b.side === enemySide);
-  const shields = buildings.filter(b => b.type === 'shield' && (b.shieldHp ?? 0) > 0);
-  const shieldTiles = state.shieldTiles ?? MISSILE_CONFIG.shieldTiles;
+  const shields = buildings.filter(b => isShieldType(b.type) && (b.shieldHp ?? 0) > 0);
+  const defaultTiles = state.shieldTiles ?? MISSILE_CONFIG.shieldTiles;
 
-  // A shield never covers itself, but overlapping shields DO cover each other.
-  const coveringShield = (b) => {
-    let best = null;
-    let bestD = Infinity;
-    for (const s of shields) {
-      if (s.id === b.id) continue;
-      const d = cellDist(s.gx, s.gy, b.gx, b.gy);
-      if (d <= shieldTiles && d < bestD) { best = s; bestD = d; }
+  // Fraction of a shield's pool still standing. Compared across shield and
+  // shield_heavy (different max pools) so "% left" is the common currency.
+  const pctLeft = (s) => (s.shieldHp ?? 0) / (s.maxShieldHp || 1);
+  // Aura radius is per variant: shield 3, shield_heavy 2.
+  const rangeOf = (s) => s.shieldTiles ?? defaultTiles;
+
+  // Every shield covering `b`, fullest pool FIRST. A shield never covers
+  // itself, but overlapping shields DO cover each other.
+  const coveringShields = (b) => shields
+    .filter(s => s.id !== b.id && cellDist(s.gx, s.gy, b.gx, b.gy) <= rangeOf(s))
+    .sort((a, c) => pctLeft(c) - pctLeft(a));
+
+  // Drain `dmg` down `list` in order — the fullest pool eats the blast and the
+  // overflow spills into the next-fullest, so a nearly-spent generator is
+  // never sacrificed first. Returns whatever the shields couldn't absorb.
+  const absorbThrough = (list, dmg) => {
+    let left = dmg;
+    for (const s of list) {
+      if (left <= 0) break;
+      const pool = s.shieldHp ?? 0;
+      if (pool <= 0) continue;
+      if (pool >= left) { s.shieldHp = pool - left; left = 0; }
+      else { s.shieldHp = 0; left = left - pool; }
     }
-    return best;
+    return left;
   };
 
   const destroyed = [];
@@ -463,30 +521,16 @@ function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage) {
     // falloff: center full, edge 60%
     const falloff = blast === 0 ? 1 : 1 - (d / (blast + 1)) * 0.4;
     let dmg = damage * falloff;
-    const shield = coveringShield(b);
-    if (shield && b.type !== 'shield') {
-      // Full block while the pool lasts: damage eats the shield pool first,
-      // only overflow reaches the building. No bleed-through.
-      const pool = shield.shieldHp ?? 0;
-      if (pool >= dmg) { shield.shieldHp = pool - dmg; dmg = 0; }
-      else { shield.shieldHp = 0; dmg = dmg - pool; }
-    } else if (b.type === 'shield') {
-      // Shields are covered by overlapping shields too: the covering pool
-      // absorbs first (full block + overflow), then this shield's own pool,
+    if (isShieldType(b.type)) {
+      // Shields are covered by overlapping shields too: the covering pools
+      // absorb first (full block + overflow), then this shield's own pool,
       // then its structure.
-      let dmgLeft = dmg;
-      const cover = coveringShield(b);
-      if (cover) {
-        const pool = cover.shieldHp ?? 0;
-        if (pool >= dmgLeft) { cover.shieldHp = pool - dmgLeft; dmgLeft = 0; }
-        else { cover.shieldHp = 0; dmgLeft = dmgLeft - pool; }
-      }
-      if (dmgLeft > 0) {
-        const pool = b.shieldHp ?? 0;
-        if (pool >= dmgLeft) { b.shieldHp = pool - dmgLeft; dmgLeft = 0; }
-        else { b.shieldHp = 0; dmgLeft = dmgLeft - pool; }
-      }
-      dmg = dmgLeft;
+      dmg = absorbThrough(coveringShields(b), dmg);
+      if (dmg > 0) dmg = absorbThrough([b], dmg);
+    } else {
+      // Full block while the pools last: damage eats shield pools in order
+      // of % remaining. Only true overflow reaches the building.
+      dmg = absorbThrough(coveringShields(b), dmg);
     }
     if (dmg <= 0) continue;
     if (b.type === 'core') {
@@ -503,17 +547,13 @@ function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage) {
   for (const id of destroyed) {
     if (state.buildings[id]?.type !== 'core') delete state.buildings[id];
   }
-  // Empty covered tile: the shield still intercepts the blast — nearest
-  // covering shield with charge takes the full center damage.
+  // Empty covered tile: the shield still intercepts the blast. Same rule as a
+  // real hit — fullest pool first, overflow spilling into the next-fullest.
   if (!hitAny) {
-    let guard = null;
-    let guardD = Infinity;
-    for (const s of shields) {
-      if ((s.shieldHp ?? 0) <= 0) continue;
-      const d = cellDist(s.gx, s.gy, gx, gy);
-      if (d <= shieldTiles && d < guardD) { guard = s; guardD = d; }
-    }
-    if (guard) guard.shieldHp = Math.max(0, (guard.shieldHp ?? 0) - damage);
+    const guards = shields
+      .filter(s => cellDist(s.gx, s.gy, gx, gy) <= rangeOf(s))
+      .sort((a, c) => pctLeft(c) - pctLeft(a));
+    absorbThrough(guards, damage);
   }
   return destroyed;
 }
@@ -569,6 +609,26 @@ export function tickMissileCommand(state, now = Date.now()) {
     b.loadingUntil = now + (MISSILE_CONFIG.loadMs ?? 5000);
   }
 
+  // 0c. Keep-firing locks: anything stockpiled goes out at the locked tile
+  //     the moment it's ready — including missiles that were already loaded
+  //     when the lock was armed. Runs before economy so a fresh volley pays
+  //     full price and can't be funded by same-tick income.
+  if (state.keepFire) {
+    for (const [pid, lock] of Object.entries(state.keepFire)) {
+      if (!lock) continue;
+      const side = missileSideForPlayer(state, pid);
+      if (!side) { state.keepFire[pid] = null; continue; }
+      const enemySide = side === 'top' ? 'bottom' : 'top';
+      for (const b of Object.values(state.buildings)) {
+        if (b.type !== 'launcher' || b.ownerId !== pid) continue;
+        if (b.launcherType !== lock.launcherType) continue;
+        if ((b.stock ?? 0) <= 0) continue;
+        const added = fireVolley(state, b, enemySide, lock.targetGx, lock.targetGy, now);
+        if (added.length) events.push({ type: 'keepfire', id: b.id, count: added.length });
+      }
+    }
+  }
+
   // 1. Economy income (continuous) — generators plus each living core's baseline
   for (const b of Object.values(state.buildings)) {
     if (b.type !== 'economy') continue;
@@ -591,7 +651,7 @@ export function tickMissileCommand(state, now = Date.now()) {
   //    The target id is stored on the healer so clients can draw the heal beam.
   //    Shields also slowly self-repair (1/8 of a same-level healer's rate).
   const healerTiles = state.healerTiles ?? MISSILE_CONFIG.healerTiles;
-  const shields = Object.values(state.buildings).filter(b => b.type === 'shield');
+  const shields = Object.values(state.buildings).filter(b => isShieldType(b.type));
   const healers = Object.values(state.buildings).filter(b => b.type === 'healer');
   for (const h of healers) {
     let best = null;
@@ -647,6 +707,7 @@ export function tickMissileCommand(state, now = Date.now()) {
       const winnerSide = deadSide === 'top' ? 'bottom' : 'top';
       state.winnerId = state.sides[winnerSide];
       state.winReason = 'core_destroyed';
+      state.keepFire = {};
       events.push({ type: 'core_destroyed', side: deadSide, winnerId: state.winnerId });
     }
   }

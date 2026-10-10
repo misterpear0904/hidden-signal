@@ -13,6 +13,7 @@ import {
   missileToggleAutobuild,
   missileLaunch,
   missileLaunchType,
+  missileSetKeepFire,
   tickMissileCommand,
   missileIncomePerSec,
   cellDist,
@@ -94,7 +95,7 @@ test('upgrades queue with level-scaled timers and apply on completion', () => {
   assert.equal(s.buildings[id].level, 1, 'not done at 4.999s into a 5s upgrade');
   advance(2, s);
   assert.equal(s.buildings[id].level, 2);
-  assert.equal(s.buildings[id].incomePerSec, 5);
+  assert.equal(s.buildings[id].incomePerSec, 4);
 });
 
 test('Manhattan distance ignores diagonals', () => {
@@ -233,6 +234,100 @@ test('launch-all-type fires every loaded launcher of that type', () => {
   assert.equal(missileLaunchType(s, P1, 'scatter', 0, 0).error, undefined);
 });
 
+// ─── Keep-firing lock ────────────────────────────────────────────────────────
+
+// Builds one launcher of `type` for P1 with one missile stockpiled.
+function loadedLauncher(s, type = 'single') {
+  missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: type, gx: 0, gy: 0 });
+  advance(3100, s);
+  const L = Object.values(s.buildings).find(b => b.type === 'launcher');
+  L.loadingUntil = 0;
+  missileLoadMissile(s, P1, L.id);
+  advance(5100, s);
+  return L;
+}
+
+test('keep-fire: armed lock fires stockpiled missiles at the locked tile', () => {
+  const s = fresh();
+  const L = loadedLauncher(s);
+  assert.equal(L.stock, 1);
+  const r = missileSetKeepFire(s, P1, { armed: true, targetGx: 8, targetGy: 2, launcherType: 'single' });
+  assert.equal(r.error, undefined);
+  assert.equal(s.keepFire[P1].targetGx, 8);
+  advance(250, s);
+  assert.equal(L.stock, 0, 'stockpile auto-consumed');
+  assert.equal(s.missiles.length, 1, 'one missile launched without any player action');
+  assert.equal(s.missiles[0].targetGx, 8);
+  assert.equal(s.missiles[0].targetGy, 2);
+});
+
+test('keep-fire: only the locked launcher type fires', () => {
+  const s = fresh();
+  missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'single', gx: 0, gy: 0 });
+  missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'scatter', gx: 1, gy: 0 });
+  advance(3100, s);
+  const single = Object.values(s.buildings).find(b => b.launcherType === 'single');
+  const scat = Object.values(s.buildings).find(b => b.launcherType === 'scatter');
+  for (const L of [single, scat]) { L.loadingUntil = 0; missileLoadMissile(s, P1, L.id); }
+  advance(5100, s);
+  missileSetKeepFire(s, P1, { armed: true, targetGx: 3, targetGy: 3, launcherType: 'single' });
+  advance(250, s);
+  assert.equal(single.stock, 0, 'locked type fired');
+  assert.equal(scat.stock, 1, 'other type held its missiles');
+});
+
+test('keep-fire: a load completing later fires on its own', () => {
+  const s = fresh();
+  missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'single', gx: 0, gy: 0 });
+  advance(3100, s);
+  const L = Object.values(s.buildings).find(b => b.type === 'launcher');
+  L.autobuild = true; // keep the launcher producing so we see a load→fire cycle
+  missileSetKeepFire(s, P1, { armed: true, targetGx: 5, targetGy: 5, launcherType: 'single' });
+  advance(5100, s); // autobuild starts a missile, then it completes
+  advance(5100, s); // ...and completes again
+  assert.equal(L.stock, 0, 'never stockpiles — everything goes out on load');
+  assert.ok(s.missiles.length >= 1, 'missiles were launched automatically');
+  assert.ok(s.missiles.every(m => m.targetGx === 5 && m.targetGy === 5), 'all aimed at the locked tile');
+});
+
+test('keep-fire: clearing the lock stops automatic launches', () => {
+  const s = fresh();
+  const L = loadedLauncher(s);
+  missileSetKeepFire(s, P1, { armed: true, targetGx: 4, targetGy: 1, launcherType: 'single' });
+  advance(250, s);
+  assert.equal(L.stock, 0, 'armed lock drained the stockpile');
+  const r = missileSetKeepFire(s, P1, { armed: false });
+  assert.equal(r.keepFire, null);
+  assert.equal(s.keepFire[P1], null);
+  const before = s.missiles.length;
+  advance(1000, s);
+  assert.equal(s.missiles.length, before, 'nothing launched while the lock is off');
+  L.loadingUntil = 0;
+  missileLoadMissile(s, P1, L.id);
+  advance(5100, s);
+  assert.equal(L.stock, 1, 'loads and stays stockpiled once the lock is cleared');
+});
+
+test('keep-fire: validation rejects bad tiles/types and other players', () => {
+  const s = fresh();
+  assert.equal(missileSetKeepFire(s, P1, { armed: true, targetGx: 99, targetGy: 0, launcherType: 'single' }).error, 'Invalid target square');
+  assert.equal(missileSetKeepFire(s, P1, { armed: true, targetGx: 0, targetGy: 0, launcherType: 'nuke' }).error, 'Invalid launcher type');
+  assert.equal(missileSetKeepFire(s, 'nobody', { armed: true, targetGx: 0, targetGy: 0, launcherType: 'single' }).error, 'You are not in this match');
+});
+
+test('keep-fire: locks clear when a core dies', () => {
+  const s = fresh();
+  missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'single', gx: 0, gy: 0 });
+  advance(3100, s);
+  const L = Object.values(s.buildings).find(b => b.type === 'launcher');
+  L.loadingUntil = 0; missileLoadMissile(s, P1, L.id); advance(5100, s);
+  missileSetKeepFire(s, P1, { armed: true, targetGx: 6, targetGy: 3, launcherType: 'single' });
+  s.buildings.core_bottom.coreHp = 0;
+  advance(250, s);
+  assert.ok(s.winnerId, 'game ended');
+  assert.deepEqual(s.keepFire, {}, 'locks wiped at victory');
+});
+
 test('blasts on empty covered tiles still drain the shield', () => {
   const s = fresh();
   missileBuildBuilding(s, P2, { buildingType: 'shield', gx: 6, gy: 5 });
@@ -240,12 +335,13 @@ test('blasts on empty covered tiles still drain the shield', () => {
   advance(3100, s);
   const L = Object.values(s.buildings).find(b => b.type === 'launcher');
   const sh = Object.values(s.buildings).find(b => b.type === 'shield');
-  assert.equal(sh.maxShieldHp, 300, '2x shield pools');
+  assert.equal(sh.maxShieldHp, 375, '2.5x shield pools');
   L.loadingUntil = 0; missileLoadMissile(s, P1, L.id); advance(5100, s);
   missileLaunch(s, P1, { launcherId: L.id, targetGx: 8, targetGy: 5 }); // empty, covered (dist 2)
   for (let i = 0; i < 60 && s.missiles.length; i++) advance(250, s);
   assert.equal(s.missiles.length, 0, 'missile landed');
-  assert.ok(sh.shieldHp < 250, `shield intercepted the empty blast: pool=${sh.shieldHp}`);
+  assert.ok(sh.shieldHp < 260, `shield intercepted the empty blast: pool=${sh.shieldHp}`);
+  assert.equal(sh.shieldHp, 375 - 120, 'full 120 absorbed');
 });
 
 test('overlapping shields cover each other', () => {
@@ -265,6 +361,94 @@ test('overlapping shields cover each other', () => {
   assert.ok(S2.shieldHp < S2.maxShieldHp, `covering shield absorbed: pool=${S2.shieldHp}`);
   assert.equal(S1.shieldHp, S1.maxShieldHp, 'hit shield pool untouched (covered)');
   assert.equal(S1.hp, s1hp, 'hit shield structure untouched');
+});
+
+// Builds a P2 economy at (6,5) covered by two shields — A at (9,5) is FAR but
+// fuller, B at (5,5) is NEAR but emptier. Returns them plus a loaded launcher
+// for P1 so we can drop one 120-damage missile on the economy.
+//
+// NOTE: shields self-repair ~1/s, so pools set here drift upward by ~10 over
+// the missile's flight before the blast lands. Tests assert ranges that absorb
+// that drift while still discriminating "fullest first" from "nearest first".
+function overlapFixture(s) {
+  missileBuildBuilding(s, P2, { buildingType: 'economy', gx: 6, gy: 5 });
+  missileBuildBuilding(s, P2, { buildingType: 'shield', gx: 9, gy: 5 });
+  missileBuildBuilding(s, P2, { buildingType: 'shield', gx: 5, gy: 5 });
+  missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'single', gx: 0, gy: 0 });
+  advance(3100, s);
+  const A = Object.values(s.buildings).find(b => b.type === 'shield' && b.gx === 9);
+  const B = Object.values(s.buildings).find(b => b.type === 'shield' && b.gx === 5);
+  const eco = Object.values(s.buildings).find(b => b.type === 'economy');
+  const L = Object.values(s.buildings).find(b => b.type === 'launcher');
+  L.loadingUntil = 0; missileLoadMissile(s, P1, L.id); advance(5100, s);
+  return { A, B, eco, L };
+}
+const land = (s, L) => {
+  missileLaunch(s, P1, { launcherId: L.id, targetGx: 6, targetGy: 5 });
+  for (let i = 0; i < 80 && s.missiles.length; i++) advance(250, s);
+};
+
+test('shield overlap: fullest % pool absorbs first, not the nearest shield', () => {
+  const s = fresh();
+  const { A, B, eco, L } = overlapFixture(s);
+  A.shieldHp = 300; // 80%
+  B.shieldHp = 100; // 27%
+  const ecoHp = eco.hp;
+  land(s, L);
+  // Nearest-first (the old rule) would have drained B; the fuller pool wins.
+  assert.ok(A.shieldHp >= 180 && A.shieldHp <= 200, `fullest pool ate the 120 hit: ${A.shieldHp}`);
+  assert.ok(B.shieldHp >= 105, `emptier pool left alone: ${B.shieldHp}`);
+  assert.equal(eco.hp, ecoHp, 'building fully covered');
+});
+
+test('shield overlap: overflow spills into the next fullest % pool', () => {
+  const s = fresh();
+  const { A, B, eco, L } = overlapFixture(s);
+  A.shieldHp = 100; // 27% — fuller of the two, so it blows first
+  B.shieldHp = 60;  // 16%
+  const ecoHp = eco.hp;
+  land(s, L);
+  assert.ok(A.shieldHp <= 2, `fuller pool drained first: ${A.shieldHp}`);
+  // What A couldn't absorb carries into B instead of hitting the building.
+  assert.ok(B.shieldHp >= 50 && B.shieldHp <= 70, `carry-over landed in next pool: ${B.shieldHp}`);
+  assert.equal(eco.hp, ecoHp, 'building still fully covered');
+});
+
+test('shield overlap: only true overflow damages the building', () => {
+  const s = fresh();
+  const { A, B, eco, L } = overlapFixture(s);
+  A.shieldHp = 10;
+  B.shieldHp = 5;
+  const ecoHp = eco.hp;
+  land(s, L);
+  assert.ok(A.shieldHp <= 2, 'first pool emptied');
+  assert.ok(B.shieldHp <= 2, 'second pool emptied by the overflow');
+  // 120 damage vs ~20 + ~15 of pool (plus in-flight repair) → real bleed.
+  assert.ok(eco.hp <= ecoHp - 70, `overflow reached the building: -${ecoHp - eco.hp}`);
+});
+
+test('shield overlap: % ordering spans shield and heavy shield pools', () => {
+  const s = fresh();
+  // Heavy shield is FULL (750/750) but covers only 2 tiles; the regular shield
+  // is nearly spent (20/375) but reaches 3. Raw pool would rank light first —
+  // percent must still put the full heavy pool in front.
+  missileBuildBuilding(s, P2, { buildingType: 'economy', gx: 6, gy: 5 });
+  missileBuildBuilding(s, P2, { buildingType: 'shield_heavy', gx: 7, gy: 5 });
+  missileBuildBuilding(s, P2, { buildingType: 'shield', gx: 4, gy: 5 });
+  missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'single', gx: 0, gy: 0 });
+  advance(3100, s);
+  const heavy = Object.values(s.buildings).find(b => b.type === 'shield_heavy');
+  const light = Object.values(s.buildings).find(b => b.type === 'shield');
+  const eco = Object.values(s.buildings).find(b => b.type === 'economy');
+  const L = Object.values(s.buildings).find(b => b.type === 'launcher');
+  assert.equal(heavy.maxShieldHp, 750, 'heavy pools are 2x');
+  L.loadingUntil = 0; missileLoadMissile(s, P1, L.id); advance(5100, s);
+  light.shieldHp = 20; // ~5%
+  const ecoHp = eco.hp;
+  land(s, L);
+  assert.ok(heavy.shieldHp >= 620 && heavy.shieldHp <= 640, `full heavy pool absorbed: ${heavy.shieldHp}`);
+  assert.ok(light.shieldHp >= 27, `nearly-spent light pool untouched: ${light.shieldHp}`);
+  assert.equal(eco.hp, ecoHp, 'building fully covered');
 });
 
 test('volley missiles fan out on distinct lanes', () => {
@@ -434,7 +618,7 @@ test('snowball math: L5 generator + core over 10s', () => {
     assert.equal(mc().buildings[eco.id].level, 5);
     const before = mc().resources[P1];
     for (let i = 0; i < 40; i++) advance(250, mc());
-    assert.ok(Math.abs(mc().resources[P1] - before - 250) < 0.01, '20/s gen + 5/s core × 10s');
+    assert.ok(Math.abs(mc().resources[P1] - before - 200) < 0.01, '15/s gen + 5/s core × 10s');
   } finally {
     rooms.delete(room.code);
   }

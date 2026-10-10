@@ -1,7 +1,7 @@
 import { useEffect, useCallback } from 'react';
 import './index.css';
 import { useSocket, type GuessData } from './hooks/useSocket';
-import type { ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileLaunchAction, MissileTypeLaunchAction, MissileLoadAction, MissileCommandOptions } from './types/game';
+import type { ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileLaunchAction, MissileTypeLaunchAction, MissileLoadAction, MissileKeepFireAction, MissileCommandOptions } from './types/game';
 import { TOTAL_ROUNDS } from './constants';
 import ErrorBoundary from './components/ErrorBoundary';
 import LandingPage from './components/LandingPage';
@@ -25,6 +25,7 @@ import LiarRevealPhase from './components/LiarRevealPhase';
 import BluffBetPhase from './components/BluffBetPhase';
 import BluffRevealPhase from './components/BluffRevealPhase';
 import MissileCommandGame from './components/missileCommand/MissileCommandGame';
+import RoomExpired from './components/RoomExpired';
 
 function LoadingScreen({ text }: { text: string }) {
   return (
@@ -52,6 +53,8 @@ export default function App() {
     roundReveal,
     error,
     clearError,
+    clearRoomExpired,
+    roomExpired,
     createRoom,
     joinRoom,
     startGame,
@@ -88,6 +91,7 @@ export default function App() {
     toggleAutobuild,
     launchMissile,
     launchMissileType,
+    setKeepFire,
     updateMissileCommandOptions,
   } = useSocket();
 
@@ -138,6 +142,7 @@ export default function App() {
   const handleLaunchMissileType = useCallback((action: MissileTypeLaunchAction) => { if (roomCode) launchMissileType(roomCode, action); }, [roomCode, launchMissileType]);
   const handleLoadMissile = useCallback((action: MissileLoadAction) => { if (roomCode) loadMissile(roomCode, action); }, [roomCode, loadMissile]);
   const handleToggleAutobuild = useCallback((launcherId: string) => { if (roomCode) toggleAutobuild(roomCode, { launcherId }); }, [roomCode, toggleAutobuild]);
+  const handleSetKeepFire = useCallback((action: MissileKeepFireAction) => { if (roomCode) setKeepFire(roomCode, action); }, [roomCode, setKeepFire]);
   const handleUpdateMissileCommandOptions = useCallback((options: Partial<MissileCommandOptions>) => { if (roomCode) updateMissileCommandOptions(roomCode, options); }, [roomCode, updateMissileCommandOptions]);
 
   // ─── Phase Router ──────────────────────────────────────────────────────────
@@ -152,6 +157,17 @@ export default function App() {
           connectError={connectError}
           retryCount={retryCount}
           retryConnection={retryConnection}
+        />
+      );
+    }
+
+    // Room expired — show explicit expired screen with way back
+    if (roomExpired) {
+      return (
+        <RoomExpired
+          roomCode={roomExpired.roomCode}
+          reason={roomExpired.reason}
+          onClear={clearRoomExpired}
         />
       );
     }
@@ -291,6 +307,7 @@ export default function App() {
             onToggleAutobuild={handleToggleAutobuild}
             onLaunch={handleLaunchMissile}
             onLaunchType={handleLaunchMissileType}
+            onSetKeepFire={handleSetKeepFire}
             onPlayAgain={handlePlayAgain}
           />
         );

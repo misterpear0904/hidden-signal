@@ -10,6 +10,7 @@ import {
   missileToggleAutobuild,
   missileLaunch,
   missileLaunchType,
+  missileSetKeepFire,
   tickMissileCommand,
   missileSideForPlayer,
   missileIncomePerSec,
@@ -1627,6 +1628,16 @@ export function toggleAutobuild(code, playerId, launcherId) {
   if (res.error) return { room, error: res.error };
   room.lastActivityMs = Date.now();
   return { room, building: res.building };
+}
+
+export function setKeepFire(code, playerId, action) {
+  const room = rooms.get(code);
+  if (!room || !room.missileCommandState) return null;
+  if (room.phase !== 'missile-command-play') return null;
+  const res = missileSetKeepFire(room.missileCommandState, playerId, action);
+  if (res.error) return { room, error: res.error };
+  room.lastActivityMs = Date.now();
+  return { room, keepFire: res.keepFire };
 }
 
 export function tickMissileRoom(room, now = Date.now()) {

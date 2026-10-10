@@ -16,8 +16,9 @@ import type {
   MissileLaunchAction,
   MissileTypeLaunchAction,
   MissileLoadAction,
+  MissileKeepFireAction,
 } from '../../types/game';
-import { WORLD, TOP_RECT, BOTTOM_RECT, cellRect, BUILD_OPTIONS, STATS, BUILDING_META, upgradeCostFor, SHIELD_COVER_CELLS, HEALER_COVER_CELLS, CORE_INCOME_FALLBACK, MAX_STOCK, BUILD_SECONDS, LOAD_SECONDS } from './config';
+import { WORLD, TOP_RECT, BOTTOM_RECT, cellRect, BUILD_OPTIONS, BUILD_CATEGORIES, STATS, BUILDING_META, upgradeCostFor, SHIELD_COVER_CELLS, SHIELD_HEAVY_COVER_CELLS, HEALER_COVER_CELLS, CORE_INCOME_FALLBACK, MAX_STOCK, BUILD_SECONDS, LOAD_SECONDS } from './config';
 import { BUILD_ID } from '../../buildInfo';
 
 interface Props {
@@ -30,6 +31,7 @@ interface Props {
   onToggleAutobuild: (launcherId: string) => void;
   onLaunch: (action: MissileLaunchAction) => void;
   onLaunchType: (action: MissileTypeLaunchAction) => void;
+  onSetKeepFire: (action: MissileKeepFireAction) => void;
   onPlayAgain: () => void;
 }
 
@@ -122,7 +124,7 @@ function coveredCells(gx: number, gy: number, range: number, cols: number, rows:
   return out;
 }
 
-export default function MissileCommandGame({ roomState, myId, isHost, onBuild, onUpgrade, onLoad, onToggleAutobuild, onLaunch, onLaunchType, onPlayAgain }: Props) {
+export default function MissileCommandGame({ roomState, myId, isHost, onBuild, onUpgrade, onLoad, onToggleAutobuild, onLaunch, onLaunchType, onSetKeepFire, onPlayAgain }: Props) {
   const mc = roomState.missileCommandState;
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -134,6 +136,10 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   const [zoom, setZoom] = useState(1);
   const [center, setCenter] = useState({ x: WORLD / 2, y: WORLD / 2 });
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // "Armed" = next enemy-tile pick locks a keep-firing target instead of
+  // firing a single volley. The lock itself lives in room state (server-owned).
+  const [keepFireArmed, setKeepFireArmed] = useState(false);
+  const [dockVertical, setDockVertical] = useState(false);
   const fullscreenSupported = typeof document !== 'undefined' &&
     (document.fullscreenEnabled || (document as unknown as { webkitFullscreenEnabled?: boolean }).webkitFullscreenEnabled);
   const [, setFrame] = useState(0);
@@ -147,8 +153,8 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     pinchDist: 0,
     pinchZoom: 1,
   });
-  const TAP_TOL = 40; // px total travel allowed for a touch tap
-  const TAP_MAX_MS = 800;
+  const TAP_TOL = 60; // px total travel allowed for a touch tap
+  const TAP_MAX_MS = 1200;
   const prevMissilesRef = useRef<Map<string, MissileInFlight>>(new Map());
   const snapRef = useRef<{ missiles: MissileInFlight[]; at: number }>({ missiles: [], at: Date.now() });
 
@@ -252,9 +258,18 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     single: myLaunchers.filter(l => l.launcherType === 'single').reduce((s, l) => s + (l.stock ?? 0), 0),
     scatter: myLaunchers.filter(l => l.launcherType === 'scatter').reduce((s, l) => s + (l.stock ?? 0), 0),
   };
+  // Once the dock gets crowded, shrink everything so every launcher stays
+  // on screen (or at worst one short scroll) instead of eating the map.
+  const dockCompact = myLaunchers.length > 5;
+  // Server-owned keep-firing lock for me, if any.
+  const myKeepFire = mc.keepFire?.[myId] ?? null;
 
   const enemyName = enemyId ? (roomState.players.find(p => p.id === enemyId)?.name ?? 'Enemy') : 'Enemy';
   const winnerName = mc.winnerId ? (roomState.players.find(p => p.id === mc.winnerId)?.name ?? '???') : null;
+  // Island placards in the channel name each side by its owner, so you can
+  // tell the two shores apart at a glance even when zoomed out.
+  const topName = (roomState.players.find(p => p.id === mc.sides?.top)?.name ?? 'PLAYER 1').toUpperCase();
+  const bottomName = (roomState.players.find(p => p.id === mc.sides?.bottom)?.name ?? 'PLAYER 2').toUpperCase();
   const iWon = mc.winnerId === myId;
   const isTargeting = targetLauncherId !== null || targetType !== null;
 
@@ -289,7 +304,16 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     if (targetLauncherId || targetType) {
       if (cell.side !== mySide) {
         if (targetLauncherId) onLaunch({ launcherId: targetLauncherId, targetGx: cell.gx, targetGy: cell.gy });
-        else if (targetType) onLaunchType({ launcherType: targetType, targetGx: cell.gx, targetGy: cell.gy });
+        else if (targetType) {
+          // Keep-fire armed → lock this tile; the server re-fires here on
+          // every missile load until cleared. Otherwise it's a one-off volley.
+          if (keepFireArmed) {
+            onSetKeepFire({ armed: true, targetGx: cell.gx, targetGy: cell.gy, launcherType: targetType });
+            setKeepFireArmed(false);
+          } else {
+            onLaunchType({ launcherType: targetType, targetGx: cell.gx, targetGy: cell.gy });
+          }
+        }
         cancelTargeting();
       }
       return;
@@ -363,10 +387,19 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     if (me && !me.moved && Date.now() - me.downT < TAP_MAX_MS) {
       // Tap only if every REMAINING finger is also still (resting thumbs OK,
       // real pinches involve two moving fingers).
-      if ([...g.pointers.values()].every(p => !p.moved)) {
+      const othersStill = [...g.pointers.values()].every(p => !p.moved);
+      if (othersStill || g.pointers.size === 0) {
+        console.log('[tap] tap detected at', e.clientX, e.clientY, 'targeting:', targetLauncherId, targetType);
         const w = toWorld(e.clientX, e.clientY);
+        console.log('[tap] world coords:', w);
         handleTap(w.x, w.y);
+      } else {
+        console.log('[tap] cancelled: other fingers moved', [...g.pointers.entries()].map(([id, p]) => ({ id, moved: p.moved })));
       }
+    } else if (me) {
+      console.log('[tap] cancelled: moved=', me.moved, 'time=', Date.now() - me.downT, 'max=', TAP_MAX_MS);
+    } else {
+      console.log('[tap] no pointer data for', e.pointerId);
     }
   }
 
@@ -381,6 +414,15 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     setTargetLauncherId(null);
     setSelectedId(null);
     setBuildCell(null);
+  }
+  // Locked → clear the server lock. Unlocked → arm the next tile pick.
+  function toggleKeepFire() {
+    if (myKeepFire) {
+      onSetKeepFire({ armed: false });
+      setKeepFireArmed(false);
+    } else {
+      setKeepFireArmed(v => !v);
+    }
   }
 
   const upgradeCost = selected ? upgradeCostFor(selected) : null;
@@ -402,6 +444,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
       background: '#0a1628', overflow: 'hidden',
       userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none',
       touchAction: 'none',
+      WebkitTapHighlightColor: 'transparent',
     }}
     onContextMenu={(e) => e.preventDefault()}
     >
@@ -441,6 +484,63 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
               <stop offset="0%" stopColor="#155e75" />
               <stop offset="100%" stopColor="#0e7490" />
             </linearGradient>
+            {/* Shield visuals — gradients, hex patterns, glow filters */}
+            <linearGradient id="shieldGrad-Regular" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.35" />
+              <stop offset="50%" stop-color="#0ea5e9" stop-opacity="0.2" />
+              <stop offset="100%" stop-color="#0369a1" stop-opacity="0.15" />
+            </linearGradient>
+            <linearGradient id="shieldGrad-Heavy" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#60a5fa" stop-opacity="0.4" />
+              <stop offset="50%" stop-color="#2563eb" stop-opacity="0.25" />
+              <stop offset="100%" stop-color="#1e3a8a" stop-opacity="0.2" />
+            </linearGradient>
+            <linearGradient id="shieldGrad-Regular-Low" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#fbbf24" stop-opacity="0.3" />
+              <stop offset="100%" stop-color="#f59e0b" stop-opacity="0.15" />
+            </linearGradient>
+            <linearGradient id="shieldGrad-Heavy-Low" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#f43f5e" stop-opacity="0.35" />
+              <stop offset="100%" stop-color="#991b1b" stop-opacity="0.2" />
+            </linearGradient>
+            <linearGradient id="coreGrad-Regular" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#7dd3fc" />
+              <stop offset="50%" stop-color="#0ea5e9" />
+              <stop offset="100%" stop-color="#0369a1" />
+            </linearGradient>
+            <linearGradient id="coreGrad-Heavy" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#93c5fd" />
+              <stop offset="50%" stop-color="#3b82f6" />
+              <stop offset="100%" stop-color="#1e40af" />
+            </linearGradient>
+            <radialGradient id="pulseGrad-Regular" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#7dd3fc" stop-opacity="0.6" />
+              <stop offset="70%" stop-color="#38bdf8" stop-opacity="0.2" />
+              <stop offset="100%" stop-color="#0ea5e9" stop-opacity="0" />
+            </radialGradient>
+            <radialGradient id="pulseGrad-Heavy" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#93c5fd" stop-opacity="0.6" />
+              <stop offset="70%" stop-color="#60a5fa" stop-opacity="0.2" />
+              <stop offset="100%" stop-color="#2563eb" stop-opacity="0" />
+            </radialGradient>
+            <linearGradient id="healerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#4ade80" stop-opacity="0.45" />
+              <stop offset="100%" stop-color="#16a34a" stop-opacity="0.25" />
+            </linearGradient>
+            <pattern id="hexPattern" patternUnits="userSpaceOnUse" width="24" height="21">
+              <path d="M12,0 L24,5.25 L24,15.75 L12,21 L0,15.75 L0,5.25 Z" fill="none" stroke="rgba(56,189,248,0.35)" strokeWidth="1" />
+            </pattern>
+            <pattern id="hexPattern-Heavy" patternUnits="userSpaceOnUse" width="24" height="21">
+              <path d="M12,0 L24,5.25 L24,15.75 L12,21 L0,15.75 L0,5.25 Z" fill="none" stroke="rgba(96,165,250,0.4)" strokeWidth="1.2" />
+            </pattern>
+            <filter id="glow-Regular" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="3" result="blur" />
+              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+            </filter>
+            <filter id="glow-Heavy" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="4" result="blur" />
+              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+            </filter>
           </defs>
 
           {/* Ocean */}
@@ -452,12 +552,17 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
           {/* Island bases */}
           <rect x={TOP_RECT.x} y={TOP_RECT.y} width={TOP_RECT.w} height={TOP_RECT.h} rx={40} fill="url(#mc-top)" stroke={mySide === 'top' ? '#a3e635' : '#fb7185'} strokeWidth={mySide === 'top' ? 5 : 3} />
           <rect x={BOTTOM_RECT.x} y={BOTTOM_RECT.y} width={BOTTOM_RECT.w} height={BOTTOM_RECT.h} rx={40} fill="url(#mc-bottom)" stroke={mySide === 'bottom' ? '#22d3ee' : '#fb7185'} strokeWidth={mySide === 'bottom' ? 5 : 3} />
-          <text x={WORLD / 2} y={44} textAnchor="middle" fill="rgba(255,255,255,0.8)" fontSize={24} fontWeight={800}>
-            {mySide === 'top' ? '🏠 YOUR ISLAND' : `⚔ ${enemyName.toUpperCase()}'S ISLAND`} 🔼
-          </text>
-          <text x={WORLD / 2} y={962} textAnchor="middle" fill="rgba(255,255,255,0.8)" fontSize={24} fontWeight={800}>
-            {mySide === 'bottom' ? '🏠 YOUR ISLAND' : `⚔ ${enemyName.toUpperCase()}'S ISLAND`} 🔽
-          </text>
+          {/* Island placards sit in the water between the two islands (the old
+              labels were drawn on top of the grid cells and hid buildings).
+              Each one hugs its own shore with a notch pointing at it. */}
+          <IslandPlacard
+            y={TOP_RECT.y + TOP_RECT.h + 42} name={topName} mine={mySide === 'top'} dir="up"
+            color={mySide === 'top' ? '#a3e635' : '#fb7185'}
+          />
+          <IslandPlacard
+            y={BOTTOM_RECT.y - 42} name={bottomName} mine={mySide === 'bottom'} dir="down"
+            color={mySide === 'bottom' ? '#22d3ee' : '#fb7185'}
+          />
 
           {/* Grid cells (memoized per island — skips most re-renders) */}
           <IslandGrid
@@ -471,30 +576,41 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             buildKey={buildCell?.side === 'bottom' ? `${buildCell.gx},${buildCell.gy}` : null}
           />
 
-          {/* Shield coverage — every covered tile highlighted.
-              Selected shields go full spotlight: brighter tiles + marching
-              boundary + pulsing glow on the generator itself. */}
-          {buildings.filter(b => b.type === 'shield').map(b => {
+          {/* Shield coverage — hex tiles with animated gradients, pulsing borders */}
+          {buildings.filter(b => b.type === 'shield' || b.type === 'shield_heavy').map(b => {
             const isMine = b.ownerId === myId;
             const pct = (b.shieldHp ?? 0) / (b.maxShieldHp ?? 1);
             const isSel = selected?.id === b.id;
-            const tint = isMine ? '56,189,248' : '251,113,133';
-            const edge = isMine ? '#7dd3fc' : '#fda4af';
-            const cells = coveredCells(b.gx, b.gy, shieldTiles, cols, rows);
+            const isHeavy = b.type === 'shield_heavy';
+            const cells = coveredCells(b.gx, b.gy, b.shieldTiles ?? shieldTiles, cols, rows);
+            const gradId = pct <= 0.15 ? (isHeavy ? 'shieldGrad-Heavy-Low' : 'shieldGrad-Regular-Low')
+                            : (isHeavy ? 'shieldGrad-Heavy' : 'shieldGrad-Regular');
+            const hexPatternId = isHeavy ? 'hexPattern-Heavy' : 'hexPattern';
+            const glowFilter = isHeavy ? 'glow-Heavy' : 'glow-Regular';
+            const edgeColor = isHeavy ? '#60a5fa' : '#38bdf8';
+            const edgeColorEnemy = isHeavy ? '#f43f5e' : '#fb7185';
             return (
-              <g key={`sh-${b.id}`} pointerEvents="none">
+              <g key={`sh-${b.id}`} pointerEvents="none" filter={pct > 0 && isSel ? `url(#${glowFilter})` : undefined}>
                 {cells.map(c => {
                   const r = cellRect(b.side, c.gx, c.gy, cols, rows);
                   return (
-                    <rect key={`${c.gx}-${c.gy}`} x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={7}
-                      fill={`rgba(${tint},${pct <= 0 ? 0.04 : isSel ? 0.45 : 0.16})`}
-                      stroke={`rgba(${tint},${pct <= 0 ? 0.3 : isSel ? 1 : 0.7})`} strokeWidth={isSel ? 2.5 : 1.5}
-                      strokeDasharray={pct <= 0 ? '5 7' : undefined} />
+                    <g key={`${c.gx}-${c.gy}`}>
+                      <rect x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={7}
+                        fill={`url(#${gradId})`} />
+                      <rect x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={7}
+                        fill={`url(#${hexPatternId})`} opacity={isSel ? 1 : pct > 0.15 ? 0.7 : 0.35} />
+                      <rect x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={7}
+                        fill="none"
+                        stroke={!isMine ? edgeColorEnemy : edgeColor}
+                        strokeWidth={isSel ? 2.5 : pct > 0.15 ? 1.2 : 0.8}
+                        strokeDasharray={pct <= 0.15 ? '5 7' : undefined}
+                        opacity={pct <= 0.15 ? 0.6 : isSel ? 1 : 0.7} />
+                    </g>
                   );
                 })}
                 {isSel && pct > 0 && (
                   <path d={coverageOutlinePath(b.side, cells, cols, rows)}
-                    fill="none" stroke={edge} strokeWidth={3.5} strokeDasharray="14 5" className="mc-march" strokeLinejoin="round" />
+                    fill="none" stroke={edgeColor} strokeWidth={3.5} strokeDasharray="14 5" className="mc-march" strokeLinejoin="round" />
                 )}
               </g>
             );
@@ -508,9 +624,14 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                 {cells.map(c => {
                   const r = cellRect(b.side, c.gx, c.gy, cols, rows);
                   return (
-                    <rect key={`${c.gx}-${c.gy}`} x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={7}
-                      fill="rgba(74,222,128,0.45)"
-                      stroke="rgba(74,222,128,1)" strokeWidth={2.5} />
+                    <g key={`${c.gx}-${c.gy}`}>
+                      <rect x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={7}
+                        fill="url(#healerGrad)" />
+                      <rect x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={7}
+                        fill="url(#hexPattern)" opacity={0.7} />
+                      <rect x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={7}
+                        fill="none" stroke="#86efac" strokeWidth={2.5} />
+                    </g>
                   );
                 })}
                 <path d={coverageOutlinePath(b.side, cells, cols, rows)}
@@ -529,27 +650,38 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             const path = `M ${hr.cx} ${hr.cy} L ${tr.cx} ${tr.cy}`;
             return (
               <g key={`beam-${h.id}`} pointerEvents="none">
+                {/* Base glow beam */}
                 <line x1={hr.cx} y1={hr.cy} x2={tr.cx} y2={tr.cy}
-                  stroke="#4ade80" strokeWidth={9} strokeLinecap="round" opacity={0.22} />
+                  stroke="#4ade80" strokeWidth={14} strokeLinecap="round" opacity={0.15} filter="url(#glow-Regular)" />
+                {/* Animated dashed beam */}
                 <line x1={hr.cx} y1={hr.cy} x2={tr.cx} y2={tr.cy}
-                  stroke="#bbf7d0" strokeWidth={3.5} strokeLinecap="round"
-                  strokeDasharray="10 8" className="mc-beam" opacity={0.95} />
-                <circle r={6} fill="#4ade80" opacity={0.95}>
-                  <animateMotion dur="1.1s" repeatCount="indefinite" path={path} />
+                  stroke="#86efac" strokeWidth={5} strokeLinecap="round"
+                  strokeDasharray="12 10" className="mc-beam" opacity={0.95} />
+                {/* Energy particles traveling along beam */}
+                <circle r={5} fill="#bbf7d0" opacity={0.95}>
+                  <animateMotion dur="1s" repeatCount="indefinite" path={path} />
                 </circle>
-                <circle r={6} fill="#bbf7d0" opacity={0.95}>
-                  <animateMotion dur="1.1s" begin="-0.55s" repeatCount="indefinite" path={path} />
+                <circle r={4} fill="#4ade80" opacity={0.95}>
+                  <animateMotion dur="1s" begin="-0.33s" repeatCount="indefinite" path={path} />
                 </circle>
-                <circle cx={tr.cx} cy={tr.cy} r={10} fill="none" stroke="#4ade80" strokeWidth={3}>
-                  <animate attributeName="r" values="10;30" dur="1.3s" repeatCount="indefinite" />
-                  <animate attributeName="opacity" values="0.8;0" dur="1.3s" repeatCount="indefinite" />
+                <circle r={3.5} fill="#86efac" opacity={0.95}>
+                  <animateMotion dur="1s" begin="-0.66s" repeatCount="indefinite" path={path} />
                 </circle>
-                <circle cx={tr.cx} cy={tr.cy} r={10} fill="none" stroke="#bbf7d0" strokeWidth={2}>
-                  <animate attributeName="r" values="10;30" dur="1.3s" begin="-0.65s" repeatCount="indefinite" />
-                  <animate attributeName="opacity" values="0.6;0" dur="1.3s" begin="-0.65s" repeatCount="indefinite" />
+                {/* Target ripple rings */}
+                <circle cx={tr.cx} cy={tr.cy} r={8} fill="none" stroke="#4ade80" strokeWidth={3} filter="url(#glow-Regular)">
+                  <animate attributeName="r" values="8;28" dur="1.2s" repeatCount="indefinite" />
+                  <animate attributeName="opacity" values="0.9;0" dur="1.2s" repeatCount="indefinite" />
                 </circle>
-                <circle cx={mx} cy={my} r={14} fill="rgba(6,40,20,0.85)" stroke="#4ade80" strokeWidth={2} />
-                <text x={mx} y={my} textAnchor="middle" dominantBaseline="central" fontSize={15} fontWeight={900}>💚</text>
+                <circle cx={tr.cx} cy={tr.cy} r={8} fill="none" stroke="#86efac" strokeWidth={2}>
+                  <animate attributeName="r" values="8;28" dur="1.2s" begin="-0.6s" repeatCount="indefinite" />
+                  <animate attributeName="opacity" values="0.7;0" dur="1.2s" begin="-0.6s" repeatCount="indefinite" />
+                </circle>
+                {/* Midpoint energy burst */}
+                <circle cx={mx} cy={my} r={16} fill="rgba(6,40,20,0.85)" stroke="#4ade80" strokeWidth={2} filter="url(#glow-Regular)">
+                  <animate attributeName="r" values="16;22" dur="0.8s" repeatCount="indefinite" />
+                  <animate attributeName="opacity" values="0.85;0.5" dur="0.8s" repeatCount="indefinite" />
+                </circle>
+                <text x={mx} y={my} textAnchor="middle" dominantBaseline="central" fontSize={16} fontWeight={900}>💚</text>
               </g>
             );
           })}
@@ -584,6 +716,21 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             );
           })}
 
+          {/* Keep-firing lock: where my missiles will keep landing. Both
+              players can see it — it's an automated, self-firing gun. */}
+          {myKeepFire && mySide && (() => {
+            const lockSide = mySide === 'top' ? 'bottom' : 'top';
+            const r = cellRect(lockSide, myKeepFire.targetGx, myKeepFire.targetGy, cols, rows);
+            return (
+              <g pointerEvents="none">
+                <rect x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={8}
+                  fill="rgba(74,222,128,0.10)" stroke="#4ade80" strokeWidth={3} strokeDasharray="10 6" />
+                <text x={r.x + r.w / 2} y={r.y + r.h / 2} textAnchor="middle" dominantBaseline="central"
+                  fontSize={r.h * 0.42}>🔒</text>
+              </g>
+            );
+          })()}
+
           {/* Impact flashes */}
           {flashes.map(f => (
             <g key={f.id} opacity={Math.max(0, (f.expires - Date.now()) / 700)} pointerEvents="none">
@@ -600,7 +747,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             const isMine = b.ownerId === myId;
             const isSel = selectedId === b.id;
             const hpPct = b.type === 'core' ? (b.coreHp! / b.maxCoreHp!) : (b.hp! / b.maxHp!);
-            const shieldPct = b.type === 'shield' ? (b.shieldHp! / b.maxShieldHp!) : 1;
+            const shieldPct = (b.type === 'shield' || b.type === 'shield_heavy') ? (b.shieldHp! / b.maxShieldHp!) : 1;
             const emoji = b.type === 'launcher' ? (b.launcherType === 'single' ? '🎯' : '💥') : b.type === 'core' ? '⭐' : meta.emoji;
             return (
               <g key={b.id} pointerEvents="none">
@@ -608,10 +755,10 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                   <rect x={r.x - 2} y={r.y - 2} width={r.w + 4} height={r.h + 4} rx={12}
                     fill="none" stroke="#fff" strokeWidth={3.5} strokeDasharray="10 7" />
                 )}
-                    {isSel && (b.type === 'shield' || b.type === 'healer') && (
+                    {isSel && ((b.type === 'shield' || b.type === 'shield_heavy') || b.type === 'healer') && (
                       <g pointerEvents="none">
                         <circle cx={r.cx} cy={r.cy} r={Math.min(r.w, r.h) * 0.42} fill="none"
-                          stroke={b.type === 'shield' ? '#7dd3fc' : '#86efac'} strokeWidth={3}>
+                          stroke={(b.type === 'shield' || b.type === 'shield_heavy') ? '#7dd3fc' : '#86efac'} strokeWidth={3}>
                           <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.42};${Math.min(r.w, r.h) * 0.62}`} dur="1.2s" repeatCount="indefinite" />
                           <animate attributeName="opacity" values="0.9;0" dur="1.2s" repeatCount="indefinite" />
                         </circle>
@@ -622,8 +769,48 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                         </circle>
                       </g>
                     )}
-                <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.32} fill={isMine ? 'rgba(0,0,0,0.55)' : 'rgba(120,0,0,0.55)'} stroke={isMine ? meta.color : '#fb7185'} strokeWidth={2.5} />
-                <text x={r.cx} y={r.cy + 2} textAnchor="middle" dominantBaseline="central" fontSize={b.type === 'core' ? 34 : 26}>{emoji}</text>
+                {/* Shield generator: animated energy core + pulsing rings */}
+                {(b.type === 'shield' || b.type === 'shield_heavy') && (
+                  <g pointerEvents="none">
+                    {/* Outer pulse rings (only when charged) */}
+                    {shieldPct > 0 && (
+                      <>
+                        <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.38} fill="none"
+                          stroke={b.type === 'shield_heavy' ? '#60a5fa' : '#38bdf8'} strokeWidth={1.5} opacity={0.6}>
+                          <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.38};${Math.min(r.w, r.h) * 0.52}`} dur="2s" repeatCount="indefinite" />
+                          <animate attributeName="opacity" values="0.6;0" dur="2s" repeatCount="indefinite" />
+                        </circle>
+                        <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.38} fill="none"
+                          stroke={b.type === 'shield_heavy' ? '#93c5fd' : '#7dd3fc'} strokeWidth={1} opacity={0.4}>
+                          <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.38};${Math.min(r.w, r.h) * 0.52}`} dur="2s" begin="-1s" repeatCount="indefinite" />
+                          <animate attributeName="opacity" values="0.4;0" dur="2s" begin="-1s" repeatCount="indefinite" />
+                        </circle>
+                      </>
+                    )}
+                    {/* Energy core with radial gradient */}
+                    <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.32}
+                      fill={`url(#${b.type === 'shield_heavy' ? 'coreGrad-Heavy' : 'coreGrad-Regular'})`}
+                      stroke={shieldPct <= 0.15 ? '#f43f5e' : (isMine ? meta.color : '#fb7185')} strokeWidth={2.5} />
+                    {/* Inner glow pulse */}
+                    <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.28} fill="none"
+                      stroke={b.type === 'shield_heavy' ? '#93c5fd' : '#7dd3fc'} strokeWidth={1.5} opacity={0.7}>
+                      <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.28};${Math.min(r.w, r.h) * 0.35}`} dur="1.5s" repeatCount="indefinite" />
+                      <animate attributeName="opacity" values="0.7;0.2" dur="1.5s" repeatCount="indefinite" />
+                    </circle>
+                    {/* Emoji overlay */}
+                    <text x={r.cx} y={r.cy + 2} textAnchor="middle" dominantBaseline="central" fontSize={26}>{emoji}</text>
+                  </g>
+                )}
+                {!(b.type === 'shield' || b.type === 'shield_heavy') && (
+                  <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.32} fill={isMine ? 'rgba(0,0,0,0.55)' : 'rgba(120,0,0,0.55)'} stroke={isMine ? meta.color : '#fb7185'} strokeWidth={2.5} />
+                )}
+                {(b.type === 'shield' || b.type === 'shield_heavy') && shieldPct <= 0.1 && (
+                  <text x={r.cx} y={r.cy - 14} textAnchor="middle" dominantBaseline="central"
+                    fontSize={18} fontWeight={800} fill="#f43f5e"
+                    stroke="rgba(0,0,0,0.9)" strokeWidth={3.5} paintOrder="stroke">
+                    ⚠️
+                  </text>
+                )}
                 {b.type !== 'core' && (
                   <text x={r.cx} y={r.y + r.h - 7} textAnchor="middle" fontSize={16} fontWeight={900}
                     stroke="rgba(0,0,0,0.85)" strokeWidth={3} paintOrder="stroke" letterSpacing={1}>
@@ -635,11 +822,31 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                 <rect x={r.x + 6} y={r.y + 4} width={r.w - 12} height={6} rx={3} fill="rgba(0,0,0,0.65)" />
                 <rect x={r.x + 6} y={r.y + 4} width={(r.w - 12) * Math.max(0, Math.min(1, hpPct))} height={6} rx={3}
                   fill={hpPct > 0.5 ? '#4ade80' : hpPct > 0.25 ? '#fbbf24' : '#f43f5e'} />
-                {/* Shield pool bar */}
-                {b.type === 'shield' && (
+                {/* Shield pool bar — segmented energy bar */}
+                {(b.type === 'shield' || b.type === 'shield_heavy') && (
                   <g>
-                    <rect x={r.x + 6} y={r.y + 12} width={r.w - 12} height={6} rx={3} fill="rgba(0,0,0,0.65)" />
-                    <rect x={r.x + 6} y={r.y + 12} width={(r.w - 12) * Math.max(0, Math.min(1, shieldPct))} height={6} rx={3} fill="#38bdf8" />
+                    <rect x={r.x + 6} y={r.y + 12} width={r.w - 12} height={8} rx={4} fill="rgba(0,0,0,0.7)" stroke="rgba(255,255,255,0.1)" strokeWidth={0.5} />
+                    {/* Segments */}
+                    {[1,2,3,4,5,6,7,8].map((seg, i) => {
+                      const segPct = (i + 1) / 8;
+                      const active = shieldPct >= segPct - 0.05;
+                      const isHeavy = b.type === 'shield_heavy';
+                      return (
+                        <rect key={seg} x={r.x + 7 + i * ((r.w - 14) / 8)} y={r.y + 13}
+                          width={(r.w - 14) / 8 - 1.5} height={6} rx={2}
+                          fill={active
+                            ? (isHeavy
+                                ? (segPct <= 0.3 ? '#60a5fa' : segPct <= 0.6 ? '#3b82f6' : '#2563eb')
+                                : (segPct <= 0.3 ? '#38bdf8' : segPct <= 0.6 ? '#0ea5e9' : '#0369a1'))
+                            : 'rgba(255,255,255,0.08)'}
+                          opacity={active ? 1 : 0.3}
+                          filter={active && shieldPct > segPct - 0.05 && shieldPct < segPct + 0.05 ? 'url(#glow-Regular)' : undefined}>
+                          {active && shieldPct > segPct - 0.05 && shieldPct < segPct + 0.05 && (
+                            <animate attributeName="opacity" values="1;0.6" dur="0.8s" repeatCount="indefinite" />
+                          )}
+                        </rect>
+                      );
+                    })}
                   </g>
                 )}
                 {/* stock / loading badge for own launchers */}
@@ -723,15 +930,61 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
           <div style={{ position: 'absolute', top: 74, left: '50%', transform: 'translateX(-50%)', pointerEvents: 'auto', display: 'flex', gap: 8, alignItems: 'center', background: 'rgba(0,0,0,0.72)', border: '1px solid rgba(251,191,36,0.6)', borderRadius: 12, padding: '8px 12px', whiteSpace: 'nowrap' }}>
             <span style={{ fontWeight: 800, color: '#fbbf24', fontSize: '0.9rem', animation: 'mc-pulse 1s infinite' }}>
               🎯 TAP ENEMY SQUARE{targetType ? ` — ALL ${targetType.toUpperCase()}` : ''}
+              {keepFireArmed && targetType ? ' · 🔒 WILL LOCK' : ''}
             </span>
             <button type="button" onClick={cancelTargeting}
               style={{ background: 'rgba(255,255,255,0.1)', border: '1px solid var(--border)', borderRadius: 8, color: '#fff', fontWeight: 800, padding: '4px 10px' }}>✖</button>
           </div>
         )}
 
-        {/* ── Bottom launcher dock ── */}
-        <div style={{ position: 'absolute', bottom: 8, left: 8, right: 8, display: 'flex', flexDirection: 'column', gap: 6, pointerEvents: 'none' }}>
-          <div style={{ display: 'flex', gap: 6, pointerEvents: 'auto', justifyContent: 'flex-end' }}>
+        {/* ── Launcher dock (toggleable horizontal/vertical) ── */}
+        <div
+          style={{
+            position: 'absolute',
+            right: dockVertical ? 8 : undefined,
+            left: dockVertical ? undefined : 8,
+            top: dockVertical ? 8 : undefined,
+            bottom: dockVertical ? 8 : undefined,
+            width: dockVertical ? 180 : undefined,
+            height: dockVertical ? undefined : undefined,
+            display: 'flex',
+            flexDirection: dockVertical ? 'column' : 'row',
+            gap: 6,
+            pointerEvents: 'none',
+          }}>
+          {/* ── Keep-firing toggle (arms a locked target tile) ── */}
+          <div style={{ display: 'flex', gap: 6, pointerEvents: 'auto', justifyContent: dockVertical ? 'center' : 'flex-end', flexDirection: dockVertical ? 'column' : 'row' }}>
+            <button
+              type="button"
+              onClick={toggleKeepFire}
+              title={
+                myKeepFire
+                  ? `Keep-firing is ON — every loaded missile hits (${myKeepFire.targetGx + 1}, ${myKeepFire.targetGy + 1}). Tap to stop.`
+                  : keepFireArmed
+                    ? 'Tap an enemy square to lock it as a keep-firing target'
+                    : 'Tap to arm keep-firing, then pick an enemy square to lock it'
+              }
+              style={{
+                padding: dockCompact ? '5px 9px' : '7px 13px', borderRadius: 999, fontWeight: 800,
+                fontSize: dockCompact ? '0.68rem' : '0.74rem', color: '#fff',
+                display: 'flex', alignItems: 'center', gap: 5,
+                background: myKeepFire
+                  ? 'rgba(74,222,128,0.24)'
+                  : keepFireArmed ? 'rgba(251,191,36,0.22)' : 'rgba(255,255,255,0.05)',
+                border: `1px solid ${myKeepFire ? 'rgba(74,222,128,0.75)' : keepFireArmed ? 'rgba(251,191,36,0.7)' : 'var(--border)'}`,
+                animation: myKeepFire ? 'mc-pulse 1.2s infinite' : undefined,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <span>{myKeepFire ? '🔁 ON' : keepFireArmed ? '🎯 ARMED' : '🔁 KEEP FIRING'}</span>
+              {myKeepFire && (
+                <span style={{ opacity: 0.85, fontVariantNumeric: 'tabular-nums' }}>
+                  ({myKeepFire.targetGx + 1},{myKeepFire.targetGy + 1}) {myKeepFire.launcherType === 'single' ? '🎯' : '💥'}
+                </span>
+              )}
+            </button>
+          </div>
+          <div style={{ display: 'flex', gap: 6, pointerEvents: 'auto', justifyContent: dockVertical ? 'center' : 'flex-end', flexWrap: 'wrap', flexDirection: dockVertical ? 'column' : 'row' }}>
             {(['single', 'scatter'] as const).map(t => {
               const n = stockByType[t];
               return (
@@ -741,7 +994,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                   onClick={() => startTypeTargeting(t)}
                   title={n > 0 ? `Fire every loaded ${t} launcher at one square` : `No loaded ${t} launchers — load some first`}
                   style={{
-                    padding: '5px 10px', borderRadius: 999, fontWeight: 700, fontSize: '0.7rem', color: '#fff',
+                    padding: dockCompact ? '5px 9px' : '8px 14px', borderRadius: 999, fontWeight: 700, fontSize: dockCompact ? '0.68rem' : '0.75rem', color: '#fff',
                     background: n > 0 ? 'rgba(244,63,94,0.16)' : 'rgba(255,255,255,0.04)',
                     border: `1px solid ${n > 0 ? 'rgba(244,63,94,0.45)' : 'var(--border)'}`,
                     opacity: n > 0 ? 0.95 : 0.55,
@@ -751,8 +1004,20 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                 </button>
               );
             })}
+            <button
+              type="button"
+              onClick={() => setDockVertical(v => !v)}
+              title={dockVertical ? 'Switch to horizontal dock (bottom)' : 'Switch to vertical dock (side)'}
+              style={{
+                padding: '8px 10px', borderRadius: 8, fontWeight: 700, fontSize: '0.7rem', color: '#fff',
+                background: dockVertical ? 'rgba(74,222,128,0.2)' : 'rgba(255,255,255,0.05)',
+                border: `1px solid ${dockVertical ? 'rgba(74,222,128,0.6)' : 'var(--border)'}`,
+              }}
+            >
+              {dockVertical ? '↔️ Horizontal' : '↕️ Vertical'}
+            </button>
           </div>
-          <div className="mc-dock" style={{ display: 'flex', gap: 6, overflowX: 'auto', pointerEvents: 'auto', scrollbarWidth: 'none' }}>
+          <div className="mc-dock" style={{ display: 'flex', gap: dockCompact ? 3 : 6, overflowX: 'auto', pointerEvents: 'auto', scrollbarWidth: 'none', flexDirection: dockVertical ? 'column' : 'row', flexWrap: dockVertical ? 'nowrap' : 'wrap', alignItems: dockVertical ? 'stretch' : 'center', minHeight: dockVertical ? 'auto' : undefined, maxHeight: dockVertical ? '100%' : undefined }}>
             {myLaunchers.map(l => {
               const stock = l.stock ?? 0;
               const maxStock = l.maxStock ?? MAX_STOCK;
@@ -765,23 +1030,32 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
               const broke = myResources < (l.missileCost ?? 0);
               const loadLabel = stockFull ? 'FULL' : loading ? `${loadSecsLeft.toFixed(0)}s` : broke ? 'NO CR' : `＋${l.missileCost}cr`;
               return (
-                <div key={l.id} style={{ minWidth: 148, background: 'rgba(4,8,18,0.88)', border: `1px solid ${hasStock ? 'rgba(251,113,133,0.5)' : 'var(--border)'}`, borderRadius: 12, padding: 6 }}>
+                <div
+                  key={l.id}
+                  style={{
+                    minWidth: dockCompact ? 104 : 148,
+                    background: 'rgba(4,8,18,0.88)',
+                    border: `1px solid ${hasStock ? 'rgba(251,113,133,0.5)' : 'var(--border)'}`,
+                    borderRadius: dockCompact ? 9 : 12,
+                    padding: dockCompact ? 4 : 6,
+                  }}
+                >
                   <button
                     type="button"
                     onClick={() => { if (hasStock) startTargeting(l.id); else setSelectedId(l.id); }}
                     title={hasStock ? 'Tap to pick a target and fire the volley' : 'Tap to open and load missiles'}
-                    style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 6, color: '#fff', fontSize: '0.78rem', fontWeight: 700 }}
+                    style={{ width: '100%', display: 'flex', alignItems: 'center', gap: dockCompact ? 4 : 6, color: '#fff', fontSize: dockCompact ? '0.7rem' : '0.78rem', fontWeight: 700 }}
                   >
-                    <span style={{ fontSize: '1.25rem' }}>{l.launcherType === 'single' ? '🎯' : '💥'}</span>
-                    <span style={{ flex: 1, textAlign: 'left' }}>Lv{l.level} • {'●'.repeat(stock)}{'○'.repeat(Math.max(0, maxStock - stock))}{l.autobuild ? ' • AUTO' : ''}</span>
-                    <span>{hasStock ? `FIRE` : 'OPEN'}</span>
+                    <span style={{ fontSize: dockCompact ? '1rem' : '1.25rem' }}>{l.launcherType === 'single' ? '🎯' : '💥'}</span>
+                    <span style={{ flex: 1, textAlign: 'left', whiteSpace: 'nowrap' }}>Lv{l.level}•{'●'.repeat(stock)}{'○'.repeat(Math.max(0, maxStock - stock))}{l.autobuild ? '•A' : ''}</span>
+                    {!dockCompact && <span>{hasStock ? `FIRE` : 'OPEN'}</span>}
                   </button>
-                  <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                  <div style={{ display: 'flex', gap: dockCompact ? 3 : 4, marginTop: dockCompact ? 3 : 4 }}>
                     <button
                       type="button"
                       onClick={() => onLoad({ launcherId: l.id })}
                       title={stockFull ? 'Stockpile full' : loading ? `Building… ${loadSecsLeft.toFixed(1)}s left` : broke ? `Need ${l.missileCost}cr` : `Build 1 missile (~${LOAD_SECONDS}s)`}
-                      style={{ flex: 1, padding: '6px 4px', borderRadius: 8, fontWeight: 800, fontSize: '0.72rem', background: 'rgba(74,222,128,0.2)', border: '1px solid rgba(74,222,128,0.5)', color: '#fff' }}
+                      style={{ flex: 1, padding: dockCompact ? '4px 2px' : '6px 4px', borderRadius: 8, fontWeight: 800, fontSize: dockCompact ? '0.64rem' : '0.72rem', background: 'rgba(74,222,128,0.2)', border: '1px solid rgba(74,222,128,0.5)', color: '#fff' }}
                     >
                       {loading ? `🔨 ${loadSecsLeft.toFixed(0)}s` : loadLabel}
                     </button>
@@ -789,13 +1063,13 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                       type="button"
                       onClick={() => onToggleAutobuild(l.id)}
                       title={l.autobuild ? 'AUTO ON — tap to stop' : 'AUTO OFF — tap to auto-load'}
-                      style={{ padding: '6px 8px', borderRadius: 8, fontSize: '0.7rem', fontWeight: 800, color: '#fff', background: l.autobuild ? 'rgba(74,222,128,0.25)' : 'rgba(255,255,255,0.06)', border: `1px solid ${l.autobuild ? 'rgba(74,222,128,0.6)' : 'var(--border)'}` }}
+                      style={{ padding: dockCompact ? '4px 5px' : '6px 8px', borderRadius: 8, fontSize: dockCompact ? '0.62rem' : '0.7rem', fontWeight: 800, color: '#fff', background: l.autobuild ? 'rgba(74,222,128,0.25)' : 'rgba(255,255,255,0.06)', border: `1px solid ${l.autobuild ? 'rgba(74,222,128,0.6)' : 'var(--border)'}` }}
                     >
-                      {l.autobuild ? 'AUTO' : 'auto'}
+                      {dockCompact ? (l.autobuild ? 'A' : 'a') : (l.autobuild ? 'AUTO' : 'auto')}
                     </button>
                   </div>
                   {loading && (
-                    <div style={{ height: 4, background: 'rgba(255,255,255,0.1)', borderRadius: 2, marginTop: 4, overflow: 'hidden' }}>
+                    <div style={{ height: 3, background: 'rgba(255,255,255,0.1)', borderRadius: 2, marginTop: dockCompact ? 3 : 4, overflow: 'hidden' }}>
                       <div style={{ height: '100%', width: `${loadPct * 100}%`, background: 'linear-gradient(90deg,#4ade80,#22d3ee)' }} />
                     </div>
                   )}
@@ -814,27 +1088,40 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
       {/* ── Build popup ── */}
       {buildCell && !buildCellBuilding && (
         <Modal onClose={() => setBuildCell(null)} title={`🔨 Build (${buildCell.gx + 1}, ${buildCell.gy + 1})`}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
-            {BUILD_OPTIONS.map(o => {
-              const afford = myResources >= o.cost;
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {BUILD_CATEGORIES.map(cat => {
+              const options = BUILD_OPTIONS.filter(o => o.category === cat.key);
               return (
-                <button
-                  key={o.key}
-                  type="button"
-                  onClick={() => { onBuild({ buildingType: o.buildingType, launcherType: o.launcherType, gx: buildCell.gx, gy: buildCell.gy }); setBuildCell(null); }}
-                  disabled={!afford}
-                  style={{
-                    padding: '14px 10px', borderRadius: 'var(--radius-lg)', textAlign: 'center',
-                    background: afford ? 'rgba(74,222,128,0.08)' : 'rgba(255,255,255,0.03)',
-                    border: `2px solid ${afford ? 'rgba(74,222,128,0.4)' : 'var(--border)'}`,
-                    color: '#fff', opacity: afford ? 1 : 0.55,
-                  }}
-                >
-                  <div style={{ fontSize: '2rem' }}>{o.emoji}</div>
-                  <div style={{ fontWeight: 800, fontSize: '0.9rem', margin: '4px 0' }}>{o.label}</div>
-                  <div style={{ fontWeight: 800, fontSize: '0.85rem', color: afford ? 'var(--amber-400)' : 'var(--rose-400)', marginBottom: 4 }}>{o.cost} credits • ⏱ 3s</div>
-                  <div className="text-xs text-muted" style={{ lineHeight: 1.4 }}>{o.desc}</div>
-                </button>
+                <div key={cat.key} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingBottom: 4, borderBottom: '1px solid var(--border)', fontWeight: 800, fontSize: '0.85rem', color: 'var(--muted-foreground)' }}>
+                    <span style={{ fontSize: '1.1rem' }}>{cat.icon}</span>
+                    {cat.label}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+                    {options.map(o => {
+                      const afford = myResources >= o.cost;
+                      return (
+                        <button
+                          key={o.key}
+                          type="button"
+                          onClick={() => { onBuild({ buildingType: o.buildingType, launcherType: o.launcherType, gx: buildCell.gx, gy: buildCell.gy }); setBuildCell(null); }}
+                          disabled={!afford}
+                          style={{
+                            padding: '12px 8px', borderRadius: 'var(--radius-lg)', textAlign: 'center',
+                            background: afford ? 'rgba(74,222,128,0.08)' : 'rgba(255,255,255,0.03)',
+                            border: `2px solid ${afford ? 'rgba(74,222,128,0.4)' : 'var(--border)'}`,
+                            color: '#fff', opacity: afford ? 1 : 0.55,
+                          }}
+                        >
+                          <div style={{ fontSize: '1.8rem' }}>{o.emoji}</div>
+                          <div style={{ fontWeight: 800, fontSize: '0.85rem', margin: '4px 0' }}>{o.label}</div>
+                          <div style={{ fontWeight: 800, fontSize: '0.8rem', color: afford ? 'var(--amber-400)' : 'var(--rose-400)', marginBottom: 4 }}>{o.cost} credits • ⏱ 3s</div>
+                          <div className="text-xs text-muted" style={{ lineHeight: 1.35 }}>{o.desc}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               );
             })}
           </div>
@@ -895,6 +1182,40 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   );
 }
 
+// A name placard floating in the channel between the two islands. `dir` is
+// which shore it belongs to, so the little notch points at that island.
+function IslandPlacard({ y, name, mine, dir, color }: {
+  y: number; name: string; mine: boolean; dir: 'up' | 'down'; color: string;
+}) {
+  const FS = 25;
+  const H = 44;
+  const label = mine ? `🏠 ${name} · YOU` : `⚔ ${name}`;
+  // Rough text metrics — enough to size the pill without measuring the DOM.
+  const W = Math.max(240, label.length * FS * 0.58 + 44);
+  const cx = WORLD / 2;
+  const baseY = dir === 'up' ? y - H / 2 : y + H / 2;
+  const tipY = dir === 'up' ? baseY - 20 : baseY + 20;
+  return (
+    <g pointerEvents="none">
+      <polygon
+        points={`${cx - 14},${baseY} ${cx + 14},${baseY} ${cx},${tipY}`}
+        fill="rgba(4,10,22,0.85)" stroke={color} strokeWidth={2} strokeLinejoin="round"
+      />
+      <rect
+        x={cx - W / 2} y={y - H / 2} width={W} height={H} rx={H / 2}
+        fill="rgba(4,10,22,0.85)" stroke={color} strokeWidth={2.5}
+      />
+      <text
+        x={cx} y={y} textAnchor="middle" dominantBaseline="central"
+        fill={color} fontSize={FS} fontWeight={800}
+        stroke="rgba(0,0,0,0.75)" strokeWidth={3.5} paintOrder="stroke"
+      >
+        {label}
+      </text>
+    </g>
+  );
+}
+
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   // Escape closes too (mobile hardware back / desktop keyboards).
   useEffect(() => {
@@ -949,10 +1270,14 @@ function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendin
     rows.push(['💰 Income', `+${b.incomePerSec}/s${b.level < 5 ? ` (Lv${b.level + 1} → +${STATS.economy.income[b.level + 1]}/s)` : ' (MAX)'}`]);
     rows.push(['❤ Structure', `${Math.ceil(b.hp ?? 0)} / ${b.maxHp} HP`]);
     rows.push(['📍 Square', `(${b.gx + 1}, ${b.gy + 1}) — 1×1`]);
-  } else if (b.type === 'shield') {
-    rows.push(['🛡️ Shield pool', `${Math.ceil(b.shieldHp ?? 0)} / ${b.maxShieldHp}${b.level < 5 ? ` (Lv${b.level + 1} → ${STATS.shield.hp[b.level + 1]})` : ' (MAX)'}`]);
-    rows.push(['📏 Coverage', `≈ ${SHIELD_COVER_CELLS} squares (range 3, no diagonals)`]);
+  } else if (b.type === 'shield' || b.type === 'shield_heavy') {
+    const heavy = b.type === 'shield_heavy';
+    const range = b.shieldTiles ?? (heavy ? 2 : 3);
+    const table = heavy ? STATS.shield_heavy.hp : STATS.shield.hp;
+    rows.push(['🛡️ Shield pool', `${Math.ceil(b.shieldHp ?? 0)} / ${b.maxShieldHp}${b.level < 5 ? ` (Lv${b.level + 1} → ${table[b.level + 1]})` : ' (MAX)'}`]);
+    rows.push(['📏 Coverage', `≈ ${range === 2 ? SHIELD_HEAVY_COVER_CELLS : SHIELD_COVER_CELLS} squares (range ${range}, no diagonals)`]);
     rows.push(['🧱 Blocking', 'Full block while charged — overflow only. Even empty squares drain it.']);
+    rows.push(['🔗 Overlap', 'Fullest % pool absorbs first, overflow spills to the next fullest.']);
     rows.push(['💚 Self-repair', `+${+(STATS.healer.heal[b.level] / 8).toFixed(1)}/s (1/8 of healer)`]);
     rows.push(['❤ Structure', `${Math.ceil(b.hp ?? 0)} / ${b.maxHp} HP`]);
   } else if (b.type === 'healer') {

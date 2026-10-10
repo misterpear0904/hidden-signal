@@ -132,7 +132,7 @@ export interface TerritoryGameState {
 
 // ─── Missile Command Types ────────────────────────────────
 
-export type MissileBuildingType = 'economy' | 'shield' | 'healer' | 'launcher' | 'core';
+export type MissileBuildingType = 'economy' | 'shield' | 'shield_heavy' | 'healer' | 'launcher' | 'core';
 export type MissileLauncherType = 'single' | 'scatter';
 export type PlayerSide = 'top' | 'bottom';
 
@@ -150,9 +150,10 @@ export interface MissileBuilding {
   // Economy building
   incomePerSec?: number;
   
-  // Shield generator (square coverage: shieldTiles Chebyshev distance)
+  // Shield generator (Manhattan coverage: shieldTiles range)
   shieldHp?: number;
   maxShieldHp?: number;
+  shieldTiles?: number; // aura radius (Manhattan): 3 for shield, 2 for shield_heavy
   
   // Healer (Manhattan coverage: healerTiles range, one shield at a time)
   healPerSec?: number;
@@ -224,6 +225,7 @@ export interface MissileCommandState {
   buildings: Record<string, MissileBuilding>;
   pending: Record<string, ConstructionSite>;
   missiles: MissileInFlight[];
+  keepFire?: Record<string, KeepFireLock | null>;
   resources: Record<string, number>;
   gameStartTime: number;
   lastEconomyTick: number;
@@ -256,6 +258,22 @@ export interface MissileTypeLaunchAction {
 
 export interface MissileLoadAction {
   launcherId: string;
+}
+
+// A locked "keep firing" target. While set, every missile that finishes
+// loading is auto-launched at (targetGx, targetGy) by the server tick.
+export interface KeepFireLock {
+  targetGx: number;
+  targetGy: number;
+  launcherType: MissileLauncherType;
+  since: number;
+}
+
+export interface MissileKeepFireAction {
+  armed: boolean;
+  targetGx?: number;
+  targetGy?: number;
+  launcherType?: MissileLauncherType;
 }
 
 export interface MissileCommandOptions {
