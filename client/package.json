@@ -4,7 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/gen-build-info.mjs",
     "dev": "vite",
+    "dev:full": "set NO_HMR=1&& vite",
+    "prebuild": "node scripts/gen-build-info.mjs",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview"

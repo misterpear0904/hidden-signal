@@ -34,9 +34,10 @@ export const MISSILE_CONFIG = {
     cell: { gx: 6, gy: 3 },
   },
   costs: {
-    economy: { build: 50, upgrade: [0, 60, 120, 220, 350, 0] },
-    shield: { build: 40, upgrade: [0, 50, 100, 180, 280, 0] },
-    healer: { build: 45, upgrade: [0, 55, 110, 190, 290, 0] },
+    // Upgrade costs are near-exponential by current level (cost to go level -> level+1).
+    economy: { build: 50, upgrade: [0, 60, 150, 375, 900, 0] },
+    shield: { build: 40, upgrade: [0, 50, 125, 300, 700, 0] },
+    healer: { build: 45, upgrade: [0, 55, 140, 330, 750, 0] },
     launcher_single: { build: 120 },
     launcher_scatter: { build: 150 },
   },
@@ -55,21 +56,22 @@ export const MISSILE_CONFIG = {
   },
   launchers: {
     single: {
-      missileCost: [0, 30, 45, 65, 90, 120],
+      // Missile costs steepen hard with level (entry stays cheap).
+      missileCost: [0, 30, 55, 100, 170, 280],
       damage: [0, 120, 200, 300, 420, 560],
       blast: 0, // tiles (Manhattan) — hits the single target cell
       cooldownMs: [0, 4000, 3800, 3500, 3200, 2800],
-      speed: 0.1375, // slow cruise — time to see and react
+      speed: 0.103125, // slow cruise — time to see and react (75% pace)
       hp: [0, 120, 180, 250, 330, 420],
     },
     scatter: {
-      missileCost: [0, 45, 65, 90, 120, 155],
+      missileCost: [0, 45, 80, 140, 230, 360],
       // per-pellet damage, 5 pellets each hitting 1 cell — best total damage
       damage: [0, 35, 55, 80, 110, 145],
       pellets: 5,
       blast: 0,
       cooldownMs: [0, 6000, 5700, 5400, 5000, 4600],
-      speed: 0.125,
+      speed: 0.09375,
       hp: [0, 120, 180, 250, 330, 420],
     },
   },
@@ -240,7 +242,11 @@ export function missileBuildBuilding(state, playerId, action) {
   }
   if (!isValidCell(gx, gy)) return { error: 'Invalid grid square' };
   if (occupiedCell(state, side, gx, gy)) return { error: 'Square occupied — pick an empty square' };
-  if (buildingCountFor(state, playerId) >= MISSILE_CONFIG.maxBuildingsPerPlayer) {
+  // Cap counts finished buildings AND queued construction sites (else the cap
+  // could be dodged with a queueing spree).
+  const activeCount = buildingCountFor(state, playerId) +
+    Object.values(state.pending ?? {}).filter(p => p.kind === 'build' && p.ownerId === playerId).length;
+  if (activeCount >= MISSILE_CONFIG.maxBuildingsPerPlayer) {
     return { error: 'Building cap reached' };
   }
   const cost = buildCostFor(buildingType, launcherType);
@@ -263,9 +269,10 @@ export function missileBuildBuilding(state, playerId, action) {
 function upgradeCostFor(b) {
   if (b.level >= MISSILE_CONFIG.maxLevel) return null;
   if (b.type === 'launcher') {
-    // launcher upgrade ~ 80% of build cost * level
+    // Near-exponential launcher upgrades: 1.2x, 2.5x, 5x, 10x of build cost.
+    const mult = [0, 1.2, 2.5, 5, 10][b.level] ?? 10;
     const base = buildCostFor('launcher', b.launcherType);
-    return Math.round(base * (0.7 + b.level * 0.5));
+    return Math.round(base * mult);
   }
   // upgrade table is indexed by current level: cost to go level -> level+1
   const table = MISSILE_CONFIG.costs[b.type]?.upgrade;
@@ -370,17 +377,22 @@ export function missileToggleAutobuild(state, playerId, launcherId) {
   return { building: launcher };
 }
 
-// Fire one launcher's entire stockpile at a cell. Banked shots deploy 300ms
-// apart (plus a base offset so multi-launcher volleys ripple outward).
-function fireVolley(state, launcher, enemySide, targetGx, targetGy, now, baseDelay = 0) {
+// Fire one launcher's entire stockpile at a cell — everything launches at
+// the SAME time (no stagger). Each missile gets a visual lane (-2..2) so
+// stacked volleys fan out instead of overlapping pixel-perfect.
+function fireVolley(state, launcher, enemySide, targetGx, targetGy, now) {
   const stock = launcher.stock ?? 0;
   if (stock <= 0) return [];
   launcher.stock = 0;
   launcher.lastFiredAt = now;
   const added = [];
+  let k = 0;
   for (let i = 0; i < stock; i++) {
     const pattern = buildShotPattern(state, launcher, launcher.side, enemySide, targetGx, targetGy, now);
-    for (const m of pattern) m.deployAt = now + baseDelay + i * 300;
+    for (const m of pattern) {
+      m.deployAt = now;
+      m.lane = (k++ % 5) - 2;
+    }
     added.push(...pattern);
   }
   state.missiles.push(...added);
@@ -418,11 +430,8 @@ export function missileLaunchType(state, playerId, launcherType, targetGx, targe
   const enemySide = side === 'top' ? 'bottom' : 'top';
   const now = Date.now();
   const added = [];
-  let delay = 0;
   for (const launcher of launchers) {
-    const n = launcher.stock ?? 0;
-    added.push(...fireVolley(state, launcher, enemySide, targetGx, targetGy, now, delay));
-    delay += n * 300;
+    added.push(...fireVolley(state, launcher, enemySide, targetGx, targetGy, now));
   }
   return { missiles: added };
 }
@@ -433,10 +442,12 @@ function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage) {
   const shields = buildings.filter(b => b.type === 'shield' && (b.shieldHp ?? 0) > 0);
   const shieldTiles = state.shieldTiles ?? MISSILE_CONFIG.shieldTiles;
 
+  // A shield never covers itself, but overlapping shields DO cover each other.
   const coveringShield = (b) => {
     let best = null;
     let bestD = Infinity;
     for (const s of shields) {
+      if (s.id === b.id) continue;
       const d = cellDist(s.gx, s.gy, b.gx, b.gy);
       if (d <= shieldTiles && d < bestD) { best = s; bestD = d; }
     }
@@ -460,10 +471,22 @@ function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage) {
       if (pool >= dmg) { shield.shieldHp = pool - dmg; dmg = 0; }
       else { shield.shieldHp = 0; dmg = dmg - pool; }
     } else if (b.type === 'shield') {
-      // direct hits damage shield pool first, then structure
-      const pool = b.shieldHp ?? 0;
-      if (pool >= dmg) { b.shieldHp = pool - dmg; dmg = 0; }
-      else { b.shieldHp = 0; dmg = dmg - pool; }
+      // Shields are covered by overlapping shields too: the covering pool
+      // absorbs first (full block + overflow), then this shield's own pool,
+      // then its structure.
+      let dmgLeft = dmg;
+      const cover = coveringShield(b);
+      if (cover) {
+        const pool = cover.shieldHp ?? 0;
+        if (pool >= dmgLeft) { cover.shieldHp = pool - dmgLeft; dmgLeft = 0; }
+        else { cover.shieldHp = 0; dmgLeft = dmgLeft - pool; }
+      }
+      if (dmgLeft > 0) {
+        const pool = b.shieldHp ?? 0;
+        if (pool >= dmgLeft) { b.shieldHp = pool - dmgLeft; dmgLeft = 0; }
+        else { b.shieldHp = 0; dmgLeft = dmgLeft - pool; }
+      }
+      dmg = dmgLeft;
     }
     if (dmg <= 0) continue;
     if (b.type === 'core') {

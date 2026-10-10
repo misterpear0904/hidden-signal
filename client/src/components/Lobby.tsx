@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { RoomState, ChromaOptions, TerritoryOptions, LiarOptions, MissileCommandOptions } from '../types/game';
 import GameSelect, { GAME_CATALOGUE } from './GameSelect';
 import { avatarColor, avatarInitial } from '../constants';
+import { BUILD_ID } from '../buildInfo';
 
 interface Props {
   roomState: RoomState;
@@ -559,7 +560,7 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
                   💰 Starting Credits: {missileCommandOptions.startingResources}
                 </div>
                 <div className="text-xs text-muted" style={{ marginTop: 2 }}>
-                  Both players start with this many credits. Generators cost 50cr, shields 40cr, missiles 30–190cr/shot.
+                  Both players start with this many credits. Generators cost 50cr, shields 40cr, missiles 30–360cr/shot, upgrades steepen fast.
                 </div>
               </div>
               {isHost ? (
@@ -617,6 +618,11 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
             </p>
           </div>
         )}
+
+        {/* Build stamp — proves which client version this browser is running */}
+        <p className="text-center text-xs text-muted" style={{ marginTop: 16, opacity: 0.5 }} title="Client build ID">
+          build {BUILD_ID.slice(0, 8)}
+        </p>
       </div>
     </div>
   );

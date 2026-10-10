@@ -1,6 +1,6 @@
 import type { RoomState } from '../types/game';
 import { TOTAL_ROUNDS } from '../constants';
-import { DICE_FACES } from './LiarBidPhase';
+import { PipDice, sortDiceAsc } from './Dice';
 
 interface Props {
   roomState: RoomState;
@@ -44,10 +44,13 @@ export default function LiarRevealPhase({ roomState, myId, isHost, isLastRound, 
           <div style={{ fontSize: '3.5rem', marginBottom: 8 }}>{iWon ? '🏆' : '🎲'}</div>
           <h1 className="heading-xl mb-8">{headline}</h1>
           {bid && (
-            <p className="text-muted text-sm">
-              Bid was <strong style={{ color: '#fff' }}>{bid.qty} × {DICE_FACES[bid.face - 1]}</strong>
-              {' '}— actually <strong style={{ color: 'var(--amber-400)' }}>{liar.actualCount}</strong>
-            </p>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginTop: 8 }}>
+              <p className="text-muted text-sm">
+                Bid was <strong style={{ color: '#fff', fontSize: '1.1rem' }}>{bid.qty} ×</strong>
+                {' '}— actually <strong style={{ color: 'var(--amber-400)', fontSize: '1.1rem' }}>{liar.actualCount}</strong>
+              </p>
+              <PipDice value={bid.face} size={44} />
+            </div>
           )}
         </div>
 
@@ -55,12 +58,12 @@ export default function LiarRevealPhase({ roomState, myId, isHost, isLastRound, 
           <h2 className="heading-md mb-16">All dice</h2>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {roomState.players.map(p => (
-              <div key={p.id} className="score-row">
+              <div key={p.id} className="score-row" style={{ flexWrap: 'wrap', rowGap: 8 }}>
                 <span style={{ fontWeight: 700, minWidth: 90 }}>
                   {p.name}{p.id === myId ? ' (You)' : ''}
                 </span>
-                <span style={{ fontSize: '2rem', lineHeight: 1 }}>
-                  {(liar.dice[p.id] ?? []).map((d, i) => <span key={i}>{DICE_FACES[d - 1]}</span>)}
+                <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {sortDiceAsc(liar.dice[p.id] ?? []).map((d, i) => <PipDice key={i} value={d} size={40} />)}
                 </span>
                 <span className={`score-delta ${(liar.points[p.id] ?? 0) > 0 ? 'delta-pos' : 'delta-zero'}`} style={{ marginLeft: 'auto' }}>
                   +{liar.points[p.id] ?? 0}

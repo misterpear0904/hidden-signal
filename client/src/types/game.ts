@@ -195,6 +195,7 @@ export interface MissileInFlight {
   speed: number; // normalized units per second
   createdAt: number;
   deployAt?: number; // volley stagger — missile holds at launcher until this time
+  lane?: number; // visual spread lane (-2..2), display only
   // For cluster missiles
   subMissiles?: Array<{ gx: number; gy: number; x: number; y: number; damage: number }>;
 }
@@ -359,6 +360,8 @@ export interface BluffGameState {
   history: BluffHistoryEntry[];
   toActId: string | null;
   facingBet: boolean;
+  betCount: number;   // bets + raises so far (cap forces a call)
+  maxRaises: number;
   winnerId: string | null;         // only at reveal
   winnerName: string | null;       // only at reveal
   loserId: string | null;          // only at reveal

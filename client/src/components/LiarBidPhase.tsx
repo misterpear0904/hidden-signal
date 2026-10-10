@@ -2,56 +2,13 @@ import { useState, useEffect } from 'react';
 import type { RoomState } from '../types/game';
 import { TOTAL_ROUNDS } from '../constants';
 import TimerBar from './TimerBar';
+import { PipDice, sortDiceAsc } from './Dice';
 
 interface Props {
   roomState: RoomState;
   myId: string;
   onBid: (qty: number, face: number) => void;
   onCall: (kind: 'liar' | 'exact') => void;
-}
-
-// More visible dice faces with colored backgrounds
-export const DICE_FACES = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
-
-export const DICE_COLORS = [
-  'linear-gradient(135deg, #ff6b6b, #ee5a5a)',  // 1 - Red
-  'linear-gradient(135deg, #4ecdc4, #45b7aa)',  // 2 - Teal
-  'linear-gradient(135deg, #ffe66d, #fcd53e)',  // 3 - Yellow
-  'linear-gradient(135deg, #a8e6cf, #7fcdcd)',  // 4 - Green
-  'linear-gradient(135deg, #ff8b94, #ff6b8a)',  // 5 - Pink
-  'linear-gradient(135deg, #c7ceea, #a8a4e8)',  // 6 - Purple
-];
-
-function DiceFace({ value, size = 'normal' }: { value: number; size?: 'normal' | 'large' | 'small' }) {
-  const sizeClasses = {
-    small: { size: 32, fontSize: 18 },
-    normal: { size: 56, fontSize: 28 },
-    large: { size: 80, fontSize: 42 },
-  };
-  const { size: s, fontSize } = sizeClasses[size];
-  const bg = DICE_COLORS[value - 1];
-  
-  return (
-    <div
-      style={{
-        width: s,
-        height: s,
-        borderRadius: 10,
-        background: `linear-gradient(135deg, ${bg.split(',')[0].replace('linear-gradient(135deg, ', '')}, ${bg.split(',')[1]})`,
-        border: '2px solid rgba(255,255,255,0.2)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        boxShadow: '0 4px 12px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)',
-        fontSize,
-        fontWeight: 800,
-        color: '#fff',
-        textShadow: '0 1px 2px rgba(0,0,0,0.5)',
-      }}
-    >
-      {'⚀⚁⚂⚃⚄⚅'[value - 1]}
-    </div>
-  );
 }
 
 export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) {
@@ -72,12 +29,13 @@ export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) 
   }, [bids.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!liar) return null;
-  const myDice = liar.dice[myId] ?? [];
+  const myDice = sortDiceAsc(liar.dice[myId] ?? []);
   const opponent = roomState.players.find(p => p.id !== myId);
   const myTurn = liar.toActId === myId;
   const minQty = lastBid ? lastBid.qty : 1;
   const validBid = qty >= minQty && qty <= totalDice && face >= 1 && face <= 6 &&
     (!lastBid || qty > lastBid.qty || (qty === lastBid.qty && face > lastBid.face));
+  const bumpQty = (d: number) => setQty(q => Math.max(minQty, Math.min(totalDice, q + d)));
 
   return (
     <div className="page-top">
@@ -107,10 +65,10 @@ export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) 
         {/* Dice */}
         <div className="glass p-20" style={{ borderRadius: 'var(--radius-xl)', marginBottom: 16 }}>
           <div className="text-xs text-muted mb-8" style={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            Your hidden dice
+            Your hidden dice (sorted)
           </div>
-          <div style={{ display: 'flex', gap: 10, fontSize: '3rem', lineHeight: 1 }}>
-            {myDice.map((d, i) => <span key={i}>{DICE_FACES[d - 1]}</span>)}
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            {myDice.map((d, i) => <PipDice key={i} value={d} size={myDice.length > 5 ? 44 : 56} />)}
           </div>
           <div className="text-xs text-muted mt-12">
             {opponent?.name} holds <strong>{liar.diceEach} hidden dice</strong> · {totalDice} total in play
@@ -123,10 +81,11 @@ export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) 
             <div className="text-xs text-muted mb-8" style={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               Bid history
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {[...bids].reverse().map((b, i) => (
-                <div key={bids.length - 1 - i} className="text-sm" style={{ color: i === 0 ? '#fff' : 'var(--text-muted)', fontWeight: i === 0 ? 700 : 400 }}>
-                  {i === 0 ? '👉 ' : ''}{b.playerName}: at least <strong>{b.qty} × {DICE_FACES[b.face - 1]}</strong>
+                <div key={bids.length - 1 - i} style={{ display: 'flex', alignItems: 'center', gap: 10, color: i === 0 ? '#fff' : 'var(--text-muted)', fontWeight: i === 0 ? 700 : 400, fontSize: i === 0 ? '1.05rem' : '0.9rem' }}>
+                  <span>{i === 0 ? '👉 ' : ''}{b.playerName}: at least <strong>{b.qty} ×</strong></span>
+                  <PipDice value={b.face} size={i === 0 ? 40 : 32} />
                 </div>
               ))}
             </div>
@@ -141,17 +100,36 @@ export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) 
             <>
               <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', marginBottom: 14 }}>
                 <div className="input-group" style={{ flex: 1 }}>
-                  <label className="input-label" htmlFor="liar-qty">How many? ({minQty}–{totalDice})</label>
-                  <input
-                    id="liar-qty"
-                    type="number"
-                    className="input"
-                    style={{ textAlign: 'center', fontSize: '1.2rem' }}
-                    min={minQty}
-                    max={totalDice}
-                    value={qty}
-                    onChange={e => setQty(Number(e.target.value))}
-                  />
+                  <label className="input-label" id="liar-qty-label">How many? ({minQty}–{totalDice})</label>
+                  <div style={{ display: 'flex', alignItems: 'stretch', gap: 6 }} role="group" aria-labelledby="liar-qty-label">
+                    <button
+                      type="button"
+                      aria-label="Decrease quantity"
+                      onClick={() => bumpQty(-1)}
+                      disabled={qty <= minQty}
+                      className="btn btn-secondary"
+                      style={{ padding: '10px 16px', fontSize: '1.3rem', fontWeight: 800 }}
+                    >
+                      −
+                    </button>
+                    <div
+                      className="input"
+                      aria-live="polite"
+                      style={{ flex: 1, textAlign: 'center', fontSize: '1.4rem', fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    >
+                      {qty}
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="Increase quantity"
+                      onClick={() => bumpQty(1)}
+                      disabled={qty >= totalDice}
+                      className="btn btn-secondary"
+                      style={{ padding: '10px 16px', fontSize: '1.3rem', fontWeight: 800 }}
+                    >
+                      +
+                    </button>
+                  </div>
                 </div>
                 <div className="input-group" style={{ flex: 2 }}>
                   <label className="input-label">Of which face?</label>
@@ -165,18 +143,20 @@ export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) 
                           disabled={disallowed}
                           onClick={() => setFace(f)}
                           aria-label={`Face ${f}`}
+                          title={`Face ${f}`}
                           style={{
                             flex: 1,
-                            fontSize: '1.6rem',
-                            padding: '6px 0',
+                            padding: '4px 2px',
                             borderRadius: 'var(--radius-md)',
                             background: face === f ? 'rgba(139,92,246,0.25)' : 'rgba(255,255,255,0.04)',
                             border: `2px solid ${face === f ? 'var(--purple-400)' : 'var(--border)'}`,
                             opacity: disallowed ? 0.3 : 1,
                             cursor: disallowed ? 'not-allowed' : 'pointer',
+                            display: 'flex',
+                            justifyContent: 'center',
                           }}
                         >
-                          {DICE_FACES[f - 1]}
+                          <PipDice value={f} size={34} />
                         </button>
                       );
                     })}
@@ -188,9 +168,10 @@ export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) 
                 disabled={!validBid}
                 onClick={() => validBid && onBid(qty, face)}
                 id="liar-raise-btn"
-                style={{ marginBottom: 10 }}
+                style={{ marginBottom: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}
               >
-                📣 Bid {qty} × {DICE_FACES[face - 1]}
+                <span>📣 Bid {qty} ×</span>
+                <PipDice value={face} size={34} />
               </button>
               <div style={{ display: 'flex', gap: 10 }}>
                 <button

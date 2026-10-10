@@ -47,15 +47,16 @@ export const LOAD_SECONDS = 5;
 
 // Level tables for display (mirror server/missileCommand.js)
 export const STATS = {
-  economy: { income: [0, 2, 5, 9, 14, 20], upgrade: [0, 60, 120, 220, 350, 0] },
-  shield: { hp: [0, 300, 600, 1000, 1500, 2000], upgrade: [0, 50, 100, 180, 280, 0] },
-  healer: { heal: [0, 8, 16, 28, 44, 65], upgrade: [0, 55, 110, 190, 290, 0] },
-  single: { cost: [0, 30, 45, 65, 90, 120], dmg: [0, 120, 200, 300, 420, 560], cd: [0, 4, 3.8, 3.5, 3.2, 2.8] },
-  scatter: { cost: [0, 45, 65, 90, 120, 155], dmg: [0, 35, 55, 80, 110, 145], cd: [0, 6, 5.7, 5.4, 5, 4.6] },
+  economy: { income: [0, 2, 5, 9, 14, 20], upgrade: [0, 60, 150, 375, 900, 0] },
+  shield: { hp: [0, 300, 600, 1000, 1500, 2000], upgrade: [0, 50, 125, 300, 700, 0] },
+  healer: { heal: [0, 8, 16, 28, 44, 65], upgrade: [0, 55, 140, 330, 750, 0] },
+  single: { cost: [0, 30, 55, 100, 170, 280], dmg: [0, 120, 200, 300, 420, 560], cd: [0, 4, 3.8, 3.5, 3.2, 2.8] },
+  scatter: { cost: [0, 45, 80, 140, 230, 360], dmg: [0, 35, 55, 80, 110, 145], cd: [0, 6, 5.7, 5.4, 5, 4.6] },
 };
 
 export function launcherUpgradeCost(buildCost: number, level: number): number {
-  return Math.round(buildCost * (0.7 + level * 0.5));
+  const mult = [0, 1.2, 2.5, 5, 10][level] ?? 10;
+  return Math.round(buildCost * mult);
 }
 
 export function upgradeCostFor(b: { type: MissileBuildingType; level: number; launcherType?: MissileLauncherType }): number | null {

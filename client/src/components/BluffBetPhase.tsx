@@ -57,6 +57,17 @@ export default function BluffBetPhase({ roomState, myId, onAction }: Props) {
   const opponent = roomState.players.find(p => p.id !== myId);
   const myTurn = bluff.toActId === myId;
   const nameOf = (id: string) => roomState.players.find(p => p.id === id)?.name ?? '???';
+  const betCount = bluff.betCount ?? 0;
+  const maxRaises = bluff.maxRaises ?? 10;
+  const capped = betCount >= maxRaises;
+  const lastActor = bluff.history[bluff.history.length - 1];
+  const prompt = !myTurn
+    ? `Waiting for ${opponent?.name ?? 'opponent'}…`
+    : bluff.facingBet
+    ? capped
+      ? `Bidding cap reached (${maxRaises}) — you must call!`
+      : `${nameOf(lastActor?.playerId ?? '')} raised (${betCount}/${maxRaises}) — raise back, call or fold!`
+    : 'Your move — check or bet!';
 
   return (
     <div className="page-top">
@@ -74,11 +85,7 @@ export default function BluffBetPhase({ roomState, myId, onAction }: Props) {
             Bluff <span className="gradient-amber">Card</span>
           </h1>
           <p className="text-muted text-sm mt-8">
-            {myTurn
-              ? bluff.facingBet
-                ? `${nameOf(bluff.history[bluff.history.length - 1]?.playerId ?? '')} bet — fold or call!`
-                : 'Your move — check or bet!'
-              : `Waiting for ${opponent?.name ?? 'opponent'}…`}
+            {prompt}
           </p>
           {roomState.timerEnd && (
             <div style={{ maxWidth: 400, margin: '16px auto 0' }}>
@@ -123,13 +130,25 @@ export default function BluffBetPhase({ roomState, myId, onAction }: Props) {
           {!myTurn ? (
             <p className="text-muted text-sm text-center" style={{ fontStyle: 'italic' }}>Opponent is thinking…</p>
           ) : bluff.facingBet ? (
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button className="btn btn-secondary btn-lg btn-full" onClick={() => onAction('fold')} id="bluff-fold-btn">
-                🏳️ Fold
-              </button>
-              <button className="btn btn-primary btn-lg btn-full" onClick={() => onAction('call')} id="bluff-call-btn">
-                📞 Call — showdown!
-              </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {!capped && (
+                <button className="btn btn-amber btn-lg btn-full" onClick={() => onAction('raise')} id="bluff-raise-btn">
+                  📈 Raise ({betCount}/{maxRaises})
+                </button>
+              )}
+              <div style={{ display: 'flex', gap: 10 }}>
+                {!capped && (
+                  <button className="btn btn-secondary btn-lg btn-full" onClick={() => onAction('fold')} id="bluff-fold-btn">
+                    🏳️ Fold
+                  </button>
+                )}
+                <button className="btn btn-primary btn-lg btn-full" onClick={() => onAction('call')} id="bluff-call-btn">
+                  📞 Call{capped ? ' (forced)' : ' — showdown!'}
+                </button>
+              </div>
+              {capped && (
+                <p className="text-xs text-muted text-center">Bidding hit the {maxRaises}-raise cap — showdown time!</p>
+              )}
             </div>
           ) : (
             <div style={{ display: 'flex', gap: 10 }}>
