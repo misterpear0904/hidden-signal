@@ -72,7 +72,7 @@ export function createRoom(hostId, hostName) {
     chromaOptions: { difficulty: 'easy', playerDifficulties: {}, fairPoints: true, extremeMode: false },
     territoryOptions: { extremeMode: false },
     liarOptions: { extremeMode: false },
-    missileCommandOptions: { startingResources: MISSILE_CONFIG.startingResources, economyTickMs: MISSILE_CONFIG.economyTickMs, maxLevel: MISSILE_CONFIG.maxLevel },
+    missileCommandOptions: { startingResources: MISSILE_CONFIG.startingResources, economyTickMs: MISSILE_CONFIG.economyTickMs, maxLevel: MISSILE_CONFIG.maxLevel, fogOfWar: false },
     chromaState: null,
     territoryState: null,
     blendState: null,
@@ -189,7 +189,7 @@ export function updateMissileCommandOptions(code, options) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'lobby') return null;
   if (!options || typeof options !== 'object') return null;
-  const next = { ...(room.missileCommandOptions || { startingResources: MISSILE_CONFIG.startingResources, economyTickMs: MISSILE_CONFIG.economyTickMs, maxLevel: MISSILE_CONFIG.maxLevel }) };
+  const next = { ...(room.missileCommandOptions || { startingResources: MISSILE_CONFIG.startingResources, economyTickMs: MISSILE_CONFIG.economyTickMs, maxLevel: MISSILE_CONFIG.maxLevel, fogOfWar: false }) };
   if (typeof options.startingResources === 'number' && options.startingResources >= 50 && options.startingResources <= 500) {
     next.startingResources = Math.round(options.startingResources);
   }

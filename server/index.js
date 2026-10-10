@@ -148,6 +148,11 @@ const io = new Server(httpServer, {
     origin: CLIENT_ORIGIN,
     methods: ['GET', 'POST'],
   },
+  // Mobile-friendly: longer ping timeout to survive background tabs
+  pingTimeout: 60000,    // 60s before considering client dead (default 5s)
+  pingInterval: 25000,   // ping every 25s (default 25s)
+  // Allow reconnection with longer delays for mobile network changes
+  maxHttpBufferSize: 1e8,
 });
 
 const PORT = process.env.PORT || 3001;

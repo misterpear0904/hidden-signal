@@ -71,7 +71,7 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
 
   const chromaOptions = roomState.chromaOptions || { difficulty: 'easy', playerDifficulties: {}, fairPoints: true, extremeMode: false };
   const territoryOptions = roomState.territoryOptions || { extremeMode: false };
-  const missileCommandOptions = roomState.missileCommandOptions || { startingResources: 200, economyTickMs: 500, maxLevel: 5 };
+  const missileCommandOptions = roomState.missileCommandOptions || { startingResources: 200, economyTickMs: 500, maxLevel: 5, fogOfWar: false };
   const myDifficulty = chromaOptions.playerDifficulties?.[myId] || 'easy';
 
   return (
@@ -580,6 +580,30 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
                     +
                   </button>
                 </div>
+              ) : (
+                <span className="badge badge-muted">(Host Setting)</span>
+              )}
+            </div>
+
+            {/* Fog of War Toggle */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', background: 'rgba(255,255,255,0.03)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)', marginTop: 10 }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                  🌫️ Fog of War
+                </div>
+                <div className="text-xs text-muted" style={{ marginTop: 2 }}>
+                  Enemy island hidden except core. Missiles reveal impact zone for 5s. Like StarCraft fog of war!
+                </div>
+              </div>
+              {isHost ? (
+                <button
+                  type="button"
+                  onClick={() => onUpdateMissileCommandOptions({ fogOfWar: !missileCommandOptions.fogOfWar })}
+                  className={`btn btn-sm ${missileCommandOptions.fogOfWar ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ minWidth: 80 }}
+                >
+                  {missileCommandOptions.fogOfWar ? 'ON' : 'OFF'}
+                </button>
               ) : (
                 <span className="badge badge-muted">(Host Setting)</span>
               )}

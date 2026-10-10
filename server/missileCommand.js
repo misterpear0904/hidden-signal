@@ -165,6 +165,10 @@ export function createMissileCommandState(playerIds, options = {}) {
   buildings.core_top = mkCore('core_top', 'top', p1);
   buildings.core_bottom = mkCore('core_bottom', 'bottom', p2);
 
+  // Fog of war: each player has a set of explored tiles with timestamps
+  // Key: "gx,gy", Value: timestamp when explored (or 0 for permanent)
+  const fogOfWar = options.fogOfWar ?? false;
+
   return {
     sides: { top: p1, bottom: p2 },
     gridCols: MISSILE_CONFIG.gridCols,
@@ -183,6 +187,9 @@ export function createMissileCommandState(playerIds, options = {}) {
     lastEconomyTick: now,
     winnerId: null,
     winReason: null,
+    fogOfWar,
+    // exploredTiles[playerId] = Map<"gx,gy", timestamp> — 0 = permanent (core), >0 = temporary
+    exploredTiles: { [p1]: new Map(), [p2]: new Map() },
   };
 }
 
@@ -558,6 +565,62 @@ function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage) {
   return destroyed;
 }
 
+// Fog of war constants
+const FOG_REVEAL_RADIUS = 3; // Manhattan distance around impact
+const FOG_TEMPORARY_DURATION = 5000; // 5 seconds in ms
+
+// Initialize fog of war: cores are permanently visible to both players
+function initFogOfWar(state) {
+  if (!state.fogOfWar) return;
+  const [p1, p2] = [state.sides.top, state.sides.bottom];
+  const coreTop = state.buildings.core_top;
+  const coreBottom = state.buildings.core_bottom;
+  if (coreTop) {
+    const key = `${coreTop.gx},${coreTop.gy}`;
+    state.exploredTiles[p1].set(key, 0);
+    state.exploredTiles[p2].set(key, 0);
+  }
+  if (coreBottom) {
+    const key = `${coreBottom.gx},${coreBottom.gy}`;
+    state.exploredTiles[p1].set(key, 0);
+    state.exploredTiles[p2].set(key, 0);
+  }
+}
+
+// Explore tiles around a point (missile impact) for the attacker
+function exploreAround(state, ownerId, gx, gy, radius = FOG_REVEAL_RADIUS, duration = FOG_TEMPORARY_DURATION) {
+  if (!state.fogOfWar) return;
+  const enemyId = state.sides.top === ownerId ? state.sides.bottom : state.sides.top;
+  const now = Date.now();
+  const expiresAt = now + duration;
+  for (let dx = -radius; dx <= radius; dx++) {
+    for (let dy = -radius; dy <= radius; dy++) {
+      if (Math.abs(dx) + Math.abs(dy) > radius) continue; // Manhattan distance
+      const tx = gx + dx;
+      const ty = gy + dy;
+      if (tx < 0 || tx >= MISSILE_CONFIG.gridCols || ty < 0 || ty >= MISSILE_CONFIG.gridRows) continue;
+      const key = `${tx},${ty}`;
+      const existing = state.exploredTiles[ownerId].get(key);
+      if (existing === 0) continue;
+      if (!existing || existing < expiresAt) {
+        state.exploredTiles[ownerId].set(key, expiresAt);
+      }
+    }
+  }
+}
+
+// Expire temporary fog revelations
+function expireFog(state, now) {
+  if (!state.fogOfWar) return;
+  for (const [pid, tiles] of Object.entries(state.exploredTiles)) {
+    for (const [key, expiresAt] of tiles.entries()) {
+      if (expiresAt > 0 && expiresAt <= now) {
+        tiles.delete(key);
+      }
+    }
+  }
+}
+
 // Advance simulation by dt seconds. Returns events for logging.
 export function tickMissileCommand(state, now = Date.now()) {
   if (!state || state.winnerId) return { events: [] };
@@ -565,6 +628,12 @@ export function tickMissileCommand(state, now = Date.now()) {
   const last = state.lastEconomyTick || now;
   const dt = Math.max(0, Math.min(5, (now - last) / 1000));
   state.lastEconomyTick = now;
+
+  // Initialize fog of war on first tick (cores permanently visible)
+  initFogOfWar(state);
+
+  // Expire temporary fog revelations
+  expireFog(state, now);
 
   // 0. Construction & upgrades completing now (each runs its own timer)
   if (state.pending) {
@@ -688,6 +757,8 @@ export function tickMissileCommand(state, now = Date.now()) {
       const destroyed = applyExplosion(state, m.ownerId, enemySide, m.targetGx, m.targetGy, m.blast, m.damage);
       if (destroyed.length) events.push({ type: 'destroyed', ids: destroyed });
       events.push({ type: 'impact', gx: m.targetGx, gy: m.targetGy, kind: m.launcherType });
+      // Fog of war: reveal area around impact for the attacker
+      exploreAround(state, m.ownerId, m.targetGx, m.targetGy);
     } else {
       m.currentX += (dx / d) * step;
       m.currentY += (dy / d) * step;

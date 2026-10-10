@@ -160,11 +160,14 @@ export function useSocket(): SocketHookReturn {
     const s = io(SERVER_URL, { 
       autoConnect: true, 
       reconnection: true, 
-      reconnectionAttempts: 20, 
-      reconnectionDelay: 2000,
-      reconnectionDelayMax: 10000,
-      timeout: 30000,
-      transports: ['polling', 'websocket']
+      reconnectionAttempts: 50,        // more attempts for mobile background/foreground
+      reconnectionDelay: 1000,         // faster initial retry
+      reconnectionDelayMax: 30000,     // up to 30s between retries
+      randomizationFactor: 0.5,        // jitter to avoid thundering herd
+      timeout: 60000,                  // longer connection timeout
+      transports: ['websocket', 'polling'], // try websocket first
+      // Mobile: don't close on background - wait for visibility change
+      // Socket.io client handles this via document.visibilityState
     });
     socketRef.current = s;
     setSocket(s);
@@ -195,6 +198,15 @@ export function useSocket(): SocketHookReturn {
         }
       }, 10000); // every 10 seconds
     };
+
+    // Handle visibility change: force reconnect when tab becomes visible
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && s && !s.connected) {
+        console.log('[socket] tab became visible, forcing reconnect');
+        s.connect();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
     const onDisconnect = (reason: string) => {
       if (heartbeatRef.current) {
         clearInterval(heartbeatRef.current);
@@ -300,6 +312,7 @@ export function useSocket(): SocketHookReturn {
         clearInterval(heartbeatRef.current);
         heartbeatRef.current = null;
       }
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       s.off('connect', onConnect);
       s.off('disconnect', onDisconnect);
       s.off('connect_error', onConnectError);

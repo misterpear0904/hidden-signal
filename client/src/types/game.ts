@@ -231,6 +231,8 @@ export interface MissileCommandState {
   lastEconomyTick: number;
   winnerId: string | null;
   winReason: 'core_destroyed' | 'timeout' | null;
+  fogOfWar: boolean;
+  exploredTiles?: Record<string, Record<string, number>>; // playerId -> tileKey -> expiresAt (0 = permanent)
 }
 
 export interface MissileBuildAction {
@@ -280,6 +282,7 @@ export interface MissileCommandOptions {
   startingResources: number;
   economyTickMs: number;
   maxLevel: number;
+  fogOfWar: boolean;
 }
 
 export interface Player {
