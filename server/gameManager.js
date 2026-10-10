@@ -1,6 +1,19 @@
 // gameManager.js — In-memory game state management
 
 import { assignRoles, calculateScores, generateRoomCode } from './gameLogic.js';
+import {
+  MISSILE_CONFIG,
+  createMissileCommandState,
+  missileBuildBuilding,
+  missileUpgradeBuilding,
+  missileLoadMissile,
+  missileLaunch,
+  tickMissileCommand,
+  missileSideForPlayer,
+  missileIncomePerSec,
+} from './missileCommand.js';
+
+export { MISSILE_CONFIG, missileSideForPlayer, missileIncomePerSec };
 
 // rooms: Map<roomCode, RoomState>
 export const rooms = new Map();
@@ -55,11 +68,14 @@ export function createRoom(hostId, hostName) {
     selectedGameId: 'hidden-signal',
     chromaOptions: { difficulty: 'easy', playerDifficulties: {}, fairPoints: true, extremeMode: false },
     territoryOptions: { extremeMode: false },
+    liarOptions: { extremeMode: false },
+    missileCommandOptions: { startingResources: MISSILE_CONFIG.startingResources, economyTickMs: MISSILE_CONFIG.economyTickMs, maxLevel: MISSILE_CONFIG.maxLevel },
     chromaState: null,
     territoryState: null,
     blendState: null,
     liarState: null,
     bluffState: null,
+    missileCommandState: null,
     phase: 'lobby',          // lobby | role-reveal | signal | discuss | guess | reveal | end | chroma-play | chroma-reveal | territory-turn | territory-reveal | blend-word | blend-vote | blend-guess | blend-reveal
     round: 0,
     players: [{ id: hostId, name: hostName, score: 0, isHost: true, connected: true }],
@@ -121,7 +137,7 @@ export function kickPlayer(code, hostId, targetId) {
 export function selectGame(code, gameId) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'lobby') return null;
-  const allowed = ['hidden-signal', 'chroma-shift', 'territory-push', 'blend-in', 'liar-dice', 'bluff-card'];
+  const allowed = ['hidden-signal', 'chroma-shift', 'territory-push', 'blend-in', 'liar-dice', 'bluff-card', 'missile-command'];
   if (!allowed.includes(gameId)) return null;
   room.selectedGameId = gameId;
   room.lastActivityMs = Date.now();
@@ -150,6 +166,31 @@ export function updateTerritoryOptions(code, options) {
   const next = { ...room.territoryOptions };
   if (typeof options.extremeMode === 'boolean') next.extremeMode = options.extremeMode;
   room.territoryOptions = next;
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+export function updateLiarOptions(code, options) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'lobby') return null;
+  if (!options || typeof options !== 'object') return null;
+  if (!room.liarOptions) room.liarOptions = { extremeMode: false };
+  const next = { ...room.liarOptions };
+  if (typeof options.extremeMode === 'boolean') next.extremeMode = options.extremeMode;
+  room.liarOptions = next;
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
+export function updateMissileCommandOptions(code, options) {
+  const room = rooms.get(code);
+  if (!room || room.phase !== 'lobby') return null;
+  if (!options || typeof options !== 'object') return null;
+  const next = { ...(room.missileCommandOptions || { startingResources: MISSILE_CONFIG.startingResources, economyTickMs: MISSILE_CONFIG.economyTickMs, maxLevel: MISSILE_CONFIG.maxLevel }) };
+  if (typeof options.startingResources === 'number' && options.startingResources >= 50 && options.startingResources <= 500) {
+    next.startingResources = Math.round(options.startingResources);
+  }
+  room.missileCommandOptions = next;
   room.lastActivityMs = Date.now();
   return room;
 }
@@ -289,6 +330,20 @@ export function startGame(code) {
     room.bluffState = null;
     for (const p of room.players) p.score = 0;
     return startBluffRound(room);
+  }
+
+  if (room.selectedGameId === 'missile-command') {
+    if (room.players.length !== 2) return null;
+    room.round = 1;
+    room.endVote = null;
+    for (const p of room.players) p.score = 0;
+    const ids = room.players.map(p => p.id);
+    room.missileCommandState = createMissileCommandState(ids, {
+      startingResources: room.missileCommandOptions?.startingResources ?? MISSILE_CONFIG.startingResources,
+    });
+    room.phase = 'missile-command-play';
+    room.lastActivityMs = Date.now();
+    return room;
   }
 
   if (room.players.length < 4) return null;
@@ -1418,6 +1473,7 @@ export function resetToLobby(room) {
   room.blendState = null;
   room.liarState = null;
   room.bluffState = null;
+  room.missileCommandState = null;
   room.timerEnd = null;
   room.endVote = null;
   room.lastActivityMs = Date.now();
@@ -1506,6 +1562,60 @@ export function playerDisconnected(playerId) {
 
 export function deleteRoom(code) {
   rooms.delete(code);
+}
+
+// ─── Missile Command thin wrappers (silo'd logic lives in missileCommand.js) ─
+export function buildMissileBuilding(code, playerId, action) {
+  const room = rooms.get(code);
+  if (!room || !room.missileCommandState) return null;
+  if (room.phase !== 'missile-command-play' && room.phase !== 'missile-command-build') return null;
+  const res = missileBuildBuilding(room.missileCommandState, playerId, action);
+  if (res.error) return { room, error: res.error };
+  room.lastActivityMs = Date.now();
+  return { room, building: res.building };
+}
+
+export function upgradeMissileBuilding(code, playerId, buildingId) {
+  const room = rooms.get(code);
+  if (!room || !room.missileCommandState) return null;
+  if (room.phase !== 'missile-command-play' && room.phase !== 'missile-command-build') return null;
+  const res = missileUpgradeBuilding(room.missileCommandState, playerId, buildingId);
+  if (res.error) return { room, error: res.error };
+  room.lastActivityMs = Date.now();
+  return { room, building: res.building };
+}
+
+export function launchMissile(code, playerId, action) {
+  const room = rooms.get(code);
+  if (!room || !room.missileCommandState) return null;
+  if (room.phase !== 'missile-command-play') return null;
+  const res = missileLaunch(room.missileCommandState, playerId, action);
+  if (res.error) return { room, error: res.error };
+  room.lastActivityMs = Date.now();
+  return { room, missiles: res.missiles };
+}
+
+export function loadMissile(code, playerId, launcherId) {
+  const room = rooms.get(code);
+  if (!room || !room.missileCommandState) return null;
+  if (room.phase !== 'missile-command-play') return null;
+  const res = missileLoadMissile(room.missileCommandState, playerId, launcherId);
+  if (res.error) return { room, error: res.error };
+  room.lastActivityMs = Date.now();
+  return { room, building: res.building };
+}
+
+export function tickMissileRoom(room, now = Date.now()) {
+  if (!room?.missileCommandState) return null;
+  if (room.phase !== 'missile-command-play') return null;
+  const { events } = tickMissileCommand(room.missileCommandState, now);
+  room.lastActivityMs = now;
+  if (room.missileCommandState.winnerId) {
+    const winner = room.players.find(p => p.id === room.missileCommandState.winnerId);
+    if (winner) winner.score += 5;
+    room.phase = 'missile-command-end';
+  }
+  return { room, events };
 }
 
 export function sweepInactiveRooms(now = Date.now()) {

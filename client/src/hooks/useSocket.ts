@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
-import type { RoomState, RoleData, RoundRevealData, ChromaOptions, TerritoryOptions, LiarOptions, BluffAction } from '../types/game';
+import type { RoomState, RoleData, RoundRevealData, ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileUpgradeAction, MissileLaunchAction, MissileLoadAction, MissileCommandOptions } from '../types/game';
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
 
@@ -61,6 +61,12 @@ export interface SocketHookReturn {
   nextRound: (roomCode: string) => void;
   playAgain: (roomCode: string) => void;
   retryConnection: () => void;
+  // Missile Command
+  buildMissileBuilding: (roomCode: string, action: MissileBuildAction) => void;
+  upgradeMissileBuilding: (roomCode: string, action: MissileUpgradeAction) => void;
+  loadMissile: (roomCode: string, action: MissileLoadAction) => void;
+  launchMissile: (roomCode: string, action: MissileLaunchAction) => void;
+  updateMissileCommandOptions: (roomCode: string, options: Partial<MissileCommandOptions>) => void;
 }
 
 export function useSocket(): SocketHookReturn {
@@ -395,6 +401,27 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('next-bluff-round', { roomCode: code });
   }, []);
 
+  // Missile Command
+  const buildMissileBuilding = useCallback((code: string, action: MissileBuildAction) => {
+    socketRef.current?.emit('build-missile-building', { roomCode: code, action });
+  }, []);
+
+  const upgradeMissileBuilding = useCallback((code: string, action: MissileUpgradeAction) => {
+    socketRef.current?.emit('upgrade-missile-building', { roomCode: code, action });
+  }, []);
+
+  const launchMissile = useCallback((code: string, action: MissileLaunchAction) => {
+    socketRef.current?.emit('launch-missile', { roomCode: code, action });
+  }, []);
+
+  const loadMissile = useCallback((code: string, action: MissileLoadAction) => {
+    socketRef.current?.emit('load-missile', { roomCode: code, launcherId: action.launcherId });
+  }, []);
+
+  const updateMissileCommandOptions = useCallback((code: string, options: Partial<MissileCommandOptions>) => {
+    socketRef.current?.emit('update-missile-command-options', { roomCode: code, options });
+  }, []);
+
   return {
     socket,
     connected,
@@ -440,5 +467,11 @@ export function useSocket(): SocketHookReturn {
     nextRound,
     playAgain,
     retryConnection,
+    // Missile Command
+    buildMissileBuilding,
+    upgradeMissileBuilding,
+    loadMissile,
+    launchMissile,
+    updateMissileCommandOptions,
   };
 }

@@ -14,6 +14,13 @@ import {
   kickPlayer,
   updateChromaOptions,
   updateTerritoryOptions,
+  updateLiarOptions,
+  updateMissileCommandOptions,
+  buildMissileBuilding,
+  upgradeMissileBuilding,
+  loadMissile,
+  launchMissile,
+  tickMissileRoom,
   setPlayerDifficulty,
   submitChromaGuess,
   resolveChromaRace,
@@ -316,6 +323,9 @@ function roomPublicState(room, forPlayerId = null) {
     selectedGameId: room.selectedGameId || 'hidden-signal',
     chromaOptions: room.chromaOptions || { difficulty: 'easy', fairPoints: true, extremeMode: false },
     territoryOptions: room.territoryOptions || { extremeMode: false },
+    liarOptions: room.liarOptions || { extremeMode: false },
+    missileCommandOptions: room.missileCommandOptions || { startingResources: 200, economyTickMs: 500, maxLevel: 5 },
+    missileCommandState: room.missileCommandState || null,
     chromaState: room.chromaState || null,
     territoryState: publicTerritoryState,
     blendState: publicBlendState,
@@ -610,6 +620,56 @@ io.on('connection', (socket) => {
     if (updated) broadcastRoomState(updated);
   });
 
+  socket.on('update-liar-options', ({ roomCode, options } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const room = getRoom(roomCode);
+    if (!room || !isHost(room, socket.id)) return socket.emit('error', 'Only host can change options');
+    const updated = updateLiarOptions(roomCode, options);
+    if (updated) broadcastRoomState(updated);
+  });
+
+  socket.on('update-missile-command-options', ({ roomCode, options } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const room = getRoom(roomCode);
+    if (!room || !isHost(room, socket.id)) return socket.emit('error', 'Only host can change options');
+    const updated = updateMissileCommandOptions(roomCode, options);
+    if (updated) broadcastRoomState(updated);
+  });
+
+  socket.on('build-missile-building', ({ roomCode, action } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const result = buildMissileBuilding(roomCode, socket.id, action);
+    if (!result) return socket.emit('error', 'Cannot build now');
+    if (result.error) return socket.emit('error', result.error);
+    broadcastRoomState(result.room);
+  });
+
+  socket.on('upgrade-missile-building', ({ roomCode, action } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const buildingId = typeof action === 'string' ? action : action?.buildingId;
+    const result = upgradeMissileBuilding(roomCode, socket.id, buildingId);
+    if (!result) return socket.emit('error', 'Cannot upgrade now');
+    if (result.error) return socket.emit('error', result.error);
+    broadcastRoomState(result.room);
+  });
+
+  socket.on('launch-missile', ({ roomCode, action } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const result = launchMissile(roomCode, socket.id, action);
+    if (!result) return socket.emit('error', 'Cannot launch now');
+    if (result.error) return socket.emit('error', result.error);
+    broadcastRoomState(result.room);
+  });
+
+  socket.on('load-missile', ({ roomCode, launcherId } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const id = typeof launcherId === 'string' ? launcherId : launcherId?.launcherId;
+    const result = loadMissile(roomCode, socket.id, id);
+    if (!result) return socket.emit('error', 'Cannot load now');
+    if (result.error) return socket.emit('error', result.error);
+    broadcastRoomState(result.room);
+  });
+
   socket.on('set-player-difficulty', ({ roomCode, difficulty } = {}) => {
     if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const room = setPlayerDifficulty(roomCode, socket.id, difficulty);
@@ -670,6 +730,15 @@ io.on('connection', (socket) => {
       const started = startGame(roomCode);
       if (!started) return socket.emit('error', 'Could not start Bluff Card');
       startBluffBetPhase(roomCode);
+      return;
+    }
+
+    if (gameId === 'missile-command') {
+      if (room.players.length !== 2) return socket.emit('error', 'Missile Command is a 1v1 duel (exactly 2 players)');
+      clearRoomTimer(roomCode);
+      const started = startGame(roomCode);
+      if (!started) return socket.emit('error', 'Could not start Missile Command');
+      broadcastRoomState(started);
       return;
     }
 
@@ -939,6 +1008,22 @@ io.on('connection', (socket) => {
     }
   });
 });
+
+// ─── Missile Command real-time tick (silo'd) ────────────────────────────
+// Advances economy, healers, missiles and core regen ~4x/sec for active games.
+setInterval(() => {
+  try {
+    const now = Date.now();
+    for (const room of rooms.values()) {
+      if (room.phase !== 'missile-command-play' || !room.missileCommandState) continue;
+      if (room.missileCommandState.winnerId) continue;
+      const res = tickMissileRoom(room, now);
+      if (res) broadcastRoomState(res.room);
+    }
+  } catch (e) {
+    console.error('[missile-tick] failed', e);
+  }
+}, 250);
 
 httpServer.listen(PORT, () => {
   logger.info('Server started', { port: PORT, rooms: rooms.size });

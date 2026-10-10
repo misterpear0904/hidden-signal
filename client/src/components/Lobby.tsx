@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { RoomState, ChromaOptions, TerritoryOptions, LiarOptions } from '../types/game';
+import type { RoomState, ChromaOptions, TerritoryOptions, LiarOptions, MissileCommandOptions } from '../types/game';
 import GameSelect, { GAME_CATALOGUE } from './GameSelect';
 import { avatarColor, avatarInitial } from '../constants';
 
@@ -10,12 +10,13 @@ interface Props {
   onUpdateChromaOptions: (options: Partial<ChromaOptions>) => void;
   onUpdateTerritoryOptions: (options: Partial<TerritoryOptions>) => void;
   onUpdateLiarOptions: (options: Partial<LiarOptions>) => void;
+  onUpdateMissileCommandOptions: (options: Partial<MissileCommandOptions>) => void;
   onSetPlayerDifficulty: (difficulty: 'easy' | 'medium' | 'hard') => void;
   onKickPlayer: (targetId: string) => void;
   onStartGame: () => void;
 }
 
-export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOptions, onUpdateTerritoryOptions, onUpdateLiarOptions, onSetPlayerDifficulty, onKickPlayer, onStartGame }: Props) {
+export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOptions, onUpdateTerritoryOptions, onUpdateLiarOptions, onUpdateMissileCommandOptions, onSetPlayerDifficulty, onKickPlayer, onStartGame }: Props) {
   const me = roomState.players.find(p => p.id === myId);
   const isHost = me?.isHost ?? false;
   const playerCount = roomState.players.length;
@@ -47,11 +48,13 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
   
   const isTerritoryPush = selectedGameId === 'territory-push';
   const isEvenPlayers = playerCount % 2 === 0;
+  const isMissileCommand = selectedGameId === 'missile-command';
 
   const canStart = selectedGame !== null &&
     playerCount >= (selectedGame?.minPlayers ?? 2) &&
     playerCount <= (selectedGame?.maxPlayers ?? 12) &&
-    (!isTerritoryPush || isEvenPlayers);
+    (!isTerritoryPush || isEvenPlayers) &&
+    (!isMissileCommand || playerCount === 2);
 
   const startBlockedReason = !selectedGame
     ? 'Choose a game above to continue'
@@ -61,10 +64,13 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
     ? `${selectedGame.name} supports at most ${selectedGame.maxPlayers} players`
     : isTerritoryPush && !isEvenPlayers
     ? 'Territory Push requires an EVEN number of players (e.g. 2, 4, 6, 8...)'
+    : isMissileCommand && playerCount !== 2
+    ? 'Missile Command is a 1v1 duel — exactly 2 players required'
     : null;
 
   const chromaOptions = roomState.chromaOptions || { difficulty: 'easy', playerDifficulties: {}, fairPoints: true, extremeMode: false };
   const territoryOptions = roomState.territoryOptions || { extremeMode: false };
+  const missileCommandOptions = roomState.missileCommandOptions || { startingResources: 200, economyTickMs: 500, maxLevel: 5 };
   const myDifficulty = chromaOptions.playerDifficulties?.[myId] || 'easy';
 
   return (
@@ -533,6 +539,53 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
                 </span>
               )}
             </div>
+          </div>
+        )}
+
+        {/* ── Missile Command Options Panel ── */}
+        {selectedGameId === 'missile-command' && (
+          <div className="glass p-24 animate-fade-up" style={{ borderRadius: 'var(--radius-xl)', marginBottom: 24, border: '1px solid rgba(251,191,36,0.3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+              <span style={{ fontSize: '1.4rem' }}>🚀</span>
+              <div>
+                <h3 className="heading-md" style={{ fontSize: '1.1rem', margin: 0 }}>Missile Command Settings</h3>
+                <p className="text-xs text-muted">1v1 island war — economy snowballs, shields are cheap, missiles are expensive!</p>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', background: 'rgba(255,255,255,0.03)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)' }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                  💰 Starting Credits: {missileCommandOptions.startingResources}
+                </div>
+                <div className="text-xs text-muted" style={{ marginTop: 2 }}>
+                  Both players start with this many credits. Generators cost 50cr, shields 40cr, missiles 30–190cr/shot.
+                </div>
+              </div>
+              {isHost ? (
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    onClick={() => onUpdateMissileCommandOptions({ startingResources: Math.max(50, missileCommandOptions.startingResources - 25) })}
+                    className="btn btn-sm btn-secondary"
+                  >
+                    −
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onUpdateMissileCommandOptions({ startingResources: Math.min(500, missileCommandOptions.startingResources + 25) })}
+                    className="btn btn-sm btn-secondary"
+                  >
+                    +
+                  </button>
+                </div>
+              ) : (
+                <span className="badge badge-muted">(Host Setting)</span>
+              )}
+            </div>
+            <p className="text-xs text-muted" style={{ marginTop: 10, lineHeight: 1.5 }}>
+              🏝️ Top vs Bottom islands — you can only build on your own side. ⭐ Core has 2000 HP + slow regen. Destroy it to win!
+            </p>
           </div>
         )}
 

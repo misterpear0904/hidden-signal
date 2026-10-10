@@ -19,7 +19,10 @@ export type GamePhase =
   | 'liar-bid'
   | 'liar-reveal'
   | 'bluff-bet'
-  | 'bluff-reveal';
+  | 'bluff-reveal'
+  | 'missile-command-build'
+  | 'missile-command-play'
+  | 'missile-command-end';
 
 export interface ChromaOptions {
   difficulty: 'easy' | 'medium' | 'hard';
@@ -125,6 +128,116 @@ export interface TerritoryGameState {
   turnHistory: Array<{ turn: number; resolutions: TerritoryColumnResolution[] }>;
   winnerTeam: 'red' | 'blue' | null;
   turn: number;
+}
+
+// ─── Missile Command Types ────────────────────────────────
+
+export type MissileBuildingType = 'economy' | 'shield' | 'healer' | 'launcher' | 'core';
+export type MissileLauncherType = 'single' | 'scatter' | 'cluster';
+export type PlayerSide = 'top' | 'bottom';
+
+export interface MissileBuilding {
+  id: string;
+  type: MissileBuildingType;
+  side: PlayerSide;
+  gx: number;       // grid column 0..gridCols-1
+  gy: number;       // grid row 0..gridRows-1
+  level: number;    // 1-5
+  ownerId: string;  // player ID
+  hp?: number;
+  maxHp?: number;
+  
+  // Economy building
+  incomePerSec?: number;
+  
+  // Shield generator (square coverage: shieldTiles Chebyshev distance)
+  shieldHp?: number;
+  maxShieldHp?: number;
+  
+  // Healer (Manhattan coverage: healerTiles range, one shield at a time)
+  healPerSec?: number;
+  healTargetId?: string | null;
+  
+  // Launcher (bankable stockpile, max 3 — firing launches the whole volley)
+  launcherType?: MissileLauncherType;
+  missileCost?: number;
+  missileDamage?: number;
+  blast?: number; // blast tiles (Manhattan radius)
+  missileSpeed?: number;
+  stock?: number;
+  maxStock?: number;
+  cooldownMs?: number;
+  lastFiredAt?: number;
+  
+  // Core
+  coreHp?: number;
+  maxCoreHp?: number;
+  coreRegenPerSec?: number;
+}
+
+export interface MissileInFlight {
+  id: string;
+  ownerId: string;
+  launcherId: string;
+  launcherType: MissileLauncherType;
+  startX: number;
+  startY: number;
+  targetX: number;
+  targetY: number;
+  targetGx: number;
+  targetGy: number;
+  currentX: number;
+  currentY: number;
+  damage: number;
+  blast: number;
+  speed: number; // normalized units per second
+  createdAt: number;
+  deployAt?: number; // volley stagger — missile holds at launcher until this time
+  // For cluster missiles
+  subMissiles?: Array<{ gx: number; gy: number; x: number; y: number; damage: number }>;
+}
+
+export interface MissileCommandState {
+  sides: { top: string; bottom: string };
+  gridCols: number;
+  gridRows: number;
+  shieldTiles: number;
+  healerTiles: number;
+  coreIncomePerSec?: number;
+  buildings: Record<string, MissileBuilding>;
+  missiles: MissileInFlight[];
+  resources: Record<string, number>;
+  gameStartTime: number;
+  lastEconomyTick: number;
+  winnerId: string | null;
+  winReason: 'core_destroyed' | 'timeout' | null;
+}
+
+export interface MissileBuildAction {
+  buildingType: MissileBuildingType;
+  launcherType?: MissileLauncherType;
+  gx: number;
+  gy: number;
+}
+
+export interface MissileUpgradeAction {
+  buildingId: string;
+}
+
+export interface MissileLaunchAction {
+  launcherId: string;
+  targetGx: number;
+  targetGy: number;
+}
+
+export interface MissileLoadAction {
+  launcherId: string;
+}
+
+export interface MissileCommandOptions {
+  startingResources: number;
+  economyTickMs: number;
+  maxLevel: number;
 }
 
 export interface Player {
@@ -243,6 +356,8 @@ export interface RoomState {
   blendState: BlendGameState | null;
   liarState: LiarGameState | null;
   bluffState: BluffGameState | null;
+  missileCommandState: MissileCommandState | null;
+  missileCommandOptions: MissileCommandOptions;
   phase: GamePhase;
   round: number;
   players: Player[];

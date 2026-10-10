@@ -1,7 +1,7 @@
 import { useEffect, useCallback } from 'react';
 import './index.css';
 import { useSocket, type GuessData } from './hooks/useSocket';
-import type { ChromaOptions, TerritoryOptions, LiarOptions, BluffAction } from './types/game';
+import type { ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileLaunchAction, MissileLoadAction, MissileCommandOptions } from './types/game';
 import { TOTAL_ROUNDS } from './constants';
 import ErrorBoundary from './components/ErrorBoundary';
 import LandingPage from './components/LandingPage';
@@ -24,6 +24,7 @@ import LiarBidPhase from './components/LiarBidPhase';
 import LiarRevealPhase from './components/LiarRevealPhase';
 import BluffBetPhase from './components/BluffBetPhase';
 import BluffRevealPhase from './components/BluffRevealPhase';
+import MissileCommandGame from './components/missileCommand/MissileCommandGame';
 
 function LoadingScreen({ text }: { text: string }) {
   return (
@@ -81,6 +82,11 @@ export default function App() {
     nextBluffRound,
     nextRound,
     playAgain,
+    buildMissileBuilding,
+    upgradeMissileBuilding,
+    loadMissile,
+    launchMissile,
+    updateMissileCommandOptions,
   } = useSocket();
 
   // Auto-dismiss error after 4 seconds
@@ -124,6 +130,11 @@ export default function App() {
   const handleNextBluffRound = useCallback(() => { if (roomCode) nextBluffRound(roomCode); }, [roomCode, nextBluffRound]);
   const handleNextRound = useCallback(() => { if (roomCode) nextRound(roomCode); }, [roomCode, nextRound]);
   const handlePlayAgain = useCallback(() => { if (roomCode) playAgain(roomCode); }, [roomCode, playAgain]);
+  const handleBuildMissile = useCallback((action: MissileBuildAction) => { if (roomCode) buildMissileBuilding(roomCode, action); }, [roomCode, buildMissileBuilding]);
+  const handleUpgradeMissile = useCallback((buildingId: string) => { if (roomCode) upgradeMissileBuilding(roomCode, { buildingId }); }, [roomCode, upgradeMissileBuilding]);
+  const handleLaunchMissile = useCallback((action: MissileLaunchAction) => { if (roomCode) launchMissile(roomCode, action); }, [roomCode, launchMissile]);
+  const handleLoadMissile = useCallback((action: MissileLoadAction) => { if (roomCode) loadMissile(roomCode, action); }, [roomCode, loadMissile]);
+  const handleUpdateMissileCommandOptions = useCallback((options: Partial<MissileCommandOptions>) => { if (roomCode) updateMissileCommandOptions(roomCode, options); }, [roomCode, updateMissileCommandOptions]);
 
   // ─── Phase Router ──────────────────────────────────────────────────────────
   const renderPhase = () => {
@@ -151,6 +162,7 @@ export default function App() {
             onUpdateChromaOptions={handleUpdateChromaOptions}
             onUpdateTerritoryOptions={handleUpdateTerritoryOptions}
             onUpdateLiarOptions={handleUpdateLiarOptions}
+            onUpdateMissileCommandOptions={handleUpdateMissileCommandOptions}
             onSetPlayerDifficulty={handleSetPlayerDifficulty}
             onKickPlayer={handleKickPlayer}
             onStartGame={handleStartGame}
@@ -261,6 +273,22 @@ export default function App() {
           />
         );
 
+      case 'missile-command-build':
+      case 'missile-command-play':
+      case 'missile-command-end':
+        return (
+          <MissileCommandGame
+            roomState={roomState}
+            myId={myId}
+            isHost={isHost}
+            onBuild={handleBuildMissile}
+            onUpgrade={handleUpgradeMissile}
+            onLoad={handleLoadMissile}
+            onLaunch={handleLaunchMissile}
+            onPlayAgain={handlePlayAgain}
+          />
+        );
+
       case 'role-reveal':
         if (!myRole) return <LoadingScreen text="Loading your role..." />;
         return <RoleReveal myRole={myRole} roomState={roomState} myId={myId} />;
@@ -325,7 +353,7 @@ export default function App() {
       <ErrorBoundary>
         {renderPhase()}
       </ErrorBoundary>
-      {inRoom && roomState && roomState.phase !== 'lobby' && roomState.phase !== 'end' && (
+      {inRoom && roomState && roomState.phase !== 'lobby' && roomState.phase !== 'end' && !roomState.phase.startsWith('missile-command') && (
         <EndGameVote
           roomState={roomState}
           myId={myId}
