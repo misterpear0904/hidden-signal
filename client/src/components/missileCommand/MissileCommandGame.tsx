@@ -147,7 +147,6 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   // Shield grid effects toggle (visual hex overlay on shield coverage)
   const [showShieldGrid, setShowShieldGrid] = useState(true);
   // Long-press for mobile build menu (tap selects, long-press opens build)
-  const [longPressCell, setLongPressCell] = useState<Cell | null>(null);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const LONG_PRESS_MS = 500; // ms to hold for build menu
   const fullscreenSupported = typeof document !== 'undefined' &&
@@ -170,6 +169,10 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   // Mirrors flashes.length for the frame loop, so that loop can subscribe once
   // (a flashes.length dep would re-create the rAF chain on every flash).
   const flashesLenRef = useRef(0);
+  // Set when a long-press has already handled a gesture, so the pointer-up
+  // that follows must NOT also run tap logic (it would immediately close the
+  // build menu the long-press just opened — the "flash then vanish" bug).
+  const longPressFiredRef = useRef(false);
   const TAP_TOL = 60; // px total travel allowed for a touch tap
   const TAP_MAX_MS = 1200;
   const prevMissilesRef = useRef<Map<string, MissileInFlight>>(new Map());
@@ -391,7 +394,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     setTargetType(null);
   }
 
-  function handleTap(wx: number, wy: number) {
+  function handleTap(wx: number, wy: number, isTouch: boolean) {
     if (!mySide) return;
     const cell = worldToCell(wx, wy, cols, rows);
     if (!cell) { setBuildCell(null); setSelectedId(null); return; }
@@ -423,13 +426,12 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
       return;
     }
 
-    // 3. Empty own square → build popup. Enemy empties do nothing.
+    // 3. Empty own square → build popup. On touch this is long-press only
+    // (a plain tap just clears selection); mouse/pen keep tap-to-build.
     if (cell.side === mySide) {
       setSelectedId(null);
-      // Tap on empty own cell: just clear selection, don't open build menu.
-      // Build menu opens via long-press (mobile) or can be kept as-is for desktop.
-      // For consistency across platforms, we just clear selection here.
-      setBuildCell(null);
+      if (isTouch) setBuildCell(null);
+      else setBuildCell(cell);
     } else {
       setBuildCell(null);
       setSelectedId(null);
@@ -442,6 +444,8 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   function onPointerDown(e: React.PointerEvent) {
     e.preventDefault();
     const g = gestureRef.current;
+    // A new gesture starts clean — any previous long-press has been consumed.
+    longPressFiredRef.current = false;
     g.pointers.set(e.pointerId, {
       x: e.clientX, y: e.clientY,
       downX: e.clientX, downY: e.clientY,
@@ -463,13 +467,15 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
       if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = setTimeout(() => {
         longPressTimerRef.current = null;
+        // Consume the gesture so the pointer-up that follows can't also
+        // fire a tap and close the menu we're about to open.
+        longPressFiredRef.current = true;
         const w = toWorld(e.clientX, e.clientY);
         const cell = worldToCell(w.x, w.y, cols, rows);
         if (cell && cell.side === mySide) {
           // Only trigger long-press on empty own cells (not on buildings)
           const b = byCell.get(`${cell.side}:${cell.gx}:${cell.gy}`);
           if (!b) {
-            setLongPressCell(cell);
             setBuildCell(cell); // open build menu
           }
         }
@@ -519,13 +525,16 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     g.pointers.delete(e.pointerId);
     // Gesture over — drop the cached rect so the next one re-measures.
     if (g.pointers.size === 0) g.rect = null;
+    // A long-press already acted on this gesture (opened the build menu).
+    // Its pointer-up must not also count as a tap, or the menu closes itself.
+    if (longPressFiredRef.current) { longPressFiredRef.current = false; return; }
     if (!me || me.moved || Date.now() - me.downT >= TAP_MAX_MS) return;
     // Tap only if every REMAINING finger is also still (resting thumbs OK,
     // real pinches involve two moving fingers).
     const othersStill = [...g.pointers.values()].every(p => !p.moved);
     if (!othersStill && g.pointers.size > 0) return;
     const w = toWorld(e.clientX, e.clientY);
-    handleTap(w.x, w.y);
+    handleTap(w.x, w.y, e.pointerType === 'touch');
   }
 
   function startTargeting(launcherId: string) {

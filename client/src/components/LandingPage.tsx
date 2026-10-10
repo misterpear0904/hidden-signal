@@ -219,7 +219,7 @@ export default function LandingPage({
           style={{ opacity: 0.5 }}
           title={`build ${BUILD_ID}`}
         >
-          🕒 updated {new Date(BUILD_TIME).toLocaleString()} • build {BUILD_ID.slice(0, 8)}
+          🕒 updated {new Date(BUILD_TIME).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} • build {BUILD_ID.slice(0, 8)}
         </p>
       </div>
     </div>

@@ -165,9 +165,20 @@ export function createMissileCommandState(playerIds, options = {}) {
   buildings.core_top = mkCore('core_top', 'top', p1);
   buildings.core_bottom = mkCore('core_bottom', 'bottom', p2);
 
-  // Fog of war: each player has a set of explored tiles with timestamps
-  // Key: "gx,gy", Value: timestamp when explored (or 0 for permanent)
+  // Fog of war: each player has a set of explored tiles with timestamps.
+  // Key: "gx,gy", Value: expiry timestamp (0 = permanent). Plain objects, not
+  // Maps — Maps serialize to {} over socket.io and the client would see no
+  // fog data at all.
   const fogOfWar = options.fogOfWar ?? false;
+  const exploredTiles = { [p1]: {}, [p2]: {} };
+  // Seed both cores as permanently explored for BOTH players, so the very
+  // first state a client receives already knows where the cores are.
+  if (fogOfWar) {
+    for (const core of Object.values(buildings)) {
+      exploredTiles[p1][`${core.gx},${core.gy}`] = 0;
+      exploredTiles[p2][`${core.gx},${core.gy}`] = 0;
+    }
+  }
 
   return {
     sides: { top: p1, bottom: p2 },
@@ -189,11 +200,9 @@ export function createMissileCommandState(playerIds, options = {}) {
     winReason: null,
     fogOfWar,
     // exploredTiles[playerId] = Map<"gx,gy", timestamp> — 0 = permanent (core), >0 = temporary
-    exploredTiles: { [p1]: new Map(), [p2]: new Map() },
+    exploredTiles: { [p1]: exploredTiles[p1], [p2]: exploredTiles[p2] },
   };
-}
-
-function buildingCountFor(state, playerId) {
+}function buildingCountFor(state, playerId) {
   return Object.values(state.buildings).filter(b => b.ownerId === playerId && b.type !== 'core').length;
 }
 
@@ -569,21 +578,16 @@ function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage) {
 const FOG_REVEAL_RADIUS = 3; // Manhattan distance around impact
 const FOG_TEMPORARY_DURATION = 5000; // 5 seconds in ms
 
-// Initialize fog of war: cores are permanently visible to both players
+// Idempotently re-assert core visibility. Mostly redundant now that state
+// creation seeds it, but it also heals a state that lost its core entry.
 function initFogOfWar(state) {
   if (!state.fogOfWar) return;
   const [p1, p2] = [state.sides.top, state.sides.bottom];
-  const coreTop = state.buildings.core_top;
-  const coreBottom = state.buildings.core_bottom;
-  if (coreTop) {
-    const key = `${coreTop.gx},${coreTop.gy}`;
-    state.exploredTiles[p1].set(key, 0);
-    state.exploredTiles[p2].set(key, 0);
-  }
-  if (coreBottom) {
-    const key = `${coreBottom.gx},${coreBottom.gy}`;
-    state.exploredTiles[p1].set(key, 0);
-    state.exploredTiles[p2].set(key, 0);
+  for (const core of [state.buildings.core_top, state.buildings.core_bottom]) {
+    if (!core) continue;
+    const key = `${core.gx},${core.gy}`;
+    if (state.exploredTiles[p1][key] === undefined) state.exploredTiles[p1][key] = 0;
+    if (state.exploredTiles[p2][key] === undefined) state.exploredTiles[p2][key] = 0;
   }
 }
 
@@ -600,10 +604,10 @@ function exploreAround(state, ownerId, gx, gy, radius = FOG_REVEAL_RADIUS, durat
       const ty = gy + dy;
       if (tx < 0 || tx >= MISSILE_CONFIG.gridCols || ty < 0 || ty >= MISSILE_CONFIG.gridRows) continue;
       const key = `${tx},${ty}`;
-      const existing = state.exploredTiles[ownerId].get(key);
-      if (existing === 0) continue;
-      if (!existing || existing < expiresAt) {
-        state.exploredTiles[ownerId].set(key, expiresAt);
+      const existing = state.exploredTiles[ownerId][key];
+      if (existing === 0) continue; // permanent core reveal — never overwrite
+      if (existing === undefined || existing < expiresAt) {
+        state.exploredTiles[ownerId][key] = expiresAt;
       }
     }
   }
@@ -612,11 +616,9 @@ function exploreAround(state, ownerId, gx, gy, radius = FOG_REVEAL_RADIUS, durat
 // Expire temporary fog revelations
 function expireFog(state, now) {
   if (!state.fogOfWar) return;
-  for (const [pid, tiles] of Object.entries(state.exploredTiles)) {
-    for (const [key, expiresAt] of tiles.entries()) {
-      if (expiresAt > 0 && expiresAt <= now) {
-        tiles.delete(key);
-      }
+  for (const tiles of Object.values(state.exploredTiles)) {
+    for (const [key, expiresAt] of Object.entries(tiles)) {
+      if (expiresAt > 0 && expiresAt <= now) delete tiles[key];
     }
   }
 }

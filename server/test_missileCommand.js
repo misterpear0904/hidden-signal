@@ -21,6 +21,10 @@ import {
 import {
   rooms,
   startGame,
+  createRoom,
+  joinRoom,
+  selectGame,
+  updateMissileCommandOptions,
   buildMissileBuilding as gmBuild,
   upgradeMissileBuilding as gmUpgrade,
   loadMissile as gmLoad,
@@ -342,6 +346,122 @@ test('blasts on empty covered tiles still drain the shield', () => {
   assert.equal(s.missiles.length, 0, 'missile landed');
   assert.ok(sh.shieldHp < 260, `shield intercepted the empty blast: pool=${sh.shieldHp}`);
   assert.equal(sh.shieldHp, 375 - 120, 'full 120 absorbed');
+});
+
+// ─── Lobby option → game state wiring ────────────────────────────────────────
+// Regression tests: the Fog of War toggle rendered a clickable button but the
+// server's update handler never persisted it and never passed it into game
+// state, so the button was effectively dead from the player's point of view.
+
+// Clears any rooms left by other suites so this suite runs in isolation.
+function clearRooms() {
+  for (const code of [...rooms.keys()]) rooms.delete(code);
+}
+
+// Builds a lobby with two players and Missile Command selected.
+function lobbyWithMissileCommand() {
+  clearRooms();
+  const room = createRoom('host-1', 'HOST');
+  const joined = joinRoom(room.code, 'guest-1', 'GUEST');
+  assert.ok(joined, 'second player joins');
+  const sel = selectGame(room.code, 'missile-command');
+  assert.ok(sel, 'missile-command selected');
+  return sel;
+}
+
+test('lobby: fogOfWar option persists when host toggles it', () => {
+  const room = lobbyWithMissileCommand();
+  assert.equal(room.missileCommandOptions.fogOfWar, false, 'off by default');
+
+  const on = updateMissileCommandOptions(room.code, { fogOfWar: true });
+  assert.equal(on.missileCommandOptions.fogOfWar, true, 'toggled on is stored');
+
+  const off = updateMissileCommandOptions(room.code, { fogOfWar: false });
+  assert.equal(off.missileCommandOptions.fogOfWar, false, 'toggled off is stored');
+});
+
+test('lobby: fogOfWar setting survives other option changes', () => {
+  const room = lobbyWithMissileCommand();
+  updateMissileCommandOptions(room.code, { fogOfWar: true });
+  // Changing credits must not clobber an unrelated option.
+  const after = updateMissileCommandOptions(room.code, { startingResources: 300 });
+  assert.equal(after.missileCommandOptions.fogOfWar, true, 'fogOfWar survived');
+  assert.equal(after.missileCommandOptions.startingResources, 300, 'credits updated');
+});
+
+test('lobby: non-boolean fogOfWar is rejected', () => {
+  const room = lobbyWithMissileCommand();
+  updateMissileCommandOptions(room.code, { fogOfWar: true });
+  const bad = updateMissileCommandOptions(room.code, { fogOfWar: 'yes' });
+  assert.equal(bad.missileCommandOptions.fogOfWar, true, 'garbage ignored, prior value kept');
+});
+
+test('lobby: fogOfWar reaches missile game state on start', () => {
+  const room = lobbyWithMissileCommand();
+  updateMissileCommandOptions(room.code, { fogOfWar: true });
+  const started = startGame(room.code);
+  assert.ok(started, 'game started');
+  assert.equal(started.missileCommandState.fogOfWar, true, 'fog enabled in game state');
+  // Cores are permanently explored for BOTH players at init.
+  const { sides } = started.missileCommandState;
+  const tiles = started.missileCommandState.exploredTiles;
+  assert.ok(tiles[sides.top]['6,3'] === 0, 'top core permanently visible');
+  assert.ok(tiles[sides.bottom]['6,3'] === 0, 'bottom core permanently visible');
+});
+
+test('lobby: game starts with fog OFF when never toggled', () => {
+  const room = lobbyWithMissileCommand();
+  const started = startGame(room.code);
+  assert.equal(started.missileCommandState.fogOfWar, false, 'defaults off');
+  // exploredTiles must still exist so the client never has to null-check.
+  assert.ok(started.missileCommandState.exploredTiles, 'map present even when off');
+});
+
+test('fog: missile impact reveals area to attacker only, and it expires', () => {
+  const s = createMissileCommandState([P1, P2], { startingResources: 5000, fogOfWar: true });
+  // Init runs on first tick — cores permanently explored.
+  tickMissileCommand(s, Date.now());
+  missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'single', gx: 0, gy: 0 });
+  advance(3100, s);
+  const L = Object.values(s.buildings).find(b => b.type === 'launcher');
+  // Smash the enemy economy so we have something to reveal.
+  missileBuildBuilding(s, P2, { buildingType: 'economy', gx: 6, gy: 5 });
+  advance(3100, s);
+  L.loadingUntil = 0; missileLoadMissile(s, P1, L.id); advance(5100, s);
+  L.loadingUntil = 0; missileLoadMissile(s, P1, L.id); advance(5100, s);
+
+  // Aim well away from either core so the core stays at (6,3) and the win
+  // check never fires.
+  missileLaunch(s, P1, { launcherId: L.id, targetGx: 1, targetGy: 6 });
+  for (let i = 0; i < 80 && s.missiles.length; i++) advance(250, s);
+
+  const attackerTiles = s.exploredTiles[P1];
+  const defenderTiles = s.exploredTiles[P2];
+  const attackerKeys = Object.keys(attackerTiles);
+  assert.ok(attackerKeys.length > 1, 'attacker gained exploration');
+  assert.ok(attackerKeys.every(k => k === '6,3' || attackerTiles[k] > 0), 'core permanent, rest temporary');
+  // The defender never gains vision of their own island via this path.
+  assert.deepEqual(Object.keys(defenderTiles), ['6,3'], 'defender explored nothing new');
+  // Reveals are temporary, not permanent (0 means permanent).
+  assert.ok(Object.values(attackerTiles).some(v => v > 0), 'reveals carry an expiry');
+});
+
+test('fog: expired reveals are pruned by the tick', () => {
+  const s = createMissileCommandState([P1, P2], { startingResources: 5000, fogOfWar: true });
+  tickMissileCommand(s, Date.now());
+  // Plant an already-expired temporary reveal next to the core.
+  s.exploredTiles[P1]['6,4'] = Date.now() - 1;
+  const now = Date.now();
+  tickMissileCommand(s, now + 10);
+  assert.equal(s.exploredTiles[P1]['6,4'], undefined, 'stale reveal removed');
+  assert.equal(s.exploredTiles[P1]['6,3'], 0, 'permanent core reveal kept');
+});
+
+test('fog: disabled mode leaves exploredTiles untouched', () => {
+  const s = createMissileCommandState([P1, P2], { startingResources: 5000, fogOfWar: false });
+  tickMissileCommand(s, Date.now());
+  assert.equal(s.fogOfWar, false, 'flag stays off');
+  assert.deepEqual(Object.keys(s.exploredTiles[P1]), [], 'no exploration without fog');
 });
 
 test('overlapping shields cover each other', () => {

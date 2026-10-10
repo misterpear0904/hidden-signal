@@ -193,6 +193,11 @@ export function updateMissileCommandOptions(code, options) {
   if (typeof options.startingResources === 'number' && options.startingResources >= 50 && options.startingResources <= 500) {
     next.startingResources = Math.round(options.startingResources);
   }
+  // Fog of War is a plain boolean toggle; without this the Lobby button
+  // accepted clicks but the server dropped them, so it looked dead.
+  if (typeof options.fogOfWar === 'boolean') {
+    next.fogOfWar = options.fogOfWar;
+  }
   room.missileCommandOptions = next;
   room.lastActivityMs = Date.now();
   return room;
@@ -343,6 +348,7 @@ export function startGame(code) {
     const ids = room.players.map(p => p.id);
     room.missileCommandState = createMissileCommandState(ids, {
       startingResources: room.missileCommandOptions?.startingResources ?? MISSILE_CONFIG.startingResources,
+      fogOfWar: room.missileCommandOptions?.fogOfWar ?? false,
     });
     room.phase = 'missile-command-play';
     room.lastActivityMs = Date.now();

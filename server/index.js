@@ -346,7 +346,7 @@ function roomPublicState(room, forPlayerId = null) {
     chromaOptions: room.chromaOptions || { difficulty: 'easy', fairPoints: true, extremeMode: false },
     territoryOptions: room.territoryOptions || { extremeMode: false },
     liarOptions: room.liarOptions || { extremeMode: false },
-    missileCommandOptions: room.missileCommandOptions || { startingResources: 200, economyTickMs: 500, maxLevel: 5 },
+    missileCommandOptions: room.missileCommandOptions || { startingResources: 200, economyTickMs: 500, maxLevel: 5, fogOfWar: false },
     missileCommandState: room.missileCommandState || null,
     chromaState: room.chromaState || null,
     territoryState: publicTerritoryState,
