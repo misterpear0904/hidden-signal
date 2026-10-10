@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useState, type FormEvent } from 'react';
 import { avatarColor, avatarInitial } from '../constants';
 import { BUILD_ID, BUILD_TIME } from '../buildInfo';
 
@@ -24,13 +24,6 @@ export default function LandingPage({
   const [tab, setTab] = useState<'create' | 'join'>('create');
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
-  const [now, setNow] = useState(() => Date.now());
-
-  // Tick so the "updated … ago" stamp stays fresh while the tab sits open.
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 30000);
-    return () => clearInterval(t);
-  }, []);
 
   const previewColor = avatarColor(name.length);
   const initial = avatarInitial(name.trim());
@@ -224,23 +217,11 @@ export default function LandingPage({
         <p
           className="text-center text-xs text-muted mt-4"
           style={{ opacity: 0.5 }}
-          title={`${new Date(BUILD_TIME).toLocaleString()} • build ${BUILD_ID}`}
+          title={`build ${BUILD_ID}`}
         >
-          🕒 updated {timeAgo(new Date(BUILD_TIME).getTime(), now)} • build {BUILD_ID.slice(0, 8)}
+          🕒 updated {new Date(BUILD_TIME).toLocaleString()} • build {BUILD_ID.slice(0, 8)}
         </p>
       </div>
     </div>
   );
-}
-
-function timeAgo(ts: number, now: number): string {
-  if (!Number.isFinite(ts)) return 'unknown';
-  const s = Math.max(0, Math.floor((now - ts) / 1000));
-  if (s < 10) return 'just now';
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
 }

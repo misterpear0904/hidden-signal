@@ -147,8 +147,8 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     pinchDist: 0,
     pinchZoom: 1,
   });
-  const TAP_TOL = 32; // px total travel allowed for a touch tap
-  const TAP_MAX_MS = 600;
+  const TAP_TOL = 40; // px total travel allowed for a touch tap
+  const TAP_MAX_MS = 800;
   const prevMissilesRef = useRef<Map<string, MissileInFlight>>(new Map());
   const snapRef = useRef<{ missiles: MissileInFlight[]; at: number }>({ missiles: [], at: Date.now() });
 
