@@ -1,7 +1,7 @@
 import { useEffect, useCallback } from 'react';
 import './index.css';
 import { useSocket, type GuessData } from './hooks/useSocket';
-import type { ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileLaunchAction, MissileTypeLaunchAction, MissileLoadAction, MissileKeepFireAction, MissileCommandOptions } from './types/game';
+import type { ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileLaunchAction, MissileTypeLaunchAction, MissileLoadAction, MissileKeepFireAction, MissileDesperationAction, MissileCommandOptions } from './types/game';
 import { TOTAL_ROUNDS } from './constants';
 import ErrorBoundary from './components/ErrorBoundary';
 import LandingPage from './components/LandingPage';
@@ -87,11 +87,14 @@ export default function App() {
     playAgain,
     buildMissileBuilding,
     upgradeMissileBuilding,
+    sellMissileBuilding,
+    cancelMissileSell,
     loadMissile,
     toggleAutobuild,
     launchMissile,
     launchMissileType,
     setKeepFire,
+    fireDesperation,
     updateMissileCommandOptions,
   } = useSocket();
 
@@ -138,11 +141,14 @@ export default function App() {
   const handlePlayAgain = useCallback(() => { if (roomCode) playAgain(roomCode); }, [roomCode, playAgain]);
   const handleBuildMissile = useCallback((action: MissileBuildAction) => { if (roomCode) buildMissileBuilding(roomCode, action); }, [roomCode, buildMissileBuilding]);
   const handleUpgradeMissile = useCallback((buildingId: string) => { if (roomCode) upgradeMissileBuilding(roomCode, { buildingId }); }, [roomCode, upgradeMissileBuilding]);
+  const handleSellMissile = useCallback((buildingId: string) => { if (roomCode) sellMissileBuilding(roomCode, { buildingId }); }, [roomCode, sellMissileBuilding]);
+  const handleCancelMissileSell = useCallback((buildingId: string) => { if (roomCode) cancelMissileSell(roomCode, { buildingId }); }, [roomCode, cancelMissileSell]);
   const handleLaunchMissile = useCallback((action: MissileLaunchAction) => { if (roomCode) launchMissile(roomCode, action); }, [roomCode, launchMissile]);
   const handleLaunchMissileType = useCallback((action: MissileTypeLaunchAction) => { if (roomCode) launchMissileType(roomCode, action); }, [roomCode, launchMissileType]);
   const handleLoadMissile = useCallback((action: MissileLoadAction) => { if (roomCode) loadMissile(roomCode, action); }, [roomCode, loadMissile]);
   const handleToggleAutobuild = useCallback((launcherId: string) => { if (roomCode) toggleAutobuild(roomCode, { launcherId }); }, [roomCode, toggleAutobuild]);
   const handleSetKeepFire = useCallback((action: MissileKeepFireAction) => { if (roomCode) setKeepFire(roomCode, action); }, [roomCode, setKeepFire]);
+  const handleFireDesperation = useCallback((action: MissileDesperationAction) => { if (roomCode) fireDesperation(roomCode, action); }, [roomCode, fireDesperation]);
   const handleUpdateMissileCommandOptions = useCallback((options: Partial<MissileCommandOptions>) => { if (roomCode) updateMissileCommandOptions(roomCode, options); }, [roomCode, updateMissileCommandOptions]);
 
   // ─── Phase Router ──────────────────────────────────────────────────────────
@@ -303,11 +309,14 @@ export default function App() {
             isHost={isHost}
             onBuild={handleBuildMissile}
             onUpgrade={handleUpgradeMissile}
+            onSell={handleSellMissile}
+            onCancelSell={handleCancelMissileSell}
             onLoad={handleLoadMissile}
             onToggleAutobuild={handleToggleAutobuild}
             onLaunch={handleLaunchMissile}
             onLaunchType={handleLaunchMissileType}
             onSetKeepFire={handleSetKeepFire}
+            onFireDesperation={handleFireDesperation}
             onPlayAgain={handlePlayAgain}
           />
         );

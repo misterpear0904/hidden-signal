@@ -197,13 +197,15 @@ export interface MissileInFlight {
   createdAt: number;
   deployAt?: number; // volley stagger — missile holds at launcher until this time
   lane?: number; // visual spread lane (-2..2), display only
+  desperation?: boolean; // one-time comeback warhead — rendered distinctly
+  pierce?: number; // fraction of damage bypassing shield pools
   // For cluster missiles
   subMissiles?: Array<{ gx: number; gy: number; x: number; y: number; damage: number }>;
 }
 
 export interface ConstructionSite {
   id: string;
-  kind: 'build' | 'upgrade';
+  kind: 'build' | 'upgrade' | 'sell';
   type: MissileBuildingType;
   launcherType?: MissileLauncherType;
   side: PlayerSide;
@@ -213,6 +215,8 @@ export interface ConstructionSite {
   targetLevel: number;
   completeAt: number;
   upgradeOf?: string; // building id, when kind === 'upgrade'
+  sellOf?: string; // building id, when kind === 'sell'
+  refund?: number; // credits paid out when kind === 'sell' completes
 }
 
 export interface MissileCommandState {
@@ -226,12 +230,14 @@ export interface MissileCommandState {
   pending: Record<string, ConstructionSite>;
   missiles: MissileInFlight[];
   keepFire?: Record<string, KeepFireLock | null>;
+  desperation?: Record<string, { unlocked: boolean; used: boolean }>;
   resources: Record<string, number>;
   gameStartTime: number;
   lastEconomyTick: number;
   winnerId: string | null;
   winReason: 'core_destroyed' | 'timeout' | null;
   fogOfWar: boolean;
+  fogHistory: boolean;
   exploredTiles?: Record<string, Record<string, number>>; // playerId -> tileKey -> expiresAt (0 = permanent)
 }
 
@@ -278,11 +284,17 @@ export interface MissileKeepFireAction {
   launcherType?: MissileLauncherType;
 }
 
+export interface MissileDesperationAction {
+  targetGx: number;
+  targetGy: number;
+}
+
 export interface MissileCommandOptions {
   startingResources: number;
   economyTickMs: number;
   maxLevel: number;
   fogOfWar: boolean;
+  fogHistory: boolean;
 }
 
 export interface Player {

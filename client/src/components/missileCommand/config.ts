@@ -85,6 +85,20 @@ export function upgradeCostFor(b: { type: MissileBuildingType; level: number; la
   return null;
 }
 
+// Seconds a sale takes, and the refund: 70% of everything ever paid for the
+// building (build cost + every upgrade), rounded down. Mirrors the server's
+// totalInvestedFor/sellRefundForBuilding exactly.
+export const SELL_SECONDS = 20;
+export const SELL_REFUND_RATE = 0.7;
+export function sellRefundFor(b: { type: MissileBuildingType; level: number; launcherType?: MissileLauncherType }): number {
+  const base = b.type === 'launcher'
+    ? (BUILD_OPTIONS.find(o => o.launcherType === b.launcherType)?.cost ?? 150)
+    : (BUILD_OPTIONS.find(o => o.buildingType === b.type)?.cost ?? 50);
+  let total = base;
+  for (let l = 1; l < b.level; l++) total += upgradeCostFor({ type: b.type, level: l, launcherType: b.launcherType }) ?? 0;
+  return Math.floor(total * SELL_REFUND_RATE);
+}
+
 export const BUILDING_META: Record<string, { emoji: string; name: string; color: string }> = {
   economy: { emoji: '💰', name: 'Generator', color: '#fbbf24' },
   shield: { emoji: '🛡️', name: 'Shield Gen', color: '#38bdf8' },

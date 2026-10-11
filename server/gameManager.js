@@ -6,11 +6,14 @@ import {
   createMissileCommandState,
   missileBuildBuilding,
   missileUpgradeBuilding,
+  missileSellBuilding,
+  missileCancelSell,
   missileLoadMissile,
   missileToggleAutobuild,
   missileLaunch,
   missileLaunchType,
   missileSetKeepFire,
+  missileFireDesperation,
   tickMissileCommand,
   missileSideForPlayer,
   missileIncomePerSec,
@@ -72,7 +75,7 @@ export function createRoom(hostId, hostName) {
     chromaOptions: { difficulty: 'easy', playerDifficulties: {}, fairPoints: true, extremeMode: false },
     territoryOptions: { extremeMode: false },
     liarOptions: { extremeMode: false },
-    missileCommandOptions: { startingResources: MISSILE_CONFIG.startingResources, economyTickMs: MISSILE_CONFIG.economyTickMs, maxLevel: MISSILE_CONFIG.maxLevel, fogOfWar: false },
+    missileCommandOptions: { startingResources: MISSILE_CONFIG.startingResources, economyTickMs: MISSILE_CONFIG.economyTickMs, maxLevel: MISSILE_CONFIG.maxLevel, fogOfWar: true, fogHistory: false },
     chromaState: null,
     territoryState: null,
     blendState: null,
@@ -106,6 +109,7 @@ export function joinRoom(code, playerId, playerName) {
   if (room.players.length >= 12) return { error: 'Room is full' };
 
   room.players.push({ id: playerId, name: playerName, score: 0, isHost: false, connected: true });
+  delete room.deleteAt;
   return { room };
 }
 
@@ -189,7 +193,7 @@ export function updateMissileCommandOptions(code, options) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'lobby') return null;
   if (!options || typeof options !== 'object') return null;
-  const next = { ...(room.missileCommandOptions || { startingResources: MISSILE_CONFIG.startingResources, economyTickMs: MISSILE_CONFIG.economyTickMs, maxLevel: MISSILE_CONFIG.maxLevel, fogOfWar: false }) };
+  const next = { ...(room.missileCommandOptions || { startingResources: MISSILE_CONFIG.startingResources, economyTickMs: MISSILE_CONFIG.economyTickMs, maxLevel: MISSILE_CONFIG.maxLevel, fogOfWar: true, fogHistory: false }) };
   if (typeof options.startingResources === 'number' && options.startingResources >= 50 && options.startingResources <= 500) {
     next.startingResources = Math.round(options.startingResources);
   }
@@ -197,6 +201,10 @@ export function updateMissileCommandOptions(code, options) {
   // accepted clicks but the server dropped them, so it looked dead.
   if (typeof options.fogOfWar === 'boolean') {
     next.fogOfWar = options.fogOfWar;
+  }
+  // Building history in fog: remembered last-known buildings. Off by default.
+  if (typeof options.fogHistory === 'boolean') {
+    next.fogHistory = options.fogHistory;
   }
   room.missileCommandOptions = next;
   room.lastActivityMs = Date.now();
@@ -348,7 +356,8 @@ export function startGame(code) {
     const ids = room.players.map(p => p.id);
     room.missileCommandState = createMissileCommandState(ids, {
       startingResources: room.missileCommandOptions?.startingResources ?? MISSILE_CONFIG.startingResources,
-      fogOfWar: room.missileCommandOptions?.fogOfWar ?? false,
+      fogOfWar: room.missileCommandOptions?.fogOfWar ?? true,
+      fogHistory: room.missileCommandOptions?.fogHistory ?? false,
     });
     room.phase = 'missile-command-play';
     room.lastActivityMs = Date.now();
@@ -1565,6 +1574,12 @@ export function playerDisconnected(playerId) {
         const next = room.players.find(p => p.connected);
         if (next) next.isHost = true;
       }
+      // Everyone gone: schedule deletion after a grace window instead of
+      // deleting immediately, so brief backgrounding doesn't nuke the game.
+      // The periodic sweep enforces deleteAt; any rejoin clears it.
+      if (room.players.every(p => !p.connected)) {
+        room.deleteAt = Date.now() + REJOIN_GRACE_MS;
+      }
       return room;
     }
   }
@@ -1573,6 +1588,56 @@ export function playerDisconnected(playerId) {
 
 export function deleteRoom(code) {
   rooms.delete(code);
+}
+
+// How long a fully-abandoned room survives before the sweep deletes it.
+// Covers phone backgrounding, network swaps, and short drops — the client
+// auto-rejoins on reconnect, so anything under this is seamless.
+export const REJOIN_GRACE_MS = 5 * 60 * 1000;
+
+// Recursively replaces every exact occurrence of oldId with newId inside the
+// room's game-state subtrees (both object keys and string values). Socket ids
+// are long random tokens, so an exact string match can only be an identity
+// reference — never a name, label, or game value.
+function remapIdDeep(value, oldId, newId) {
+  if (value === oldId) return newId;
+  if (Array.isArray(value)) return value.map(v => remapIdDeep(v, oldId, newId));
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k === oldId ? newId : k] = remapIdDeep(v, oldId, newId);
+    }
+    return out;
+  }
+  return value;
+}
+
+// Reclaim a disconnected player's slot after a reconnect (new socket id).
+// Matches by room code + player name against DISCONNECTED slots only, so a
+// connected player can never be hijacked. Remaps the old socket id to the new
+// one across the roster and every game state, so scores, buildings, missiles,
+// votes, and turn order all survive the drop.
+export function rejoinRoom(code, newSocketId, playerName) {
+  const room = rooms.get(code);
+  if (!room) return { error: 'Room not found' };
+  const want = (playerName ?? '').trim().toLowerCase();
+  if (!want) return { error: 'Name required' };
+  const player = room.players.find(p => !p.connected && p.name.trim().toLowerCase() === want);
+  if (!player) return { error: 'No disconnected slot for that name' };
+  const oldId = player.id;
+  player.id = newSocketId;
+  player.connected = true;
+  delete room.deleteAt;
+  room.lastActivityMs = Date.now();
+  if (oldId !== newSocketId) {
+    for (const key of ['roles', 'signals', 'guesses', 'endVote', 'chromaState', 'territoryState', 'blendState', 'liarState', 'bluffState', 'missileCommandState']) {
+      if (room[key]) room[key] = remapIdDeep(room[key], oldId, newSocketId);
+    }
+    if (room.chromaOptions?.playerDifficulties) {
+      room.chromaOptions.playerDifficulties = remapIdDeep(room.chromaOptions.playerDifficulties, oldId, newSocketId);
+    }
+  }
+  return { room, playerId: newSocketId, reclaimed: true };
 }
 
 // ─── Missile Command thin wrappers (silo'd logic lives in missileCommand.js) ─
@@ -1594,6 +1659,26 @@ export function upgradeMissileBuilding(code, playerId, buildingId) {
   if (res.error) return { room, error: res.error };
   room.lastActivityMs = Date.now();
   return { room, pending: res.pending };
+}
+
+export function sellMissileBuilding(code, playerId, buildingId) {
+  const room = rooms.get(code);
+  if (!room || !room.missileCommandState) return null;
+  if (room.phase !== 'missile-command-play') return null;
+  const res = missileSellBuilding(room.missileCommandState, playerId, buildingId);
+  if (res.error) return { room, error: res.error };
+  room.lastActivityMs = Date.now();
+  return { room, pending: res.pending };
+}
+
+export function cancelMissileSell(code, playerId, buildingId) {
+  const room = rooms.get(code);
+  if (!room || !room.missileCommandState) return null;
+  if (room.phase !== 'missile-command-play') return null;
+  const res = missileCancelSell(room.missileCommandState, playerId, buildingId);
+  if (res.error) return { room, error: res.error };
+  room.lastActivityMs = Date.now();
+  return { room, cancelled: res.cancelled };
 }
 
 export function launchMissile(code, playerId, action) {
@@ -1646,6 +1731,16 @@ export function setKeepFire(code, playerId, action) {
   return { room, keepFire: res.keepFire };
 }
 
+export function fireDesperation(code, playerId, action) {
+  const room = rooms.get(code);
+  if (!room || !room.missileCommandState) return null;
+  if (room.phase !== 'missile-command-play') return null;
+  const res = missileFireDesperation(room.missileCommandState, playerId, action);
+  if (res.error) return { room, error: res.error };
+  room.lastActivityMs = Date.now();
+  return { room, missiles: res.missiles };
+}
+
 export function tickMissileRoom(room, now = Date.now()) {
   if (!room?.missileCommandState) return null;
   if (room.phase !== 'missile-command-play') return null;
@@ -1663,7 +1758,14 @@ export function sweepInactiveRooms(now = Date.now()) {
   for (const [code, room] of rooms) {
     const allGone = room.players.every(p => !p.connected);
     const idle = now - (room.lastActivityMs || room.createdAt || now);
-    if (allGone || idle > ROOM_TTL_MS) {
+    if (idle > ROOM_TTL_MS) {
+      rooms.delete(code);
+      continue;
+    }
+    // Fully-abandoned rooms get a grace window (set when the last player
+    // drops) so brief backgrounding doesn't nuke the game. Rooms without a
+    // deleteAt predate this and fall back to immediate cleanup.
+    if (allGone && (!room.deleteAt || now >= room.deleteAt)) {
       rooms.delete(code);
     }
   }

@@ -14,6 +14,11 @@ import {
   missileLaunch,
   missileLaunchType,
   missileSetKeepFire,
+  missileFireDesperation,
+  missileSellBuilding,
+  missileCancelSell,
+  totalInvestedFor,
+  sellRefundForBuilding,
   tickMissileCommand,
   missileIncomePerSec,
   cellDist,
@@ -195,8 +200,7 @@ test('autobuild fills stockpile unattended, pauses when broke', () => {
   missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'single', gx: 1, gy: 0 });
   advance(3100, s);
   const L = Object.values(s.buildings).find(b => b.type === 'launcher');
-  missileToggleAutobuild(s, P1, L.id);
-  assert.equal(L.autobuild, true);
+  assert.equal(L.autobuild, true, 'launchers auto-build by default');
   for (let i = 0; i < 120 && L.stock < 2; i++) advance(500, s);
   assert.ok((L.stock ?? 0) >= 2, `autobuild stocks without clicks (stock=${L.stock})`);
   missileToggleAutobuild(s, P1, L.id);
@@ -371,13 +375,13 @@ function lobbyWithMissileCommand() {
 
 test('lobby: fogOfWar option persists when host toggles it', () => {
   const room = lobbyWithMissileCommand();
-  assert.equal(room.missileCommandOptions.fogOfWar, false, 'off by default');
-
-  const on = updateMissileCommandOptions(room.code, { fogOfWar: true });
-  assert.equal(on.missileCommandOptions.fogOfWar, true, 'toggled on is stored');
+  assert.equal(room.missileCommandOptions.fogOfWar, true, 'on by default');
 
   const off = updateMissileCommandOptions(room.code, { fogOfWar: false });
   assert.equal(off.missileCommandOptions.fogOfWar, false, 'toggled off is stored');
+
+  const on = updateMissileCommandOptions(room.code, { fogOfWar: true });
+  assert.equal(on.missileCommandOptions.fogOfWar, true, 'toggled on is stored');
 });
 
 test('lobby: fogOfWar setting survives other option changes', () => {
@@ -409,12 +413,36 @@ test('lobby: fogOfWar reaches missile game state on start', () => {
   assert.ok(tiles[sides.bottom]['6,3'] === 0, 'bottom core permanently visible');
 });
 
-test('lobby: game starts with fog OFF when never toggled', () => {
+test('lobby: game starts with fog ON when never toggled', () => {
   const room = lobbyWithMissileCommand();
   const started = startGame(room.code);
-  assert.equal(started.missileCommandState.fogOfWar, false, 'defaults off');
+  assert.equal(started.missileCommandState.fogOfWar, true, 'defaults on');
   // exploredTiles must still exist so the client never has to null-check.
-  assert.ok(started.missileCommandState.exploredTiles, 'map present even when off');
+  assert.ok(started.missileCommandState.exploredTiles, 'map present');
+});
+
+test('lobby: toggling fog OFF reaches game state', () => {
+  const room = lobbyWithMissileCommand();
+  updateMissileCommandOptions(room.code, { fogOfWar: false });
+  const started = startGame(room.code);
+  assert.equal(started.missileCommandState.fogOfWar, false, 'opt-out respected');
+});
+
+test('lobby: fog history defaults off, persists, and reaches game state', () => {
+  const room = lobbyWithMissileCommand();
+  assert.equal(room.missileCommandOptions.fogHistory, false, 'off by default');
+  const on = updateMissileCommandOptions(room.code, { fogHistory: true });
+  assert.equal(on.missileCommandOptions.fogHistory, true, 'toggled on is stored');
+  const bad = updateMissileCommandOptions(room.code, { fogHistory: 'yes' });
+  assert.equal(bad.missileCommandOptions.fogHistory, true, 'garbage ignored, prior value kept');
+  const started = startGame(room.code);
+  assert.equal(started.missileCommandState.fogHistory, true, 'history reaches game state');
+});
+
+test('lobby: game starts with fog history OFF when never toggled', () => {
+  const room = lobbyWithMissileCommand();
+  const started = startGame(room.code);
+  assert.equal(started.missileCommandState.fogHistory, false, 'defaults off');
 });
 
 test('fog: missile impact reveals area to attacker only, and it expires', () => {
@@ -446,8 +474,20 @@ test('fog: missile impact reveals area to attacker only, and it expires', () => 
   assert.ok(Object.values(attackerTiles).some(v => v > 0), 'reveals carry an expiry');
 });
 
-test('fog: expired reveals are pruned by the tick', () => {
+test('fog: expired reveals are forgotten by default (history off)', () => {
   const s = createMissileCommandState([P1, P2], { startingResources: 5000, fogOfWar: true });
+  assert.equal(s.fogHistory, false, 'history off by default');
+  tickMissileCommand(s, Date.now());
+  // Plant an already-expired temporary reveal next to the core.
+  s.exploredTiles[P1]['6,4'] = Date.now() - 1;
+  const now = Date.now();
+  tickMissileCommand(s, now + 10);
+  assert.equal(s.exploredTiles[P1]['6,4'], undefined, 'stale reveal deleted, not remembered');
+  assert.equal(s.exploredTiles[P1]['6,3'], 0, 'permanent core reveal kept');
+});
+
+test('fog: expired reveals are remembered with history on', () => {
+  const s = createMissileCommandState([P1, P2], { startingResources: 5000, fogOfWar: true, fogHistory: true });
   tickMissileCommand(s, Date.now());
   // Plant an already-expired temporary reveal next to the core.
   s.exploredTiles[P1]['6,4'] = Date.now() - 1;
@@ -626,10 +666,15 @@ function gmBuildDone(room, playerId, type, gx, gy, launcherType) {
 }
 
 function gmLoadFull(room, playerId, launcher, n = 3) {
-  for (let i = 0; i < n; i++) {
+  // Deterministic manual loads: pause auto-production first (launchers
+  // auto-build by default, so the stockpile may already be filling), then
+  // top up to exactly n.
+  if (launcher.autobuild) missileToggleAutobuild(room.missileCommandState, playerId, launcher.id);
+  let guard = 0;
+  while (launcher.stock < n && guard++ < 10) {
     launcher.loadingUntil = 0;
     const r = gmLoad(room.code, playerId, launcher.id);
-    assert.ok(!r.error, `load ${i + 1}: ${r.error}`);
+    assert.ok(!r.error, `top-up load: ${r.error}`);
     advance(5100, room.missileCommandState);
   }
   assert.equal(launcher.stock, n);
@@ -796,7 +841,7 @@ test('dead cores earn nothing and the economy freezes after victory', () => {
   }
 });
 
-test('building cap counts non-core buildings', () => {
+test('no building cap: 40+ buildings all queue fine', () => {
   const room = gmRoom(99999);
   try {
     startGame(room.code);
@@ -806,10 +851,11 @@ test('building cap counts non-core buildings', () => {
       const r = gmBuild(room.code, P1, { buildingType: 'economy', gx, gy });
       assert.ok(!r.error, `build ${i}: ${r.error}`);
     }
-    const capped = gmBuild(room.code, P1, { buildingType: 'economy', gx: 12, gy: 6 });
-    assert.equal(capped.error, 'Building cap reached');
+    // No cap: the 41st queues fine too (grid space is the only limit).
+    const extra = gmBuild(room.code, P1, { buildingType: 'economy', gx: 12, gy: 6 });
+    assert.ok(!extra.error, `build 40: ${extra.error}`);
     advance(3100, mc());
-    assert.equal(Object.values(mc().buildings).filter(b => b.type === 'economy').length, 40);
+    assert.equal(Object.values(mc().buildings).filter(b => b.type === 'economy').length, 41);
   } finally {
     rooms.delete(room.code);
   }
@@ -828,6 +874,169 @@ test('heal beam idles when every shield is full', () => {
   } finally {
     rooms.delete(room.code);
   }
+});
+
+test('sell math: 70% of build + upgrades, rounded down', () => {
+  assert.equal(totalInvestedFor('economy', undefined, 1), 50);
+  assert.equal(totalInvestedFor('economy', undefined, 3), 260); // 50 + 60 + 150
+  assert.equal(totalInvestedFor('launcher', 'single', 2), 264); // 120 + round(120*1.2)
+  assert.equal(sellRefundForBuilding({ type: 'economy', level: 3 }), Math.floor(260 * 0.7)); // 182
+  assert.equal(sellRefundForBuilding({ type: 'shield', level: 1 }), 28); // floor(40*0.7)
+});
+
+test('sell flow: 20s timer, building works meanwhile, then removed + refunded', () => {
+  const s = fresh();
+  missileBuildBuilding(s, P1, { buildingType: 'shield', gx: 0, gy: 0 });
+  advance(3100, s);
+  const Sh = Object.values(s.buildings).find(b => b.type === 'shield');
+  const before = s.resources[P1];
+  const r = missileSellBuilding(s, P1, Sh.id);
+  assert.ok(!r.error, r.error);
+  assert.equal(r.pending.kind, 'sell');
+  assert.equal(r.pending.refund, 28);
+  assert.equal(r.pending.completeAt - fakeNow, 20000, '20s demolition timer');
+  assert.ok(s.buildings[Sh.id], 'building keeps working during the sale');
+  const res = advance(20100, s); // dt caps at 5s → 25cr core income, shield pays none
+  assert.ok(!s.buildings[Sh.id], 'demolished after the timer');
+  assert.ok(Math.abs(s.resources[P1] - (before + 25 + 28)) < 0.01, `70% refunded (got ${s.resources[P1]})`);
+  assert.ok(res.events.some(e => e.type === 'sold'), 'sold event emitted');
+});
+
+test('sell flow: refund includes upgrades', () => {
+  const s = fresh();
+  missileBuildBuilding(s, P1, { buildingType: 'economy', gx: 0, gy: 0 });
+  advance(3100, s);
+  const E = Object.values(s.buildings).find(b => b.type === 'economy');
+  missileUpgradeBuilding(s, P1, E.id);
+  advance(5100, s); // buildMs[2] = 5000
+  assert.equal(E.level, 2);
+  const r = missileSellBuilding(s, P1, E.id);
+  assert.equal(r.pending.refund, 77, 'floor((50+60)*0.7)');
+  advance(20100, s);
+  assert.ok(!s.buildings[E.id], 'sold');
+});
+
+test('sell validation: core, ownership, double-sell, upgrade interplay, cancel', () => {
+  const s = fresh();
+  missileBuildBuilding(s, P1, { buildingType: 'economy', gx: 0, gy: 0 });
+  advance(3100, s);
+  const E = Object.values(s.buildings).find(b => b.type === 'economy');
+  assert.equal(missileSellBuilding(s, P1, 'core_top').error, 'Core cannot be sold');
+  assert.equal(missileSellBuilding(s, P2, E.id).error, 'Not your building');
+  assert.ok(!missileSellBuilding(s, P1, E.id).error, 'first sale lists fine');
+  assert.equal(missileSellBuilding(s, P1, E.id).error, 'Sale already in progress');
+  assert.equal(missileUpgradeBuilding(s, P1, E.id).error, 'Sale in progress — cancel it first');
+  assert.equal(missileCancelSell(s, P2, E.id).error, 'Not your building');
+  const c = missileCancelSell(s, P1, E.id);
+  assert.ok(!c.error, c.error);
+  assert.ok(s.buildings[E.id], 'building survives cancellation');
+  assert.equal(missileCancelSell(s, P1, E.id).error, 'No sale in progress');
+  // Upgrade in flight blocks a new sale.
+  assert.ok(!missileUpgradeBuilding(s, P1, E.id).error, 'upgrade orders fine');
+  assert.equal(missileSellBuilding(s, P1, E.id).error, 'Upgrade in progress — wait or let it finish first');
+});
+
+test('sell fizzles with no refund if the building is destroyed first', () => {
+  const s = fresh();
+  missileBuildBuilding(s, P1, { buildingType: 'shield', gx: 0, gy: 0 });
+  advance(3100, s);
+  const Sh = Object.values(s.buildings).find(b => b.type === 'shield');
+  assert.ok(!missileSellBuilding(s, P1, Sh.id).error);
+  delete s.buildings[Sh.id]; // blown up mid-demolition
+  const before = s.resources[P1];
+  const res = advance(20100, s);
+  assert.ok(!res.events.some(e => e.type === 'sold'), 'no payout for rubble');
+  assert.ok(Math.abs(s.resources[P1] - (before + 25)) < 0.01, 'core income only, no refund');
+});
+
+test('desperation unlocks at 50% core HP and latches through regen', () => {
+  const s = fresh();
+  assert.deepEqual(s.desperation[P1], { unlocked: false, used: false }, 'starts locked');
+  // Above threshold: nothing.
+  s.buildings.core_top.coreHp = 2001;
+  let res = tickMissileCommand(s, Date.now());
+  assert.equal(s.desperation[P1].unlocked, false, '2001/4000 stays locked');
+  // At/below threshold: unlocks with an event.
+  s.buildings.core_top.coreHp = 2000;
+  res = tickMissileCommand(s, Date.now());
+  assert.equal(s.desperation[P1].unlocked, true, '2000/4000 unlocks');
+  assert.ok(res.events.some(e => e.type === 'desperation-unlocked' && e.ownerId === P1), 'unlock event');
+  // Healing back above keeps the unlock (puncher's chance, once earned).
+  s.buildings.core_top.coreHp = 3000;
+  tickMissileCommand(s, Date.now());
+  assert.equal(s.desperation[P1].unlocked, true, 'latches');
+  assert.equal(s.desperation[P2].unlocked, false, 'healthy side stays locked');
+});
+
+test('desperation fire: validation, one-shot, needs no launcher', () => {
+  const s = fresh();
+  s.desperation[P1] = { unlocked: true, used: false };
+  assert.equal(missileFireDesperation(s, P1, { targetGx: 99, targetGy: 0 }).error, 'Invalid target square');
+  assert.equal(missileFireDesperation(s, 'nobody', { targetGx: 0, targetGy: 0 }).error, 'You are not in this match');
+  const r = missileFireDesperation(s, P1, { targetGx: 6, targetGy: 3 });
+  assert.ok(!r.error, r.error);
+  assert.equal(r.missiles.length, 1, 'single warhead');
+  assert.equal(r.missiles[0].desperation, true);
+  assert.equal(r.missiles[0].pierce, MISSILE_CONFIG.desperation.pierce);
+  assert.equal(s.desperation[P1].used, true, 'spent');
+  assert.equal(missileFireDesperation(s, P1, { targetGx: 6, targetGy: 3 }).error, 'Desperation strike already spent');
+});
+
+test('desperation fire requires the unlock', () => {
+  const s = fresh();
+  assert.equal(
+    missileFireDesperation(s, P1, { targetGx: 6, targetGy: 3 }).error,
+    'Desperation strike not unlocked — core must drop to 50%',
+  );
+});
+
+test('desperation pierce: half bypasses pools, half is absorbed', () => {
+  const s = fresh();
+  // Economy at (6,5) under a full Lv1 shield (375 pool) at (5,5).
+  missileBuildBuilding(s, P2, { buildingType: 'economy', gx: 6, gy: 5 });
+  missileBuildBuilding(s, P2, { buildingType: 'shield', gx: 5, gy: 5 });
+  advance(3100, s);
+  const eco = Object.values(s.buildings).find(b => b.type === 'economy');
+  const sh = Object.values(s.buildings).find(b => b.type === 'shield');
+  const ecoHp = eco.hp;
+  // 200 dmg, 50% pierce → 100 through the pool, 100 straight to structure.
+  const destroyed = (() => {
+    // applyExplosion isn't exported; drive it via a desperation-shaped missile.
+    s.desperation[P1] = { unlocked: true, used: false };
+    const r = missileFireDesperation(s, P1, { targetGx: 6, targetGy: 5 });
+    assert.ok(!r.error, r.error);
+    // Force the warhead's stats for a deterministic assertion.
+    r.missiles[0].damage = 200;
+    r.missiles[0].pierce = 0.5;
+    r.missiles[0].blast = 0;
+    r.missiles[0].currentX = r.missiles[0].targetX;
+    r.missiles[0].currentY = r.missiles[0].targetY;
+    return tickMissileCommand(s, Date.now());
+  })();
+  void destroyed;
+  assert.equal(sh.shieldHp, 375 - 100, 'pool ate exactly the blocked half');
+  assert.equal(eco.hp, ecoHp - 100, 'structure took exactly the piercing half');
+});
+
+test('desperation full strike dents a shielded core without one-shotting', () => {
+  const s = fresh();
+  missileBuildBuilding(s, P2, { buildingType: 'shield', gx: 6, gy: 4 });
+  advance(3100, s);
+  const sh = Object.values(s.buildings).find(b => b.type === 'shield');
+  const core = s.buildings.core_bottom;
+  s.desperation[P1] = { unlocked: true, used: false };
+  const r = missileFireDesperation(s, P1, { targetGx: 6, targetGy: 3 });
+  assert.ok(!r.error, r.error);
+  r.missiles[0].currentX = r.missiles[0].targetX;
+  r.missiles[0].currentY = r.missiles[0].targetY;
+  tickMissileCommand(s, Date.now());
+  // 2000 raw damage, no piercing: the 375 pool is fully drained either way,
+  // the shield's structure is wrecked, and the core eats a real but
+  // survivable blow (exact split depends on processing order).
+  assert.equal(sh.shieldHp, 0, 'pool fully drained');
+  assert.ok(core.coreHp < 4000 && core.coreHp >= 1500, `core dented but alive (${core.coreHp})`);
+  assert.ok(!s.buildings[sh.id], 'shield generator destroyed');
+  assert.ok(!s.winnerId, 'not an instant win');
 });
 
 // restore real clock for any later suites in this process

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
-import type { RoomState, RoleData, RoundRevealData, ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileUpgradeAction, MissileLaunchAction, MissileTypeLaunchAction, MissileLoadAction, MissileKeepFireAction, MissileCommandOptions } from '../types/game';
+import type { RoomState, RoleData, RoundRevealData, ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileUpgradeAction, MissileLaunchAction, MissileTypeLaunchAction, MissileLoadAction, MissileKeepFireAction, MissileDesperationAction, MissileCommandOptions } from '../types/game';
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
 
@@ -66,11 +66,14 @@ export interface SocketHookReturn {
   // Missile Command
   buildMissileBuilding: (roomCode: string, action: MissileBuildAction) => void;
   upgradeMissileBuilding: (roomCode: string, action: MissileUpgradeAction) => void;
+  sellMissileBuilding: (roomCode: string, action: MissileUpgradeAction) => void;
+  cancelMissileSell: (roomCode: string, action: MissileUpgradeAction) => void;
   loadMissile: (roomCode: string, action: MissileLoadAction) => void;
   toggleAutobuild: (roomCode: string, action: MissileLoadAction) => void;
   launchMissile: (roomCode: string, action: MissileLaunchAction) => void;
   launchMissileType: (roomCode: string, action: MissileTypeLaunchAction) => void;
   setKeepFire: (roomCode: string, action: MissileKeepFireAction) => void;
+  fireDesperation: (roomCode: string, action: MissileDesperationAction) => void;
   updateMissileCommandOptions: (roomCode: string, options: Partial<MissileCommandOptions>) => void;
 }
 
@@ -84,6 +87,9 @@ export function useSocket(): SocketHookReturn {
   const [myId, setMyId] = useState<string>('');
   const [roomCode, setRoomCode] = useState<string>('');
   const roomCodeRef = useRef<string>('');
+  // Player name, kept so a reconnect can reclaim our slot (socket ids change,
+  // so the server matches us back by room code + name).
+  const playerNameRef = useRef<string>('');
   const [inRoom, setInRoom] = useState(false);
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [myRole, setMyRole] = useState<RoleData | null>(null);
@@ -185,8 +191,11 @@ export function useSocket(): SocketHookReturn {
       console.log('[socket] connected, id:', s.id);
       if (reconnectingRef.current) {
         reconnectingRef.current = false;
-        // Request fresh room state on reconnect
-        if (roomCodeRef.current) {
+        // Reclaim our player slot: the fresh socket has a new id, so the
+        // server matches us back by room code + name and remaps everything.
+        if (roomCodeRef.current && playerNameRef.current) {
+          s.emit('rejoin-room', { roomCode: roomCodeRef.current, playerName: playerNameRef.current });
+        } else if (roomCodeRef.current) {
           s.emit('room-state-request', { roomCode: roomCodeRef.current });
         }
       }
@@ -259,6 +268,7 @@ export function useSocket(): SocketHookReturn {
       setMyId(playerId);
       setRoomCode(code);
       setInRoom(true);
+      setRoomExpired(null);
     };
     const onRoomState = (state: RoomState) => {
       setRoomState(state);
@@ -332,10 +342,12 @@ export function useSocket(): SocketHookReturn {
   const clearError = useCallback(() => setError(null), []);
 
   const createRoom = useCallback((playerName: string) => {
+    playerNameRef.current = playerName;
     socketRef.current?.emit('create-room', { playerName });
   }, []);
 
   const joinRoom = useCallback((code: string, playerName: string) => {
+    playerNameRef.current = playerName;
     socketRef.current?.emit('join-room', { roomCode: code, playerName });
   }, []);
 
@@ -460,6 +472,14 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('upgrade-missile-building', { roomCode: code, action });
   }, []);
 
+  const sellMissileBuilding = useCallback((code: string, action: MissileUpgradeAction) => {
+    socketRef.current?.emit('sell-missile-building', { roomCode: code, buildingId: action.buildingId });
+  }, []);
+
+  const cancelMissileSell = useCallback((code: string, action: MissileUpgradeAction) => {
+    socketRef.current?.emit('cancel-missile-sell', { roomCode: code, buildingId: action.buildingId });
+  }, []);
+
   const launchMissile = useCallback((code: string, action: MissileLaunchAction) => {
     socketRef.current?.emit('launch-missile', { roomCode: code, action });
   }, []);
@@ -478,6 +498,10 @@ export function useSocket(): SocketHookReturn {
 
   const setKeepFire = useCallback((code: string, action: MissileKeepFireAction) => {
     socketRef.current?.emit('set-keep-fire', { roomCode: code, action });
+  }, []);
+
+  const fireDesperation = useCallback((code: string, action: MissileDesperationAction) => {
+    socketRef.current?.emit('fire-desperation', { roomCode: code, ...action });
   }, []);
 
   const updateMissileCommandOptions = useCallback((code: string, options: Partial<MissileCommandOptions>) => {
@@ -534,11 +558,14 @@ export function useSocket(): SocketHookReturn {
     // Missile Command
     buildMissileBuilding,
     upgradeMissileBuilding,
+    sellMissileBuilding,
+    cancelMissileSell,
     loadMissile,
     toggleAutobuild,
     launchMissile,
     launchMissileType,
     setKeepFire,
+    fireDesperation,
     updateMissileCommandOptions,
   };
 }

@@ -10,7 +10,6 @@ export const MISSILE_CONFIG = {
   startingResources: 200,
   economyTickMs: 500,
   maxLevel: 5,
-  maxBuildingsPerPlayer: 40,
   // Grid per island (odd columns so the core sits in the very middle)
   gridCols: 13,
   gridRows: 7,
@@ -24,6 +23,9 @@ export const MISSILE_CONFIG = {
   // Build durations (ms) by target level — each building/upgrade runs its own
   // timer, so everything constructs in parallel.
   buildMs: { 1: 3000, 2: 5000, 3: 10000, 4: 20000, 5: 30000 },
+  // Selling takes 20s and refunds 70% of total invested (build + upgrades).
+  sellMs: 20000,
+  sellRefundRate: 0.7,
   // Core baseline economy
   coreIncomePerSec: 5,
   // Core
@@ -82,6 +84,17 @@ export const MISSILE_CONFIG = {
       speed: 0.09375,
       hp: [0, 120, 180, 250, 330, 420],
     },
+  },
+  // One-time comeback superweapon. Unlocks when your core drops to 50% HP.
+  // No launcher needed, free to fire — the price was nearly losing. Big raw
+  // damage over a wide blast; shields absorb it normally (no piercing), so it
+  // cracks entrenched positions but never one-shots a healthy core.
+  desperation: {
+    thresholdPct: 0.5,
+    damage: 2000,
+    blast: 2, // Manhattan radius
+    pierce: 0, // no shield bypass — raw damage only
+    speed: 0.12,
   },
   buildingHpFallback: 120,
 };
@@ -169,7 +182,10 @@ export function createMissileCommandState(playerIds, options = {}) {
   // Key: "gx,gy", Value: expiry timestamp (0 = permanent). Plain objects, not
   // Maps — Maps serialize to {} over socket.io and the client would see no
   // fog data at all.
-  const fogOfWar = options.fogOfWar ?? false;
+  const fogOfWar = options.fogOfWar ?? true;
+  // History (remembered last-known buildings) is OFF by default — lapsed
+  // reveals vanish entirely unless the lobby opts in.
+  const fogHistory = options.fogHistory ?? false;
   const exploredTiles = { [p1]: {}, [p2]: {} };
   // Seed both cores as permanently explored for BOTH players, so the very
   // first state a client receives already knows where the cores are.
@@ -193,17 +209,19 @@ export function createMissileCommandState(playerIds, options = {}) {
     // Keep-firing locks, keyed by playerId. `null`/absent = off. Otherwise
     // { targetGx, targetGy, launcherType, since } — see missileSetKeepFire.
     keepFire: {},
+    // Desperation strike per player: { unlocked, used }. Unlocks once your
+    // core hits 50% HP and latches — healing back above it keeps the unlock.
+    desperation: { [p1]: { unlocked: false, used: false }, [p2]: { unlocked: false, used: false } },
     resources,
     gameStartTime: now,
     lastEconomyTick: now,
     winnerId: null,
     winReason: null,
     fogOfWar,
-    // exploredTiles[playerId] = Map<"gx,gy", timestamp> — 0 = permanent (core), >0 = temporary
+    fogHistory,
+    // exploredTiles[playerId]["gx,gy"] = 0 permanent, -1 remembered, else expiry ms
     exploredTiles: { [p1]: exploredTiles[p1], [p2]: exploredTiles[p2] },
   };
-}function buildingCountFor(state, playerId) {
-  return Object.values(state.buildings).filter(b => b.ownerId === playerId && b.type !== 'core').length;
 }
 
 function buildCostFor(buildingType, launcherType) {
@@ -220,6 +238,27 @@ function occupiedCell(state, side, gx, gy, ignoreId = null) {
 
 function pendingUpgradeFor(state, buildingId) {
   return Object.values(state.pending ?? {}).find(p => p.kind === 'upgrade' && p.upgradeOf === buildingId) || null;
+}
+
+function pendingSellFor(state, buildingId) {
+  return Object.values(state.pending ?? {}).find(p => p.kind === 'sell' && p.sellOf === buildingId) || null;
+}
+
+// Total credits ever paid for a building: build cost + every upgrade cost on
+// the way to its current level. Upgrade pricing is deterministic per level,
+// so this reconstructs the exact spend without tracking it per building.
+export function totalInvestedFor(type, launcherType, level) {
+  let total = buildCostFor(type, launcherType);
+  for (let l = 1; l < (level ?? 1); l++) {
+    total += upgradeCostFor({ type, launcherType, level: l }) ?? 0;
+  }
+  return total;
+}
+
+// 70% of total invested, rounded down. Computed once when the sale is
+// ordered and stored on the job, so the payout can't shift mid-sale.
+export function sellRefundForBuilding(b) {
+  return Math.floor(totalInvestedFor(b.type, b.launcherType, b.level ?? 1) * (MISSILE_CONFIG.sellRefundRate ?? 0.7));
 }
 
 // Create the level-1 building for a finished construction site.
@@ -240,7 +279,7 @@ function materializeBuilding(state, p) {
     b.stock = 0;
     b.maxStock = MISSILE_CONFIG.maxStock;
     b.loadingUntil = 0;
-    b.autobuild = false;
+    b.autobuild = true;
   }
   state.buildings[p.id] = b;
   return b;
@@ -281,13 +320,7 @@ export function missileBuildBuilding(state, playerId, action) {
   }
   if (!isValidCell(gx, gy)) return { error: 'Invalid grid square' };
   if (occupiedCell(state, side, gx, gy)) return { error: 'Square occupied — pick an empty square' };
-  // Cap counts finished buildings AND queued construction sites (else the cap
-  // could be dodged with a queueing spree).
-  const activeCount = buildingCountFor(state, playerId) +
-    Object.values(state.pending ?? {}).filter(p => p.kind === 'build' && p.ownerId === playerId).length;
-  if (activeCount >= MISSILE_CONFIG.maxBuildingsPerPlayer) {
-    return { error: 'Building cap reached' };
-  }
+  // No building cap: the grid itself (13x7 per island) is the only limit.
   const cost = buildCostFor(buildingType, launcherType);
   if ((state.resources[playerId] ?? 0) < cost) return { error: `Need ${cost} credits` };
 
@@ -326,6 +359,7 @@ export function missileUpgradeBuilding(state, playerId, buildingId) {
   if (b.type === 'core') return { error: 'Core cannot be upgraded' };
   if (b.level >= MISSILE_CONFIG.maxLevel) return { error: 'Already max level' };
   if (pendingUpgradeFor(state, buildingId)) return { error: 'Upgrade already in progress' };
+  if (pendingSellFor(state, buildingId)) return { error: 'Sale in progress — cancel it first' };
   const cost = upgradeCostFor(b);
   if ((state.resources[playerId] ?? 0) < cost) return { error: `Need ${cost} credits to upgrade` };
   // Pay upfront; the building keeps working at its old level until the upgrade
@@ -342,6 +376,43 @@ export function missileUpgradeBuilding(state, playerId, buildingId) {
   if (!state.pending) state.pending = {};
   state.pending[job.id] = job;
   return { pending: job };
+}
+
+// List a building for sale. It keeps working for the 20s demolition timer,
+// then is removed and 70% of total invested (build + upgrades) is refunded.
+// Stockpiled missiles and in-progress loads are lost with it — sell AFTER
+// firing if that matters. Cancelling is free (nothing is paid upfront).
+export function missileSellBuilding(state, playerId, buildingId) {
+  if (state.winnerId) return { error: 'Game is over' };
+  const side = missileSideForPlayer(state, playerId);
+  if (!side) return { error: 'You are not in this match' };
+  const b = state.buildings[buildingId];
+  if (!b) return { error: 'Building not found' };
+  if (b.ownerId !== playerId) return { error: 'Not your building' };
+  if (b.type === 'core') return { error: 'Core cannot be sold' };
+  if (pendingSellFor(state, buildingId)) return { error: 'Sale already in progress' };
+  if (pendingUpgradeFor(state, buildingId)) return { error: 'Upgrade in progress — wait or let it finish first' };
+  const now = Date.now();
+  const job = {
+    id: uid('c'), kind: 'sell', type: b.type, launcherType: b.launcherType,
+    side: b.side, gx: b.gx, gy: b.gy, ownerId: playerId,
+    sellOf: buildingId, refund: sellRefundForBuilding(b),
+    completeAt: now + (MISSILE_CONFIG.sellMs ?? 20000),
+  };
+  if (!state.pending) state.pending = {};
+  state.pending[job.id] = job;
+  return { pending: job };
+}
+
+// Cancel a pending sale. Free — the refund was never paid out.
+export function missileCancelSell(state, playerId, buildingId) {
+  if (state.winnerId) return { error: 'Game is over' };
+  if (!missileSideForPlayer(state, playerId)) return { error: 'You are not in this match' };
+  const job = pendingSellFor(state, buildingId);
+  if (!job) return { error: 'No sale in progress' };
+  if (job.ownerId !== playerId) return { error: 'Not your building' };
+  delete state.pending[job.id];
+  return { cancelled: buildingId };
 }
 
 // Build one full shot pattern (single missile / scatter pellets).
@@ -495,8 +566,49 @@ export function missileSetKeepFire(state, playerId, action) {
   return { keepFire: state.keepFire[playerId] };
 }
 
+// Fire the one-time desperation strike. Needs no launcher and costs nothing —
+// the price was nearly losing. Launches from the owner's core as a single
+// shield-piercing warhead.
+export function missileFireDesperation(state, playerId, action) {
+  if (state.winnerId) return { error: 'Game is over' };
+  const side = missileSideForPlayer(state, playerId);
+  if (!side) return { error: 'You are not in this match' };
+  const { targetGx, targetGy } = action || {};
+  if (!isValidCell(targetGx, targetGy)) return { error: 'Invalid target square' };
+  const flag = state.desperation?.[playerId];
+  if (!flag?.unlocked) return { error: 'Desperation strike not unlocked — core must drop to 50%' };
+  if (flag.used) return { error: 'Desperation strike already spent' };
+  const core = Object.values(state.buildings).find(b => b.type === 'core' && b.ownerId === playerId);
+  if (!core || (core.coreHp ?? 0) <= 0) return { error: 'Your core is gone' };
+  const cfg = MISSILE_CONFIG.desperation;
+  const enemySide = side === 'top' ? 'bottom' : 'top';
+  const now = Date.now();
+  const from = cellToWorld(side, core.gx, core.gy);
+  const to = cellToWorld(enemySide, targetGx, targetGy);
+  const m = {
+    id: uid('m'),
+    ownerId: playerId,
+    launcherId: null,
+    launcherType: 'single',
+    desperation: true,
+    startX: from.x, startY: from.y,
+    targetX: to.x, targetY: to.y,
+    targetGx, targetGy,
+    currentX: from.x, currentY: from.y,
+    damage: cfg.damage, blast: cfg.blast, pierce: cfg.pierce,
+    speed: cfg.speed,
+    createdAt: now,
+    deployAt: now,
+  };
+  flag.used = true;
+  state.missiles.push(m);
+  return { missiles: [m] };
+}
+
 // Apply explosion damage centered on an enemy grid cell with Manhattan radius.
-function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage) {
+// `pierce` (0..1) is the fraction of damage that bypasses shield pools and
+// hits structure directly — the desperation strike's bunker-buster edge.
+function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage, pierce = 0) {
   const buildings = Object.values(state.buildings).filter(b => b.side === enemySide);
   const shields = buildings.filter(b => isShieldType(b.type) && (b.shieldHp ?? 0) > 0);
   const defaultTiles = state.shieldTiles ?? MISSILE_CONFIG.shieldTiles;
@@ -537,6 +649,9 @@ function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage) {
     // falloff: center full, edge 60%
     const falloff = blast === 0 ? 1 : 1 - (d / (blast + 1)) * 0.4;
     let dmg = damage * falloff;
+    // Piercing damage skips every pool and lands on structure directly.
+    const direct = dmg * Math.max(0, Math.min(1, pierce));
+    dmg -= direct;
     if (isShieldType(b.type)) {
       // Shields are covered by overlapping shields too: the covering pools
       // absorb first (full block + overflow), then this shield's own pool,
@@ -548,6 +663,7 @@ function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage) {
       // of % remaining. Only true overflow reaches the building.
       dmg = absorbThrough(coveringShields(b), dmg);
     }
+    dmg += direct;
     if (dmg <= 0) continue;
     if (b.type === 'core') {
       b.coreHp = Math.max(0, (b.coreHp ?? 0) - dmg);
@@ -565,17 +681,18 @@ function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage) {
   }
   // Empty covered tile: the shield still intercepts the blast. Same rule as a
   // real hit — fullest pool first, overflow spilling into the next-fullest.
+  // (Piercing damage has no structure to hit on an empty tile, so it fizzles.)
   if (!hitAny) {
     const guards = shields
       .filter(s => cellDist(s.gx, s.gy, gx, gy) <= rangeOf(s))
       .sort((a, c) => pctLeft(c) - pctLeft(a));
-    absorbThrough(guards, damage);
+    absorbThrough(guards, damage * (1 - Math.max(0, Math.min(1, pierce))));
   }
   return destroyed;
 }
 
 // Fog of war constants
-const FOG_REVEAL_RADIUS = 2; // Manhattan distance around impact
+const FOG_REVEAL_RADIUS = 1; // Manhattan distance around impact
 const FOG_TEMPORARY_DURATION = 5000; // 5 seconds in ms
 
 // Idempotently re-assert core visibility. Mostly redundant now that state
@@ -613,14 +730,18 @@ function exploreAround(state, ownerId, gx, gy, radius = FOG_REVEAL_RADIUS, durat
   }
 }
 
-// Expire temporary fog revelations. A tile that goes dark is REMEMBERED
-// (-1), not forgotten: the player keeps a dimmed last-known view of it, which
-// is what makes fog of war readable instead of pure guesswork.
+// Expire temporary fog revelations. With history ON the tile that goes dark
+// is REMEMBERED (-1): the player keeps a dimmed last-known view of it.
+// With history OFF (default) it is forgotten outright — no buildings linger.
 function expireFog(state, now) {
   if (!state.fogOfWar) return;
+  const remember = state.fogHistory === true;
   for (const tiles of Object.values(state.exploredTiles)) {
     for (const [key, expiresAt] of Object.entries(tiles)) {
-      if (expiresAt > 0 && expiresAt <= now) tiles[key] = -1;
+      if (expiresAt > 0 && expiresAt <= now) {
+        if (remember) tiles[key] = -1;
+        else delete tiles[key];
+      }
     }
   }
 }
@@ -655,6 +776,16 @@ export function tickMissileCommand(state, now = Date.now()) {
         if (b && b.type !== 'core' && b.level === p.targetLevel - 1) {
           applyLevelUp(state, b);
           events.push({ type: 'upgraded', id: b.id, level: b.level });
+        }
+      } else if (p.kind === 'sell') {
+        const b = state.buildings[p.sellOf];
+        // Only pays if the building survived to demolition (destroyed
+        // buildings fizzle the sale with no refund) and is still the
+        // seller's non-core building.
+        if (b && b.ownerId === p.ownerId && b.type !== 'core') {
+          delete state.buildings[p.sellOf];
+          state.resources[p.ownerId] = (state.resources[p.ownerId] ?? 0) + (p.refund ?? 0);
+          events.push({ type: 'sold', id: p.sellOf, refund: p.refund ?? 0 });
         }
       }
     }
@@ -758,7 +889,7 @@ export function tickMissileCommand(state, now = Date.now()) {
       // impact!
       const ownerSide = missileSideForPlayer(state, m.ownerId);
       const enemySide = ownerSide === 'top' ? 'bottom' : 'top';
-      const destroyed = applyExplosion(state, m.ownerId, enemySide, m.targetGx, m.targetGy, m.blast, m.damage);
+      const destroyed = applyExplosion(state, m.ownerId, enemySide, m.targetGx, m.targetGy, m.blast, m.damage, m.pierce ?? 0);
       if (destroyed.length) events.push({ type: 'destroyed', ids: destroyed });
       events.push({ type: 'impact', gx: m.targetGx, gy: m.targetGy, kind: m.launcherType });
       // Fog of war: reveal area around impact for the attacker
@@ -770,6 +901,22 @@ export function tickMissileCommand(state, now = Date.now()) {
     }
   }
   state.missiles = remaining;
+
+  // 4b. Desperation unlocks: a living core at or under 50% HP arms its
+  // owner's one-time strike. Latches — healing back above keeps it.
+  if (state.desperation) {
+    const threshold = MISSILE_CONFIG.desperation.thresholdPct ?? 0.5;
+    for (const b of Object.values(state.buildings)) {
+      if (b.type !== 'core' || (b.coreHp ?? 1) <= 0) continue;
+      if (b.coreHp <= (b.maxCoreHp ?? 1) * threshold) {
+        const flag = state.desperation[b.ownerId];
+        if (flag && !flag.unlocked) {
+          flag.unlocked = true;
+          events.push({ type: 'desperation-unlocked', ownerId: b.ownerId });
+        }
+      }
+    }
+  }
 
   // 5. Win check — core at 0 HP (cores persist instead of being deleted)
   const topCore = Object.values(state.buildings).find(b => b.type === 'core' && b.side === 'top');

@@ -17,8 +17,9 @@ import type {
   MissileTypeLaunchAction,
   MissileLoadAction,
   MissileKeepFireAction,
+  MissileDesperationAction,
 } from '../../types/game';
-import { WORLD, TOP_RECT, BOTTOM_RECT, cellRect, BUILD_OPTIONS, BUILD_CATEGORIES, STATS, BUILDING_META, upgradeCostFor, SHIELD_COVER_CELLS, SHIELD_HEAVY_COVER_CELLS, HEALER_COVER_CELLS, CORE_INCOME_FALLBACK, MAX_STOCK, BUILD_SECONDS, LOAD_SECONDS } from './config';
+import { WORLD, TOP_RECT, BOTTOM_RECT, cellRect, BUILD_OPTIONS, BUILD_CATEGORIES, STATS, BUILDING_META, upgradeCostFor, sellRefundFor, SELL_SECONDS, SHIELD_COVER_CELLS, SHIELD_HEAVY_COVER_CELLS, HEALER_COVER_CELLS, CORE_INCOME_FALLBACK, MAX_STOCK, BUILD_SECONDS, LOAD_SECONDS } from './config';
 import { BUILD_ID } from '../../buildInfo';
 
 interface Props {
@@ -27,11 +28,14 @@ interface Props {
   isHost: boolean;
   onBuild: (action: MissileBuildAction) => void;
   onUpgrade: (buildingId: string) => void;
+  onSell: (buildingId: string) => void;
+  onCancelSell: (buildingId: string) => void;
   onLoad: (action: MissileLoadAction) => void;
   onToggleAutobuild: (launcherId: string) => void;
   onLaunch: (action: MissileLaunchAction) => void;
   onLaunchType: (action: MissileTypeLaunchAction) => void;
   onSetKeepFire: (action: MissileKeepFireAction) => void;
+  onFireDesperation: (action: MissileDesperationAction) => void;
   onPlayAgain: () => void;
 }
 
@@ -128,7 +132,7 @@ function coveredCells(gx: number, gy: number, range: number, cols: number, rows:
   return out;
 }
 
-export default function MissileCommandGame({ roomState, myId, isHost, onBuild, onUpgrade, onLoad, onToggleAutobuild, onLaunch, onLaunchType, onSetKeepFire, onPlayAgain }: Props) {
+export default function MissileCommandGame({ roomState, myId, isHost, onBuild, onUpgrade, onSell, onCancelSell, onLoad, onToggleAutobuild, onLaunch, onLaunchType, onSetKeepFire, onFireDesperation, onPlayAgain }: Props) {
   const mc = roomState.missileCommandState;
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -143,12 +147,14 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   // "Armed" = next enemy-tile pick locks a keep-firing target instead of
   // firing a single volley. The lock itself lives in room state (server-owned).
   const [keepFireArmed, setKeepFireArmed] = useState(false);
-  const [dockVertical, setDockVertical] = useState(false);
+  // Desperation targeting: true while picking the one-time strike's tile.
+  const [targetDesperation, setTargetDesperation] = useState(false);
+  const [dockVertical, setDockVertical] = useState(true);
   // Shield grid effects toggle (visual hex overlay on shield coverage)
   const [showShieldGrid, setShowShieldGrid] = useState(true);
   // Long-press for mobile build menu (tap selects, long-press opens build)
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const LONG_PRESS_MS = 500; // ms to hold for build menu
+  const LONG_PRESS_MS = 350; // ms to hold for build menu
   const fullscreenSupported = typeof document !== 'undefined' &&
     (document.fullscreenEnabled || (document as unknown as { webkitFullscreenEnabled?: boolean }).webkitFullscreenEnabled);
   const [, setFrame] = useState(0);
@@ -222,6 +228,13 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   useEffect(() => {
     if (mc) snapRef.current = { missiles: mc.missiles.map(m => ({ ...m })), at: Date.now() };
   }, [mc]);
+
+  // Fog: an open enemy panel is a live feed — close it the moment vision
+  // lapses, or it keeps streaming HP/stats through the fog.
+  useEffect(() => {
+    if (!selected || selected.ownerId === myId) return;
+    if (fogOfWar && visionOf(selected.gx, selected.gy) !== 'live') setSelectedId(null);
+  });
 
   // ── Frame loop: drives missile interpolation + flash expiry ──
   // Idle-aware: when nothing on screen moves we stop rendering entirely (no
@@ -329,6 +342,8 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   const dockCompact = myLaunchers.length > 5;
   // Server-owned keep-firing lock for me, if any.
   const myKeepFire = mc.keepFire?.[myId] ?? null;
+  // Server-owned desperation flag for me. Unlocks at 50% core HP, one shot.
+  const myDesperation = mc.desperation?.[myId] ?? { unlocked: false, used: false };
 
   const enemyName = enemyId ? (roomState.players.find(p => p.id === enemyId)?.name ?? 'Enemy') : 'Enemy';
   const winnerName = mc.winnerId ? (roomState.players.find(p => p.id === mc.winnerId)?.name ?? '???') : null;
@@ -337,7 +352,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   const topName = (roomState.players.find(p => p.id === mc.sides?.top)?.name ?? 'PLAYER 1').toUpperCase();
   const bottomName = (roomState.players.find(p => p.id === mc.sides?.bottom)?.name ?? 'PLAYER 2').toUpperCase();
   const iWon = mc.winnerId === myId;
-  const isTargeting = targetLauncherId !== null || targetType !== null;
+  const isTargeting = targetLauncherId !== null || targetType !== null || targetDesperation;
   // Fog of war
   const fogOfWar = mc.fogOfWar ?? false;
   const getExplored = (pid: string) => fogOfWar && mc.exploredTiles ? (mc.exploredTiles[pid] ?? {}) : {};
@@ -383,15 +398,18 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   const now = Date.now();
   // Vision state of an enemy tile.
   //   'live'   — revealed right now (permanent core, or inside an active reveal)
-  //   'stale'  — was revealed, the reveal lapsed; show a dimmed last-known view
-  //   'hidden' — never seen; opaque fog
+  //   'stale'  — was revealed, the reveal lapsed; show a dimmed last-known
+  //              view, but ONLY when the lobby enabled fog history
+  //   'hidden' — never seen (or history off); opaque fog
   // exploredTiles encoding: 0 = permanent, -1 = remembered, >0 = expiry ms
+  const fogHistory = mc.fogHistory ?? false;
   const visionOf = (gx: number, gy: number): 'live' | 'stale' | 'hidden' => {
     if (!fogOfWar) return 'live';
     const v = myExplored[`${gx},${gy}`];
     if (v === undefined) return 'hidden';
-    if (v === -1) return 'stale';
-    return v > now ? 'live' : 'stale';
+    if (v === 0 || v > now) return 'live';
+    // Lapsed reveal: remembered only with history on, otherwise fully dark.
+    return fogHistory ? 'stale' : 'hidden';
   };
   // Can I currently see an enemy tile? Stale tiles do NOT count — they're
   // memory, not vision, so aura/beam effects that depend on live sight must
@@ -418,6 +436,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   function cancelTargeting() {
     setTargetLauncherId(null);
     setTargetType(null);
+    setTargetDesperation(false);
   }
 
   function handleTap(wx: number, wy: number, isTouch: boolean) {
@@ -425,10 +444,12 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     const cell = worldToCell(wx, wy, cols, rows);
     if (!cell) { setBuildCell(null); setSelectedId(null); return; }
 
-    // 1. Targeting → strike enemy square (single launcher or whole type)
-    if (targetLauncherId || targetType) {
+    // 1. Targeting → strike enemy square (single launcher, whole type, or
+    //    the one-time desperation strike)
+    if (targetLauncherId || targetType || targetDesperation) {
       if (cell.side !== mySide) {
-        if (targetLauncherId) onLaunch({ launcherId: targetLauncherId, targetGx: cell.gx, targetGy: cell.gy });
+        if (targetDesperation) onFireDesperation({ targetGx: cell.gx, targetGy: cell.gy });
+        else if (targetLauncherId) onLaunch({ launcherId: targetLauncherId, targetGx: cell.gx, targetGy: cell.gy });
         else if (targetType) {
           // Keep-fire armed → lock this tile; the server re-fires here on
           // every missile load until cleared. Otherwise it's a one-off volley.
@@ -458,6 +479,13 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     // 3. Mouse/pen — tap to open.
     const b = byCell.get(`${cell.side}:${cell.gx}:${cell.gy}`);
     if (b) {
+      // Fog: an enemy building without live vision can't be inspected —
+      // its panel would show live HP/stats through the fog.
+      if (b.ownerId !== myId && visionOf(b.gx, b.gy) !== 'live') {
+        setBuildCell(null);
+        setSelectedId(null);
+        return;
+      }
       setBuildCell(null);
       setSelectedId(b.id);
       return;
@@ -578,12 +606,22 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   function startTargeting(launcherId: string) {
     setTargetLauncherId(launcherId);
     setTargetType(null);
+    setTargetDesperation(false);
     setSelectedId(null);
     setBuildCell(null);
   }
   function startTypeTargeting(t: MissileLauncherType) {
     setTargetType(t);
     setTargetLauncherId(null);
+    setTargetDesperation(false);
+    setSelectedId(null);
+    setBuildCell(null);
+  }
+  function startDesperationTargeting() {
+    setTargetDesperation(true);
+    setTargetType(null);
+    setTargetLauncherId(null);
+    setKeepFireArmed(false);
     setSelectedId(null);
     setBuildCell(null);
   }
@@ -936,8 +974,11 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             const ox = (-dy / d) * lane * 14;
             const oy = (dx / d) * lane * 14;
             const px = sx + dx * t + ox, py = sy + dy * t + oy;
-            const col = m.launcherType === 'single' ? '#fbbf24' : '#fb7185';
-            const armed = (m.deployAt ?? 0) <= now;
+            const col = m.desperation ? '#f43f5e' : m.launcherType === 'single' ? '#fbbf24' : '#fb7185';
+            // NOTE: no armed/⏳ state here. deployAt is stamped with the
+            // SERVER clock but `now` is the CLIENT clock, so any skew made
+            // fresh launches render as hourglasses. Nothing ever sets a
+            // future deployAt anyway — everything deploys on creation.
             // Fade out over the last 15% of the flight. Without this the
             // client reaches the target before the server's next 250ms tick
             // removes it, so the missile freezes on the tile for one tick and
@@ -945,11 +986,11 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             const arrival = t > 0.85 ? Math.max(0, 1 - (t - 0.85) / 0.15) : 1;
             const tc = cellRect(m.ownerId === mc.sides.top ? 'bottom' : 'top', m.targetGx, m.targetGy, cols, rows);
             return (
-              <g key={m.id} pointerEvents="none" opacity={(armed ? 1 : 0.45) * arrival}>
-                <line x1={sx + ox} y1={sy + oy} x2={px} y2={py} stroke={col} strokeWidth={3} opacity={0.5} />
-                <text x={px} y={py} textAnchor="middle" dominantBaseline="central" fontSize={armed ? 22 : 15}>{armed ? '🚀' : '⏳'}</text>
+              <g key={m.id} pointerEvents="none" opacity={arrival}>
+                <line x1={sx + ox} y1={sy + oy} x2={px} y2={py} stroke={col} strokeWidth={m.desperation ? 5 : 3} opacity={0.5} />
+                <text x={px} y={py} textAnchor="middle" dominantBaseline="central" fontSize={m.desperation ? 30 : 22}>{m.desperation ? '☢️' : '🚀'}</text>
                 <rect x={tc.x + 2} y={tc.y + 2} width={tc.w - 4} height={tc.h - 4} rx={8}
-                  fill="none" stroke={col} strokeWidth={2} strokeDasharray="6 5" opacity={0.8} />
+                  fill="none" stroke={col} strokeWidth={m.desperation ? 3.5 : 2} strokeDasharray="6 5" opacity={0.8} />
               </g>
             );
           })}
@@ -1122,11 +1163,14 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             );
           })}
 
-          {/* Construction sites & upgrade progress */}
+          {/* Construction sites & upgrade progress. Enemy activity is only
+              shown with live vision — otherwise a 🚧 telegraphs exactly what
+              and where the opponent is building through the fog. */}
           {Object.values(mc.pending ?? {}).map(p => {
+            const isMine = p.ownerId === myId;
+            if (!isMine && visionOf(p.gx, p.gy) !== 'live') return null;
             const r = cellRect(p.side, p.gx, p.gy, cols, rows);
             const secsLeft = Math.max(0, (p.completeAt - now) / 1000);
-            const isMine = p.ownerId === myId;
             if (p.kind === 'build') {
               const meta = BUILDING_META[p.type];
               return (
@@ -1138,6 +1182,17 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                   <text x={r.cx} y={r.y + r.h - 10} textAnchor="middle" fontSize={13} fontWeight={900} fill="#fbbf24"
                     stroke="rgba(0,0,0,0.8)" strokeWidth={3} paintOrder="stroke">
                     {meta.emoji} {secsLeft.toFixed(0)}s
+                  </text>
+                </g>
+              );
+            }
+            if (p.kind === 'sell') {
+              return (
+                <g key={p.id} pointerEvents="none">
+                  <rect x={r.x + 4} y={r.y + 4} width={Math.min(150, r.w - 8)} height={22} rx={11}
+                    fill="rgba(0,0,0,0.7)" stroke="#fbbf24" strokeWidth={1.5} />
+                  <text x={r.x + 12} y={r.y + 15} fontSize={13} fontWeight={800} fill="#fcd34d">
+                    💰 +{p.refund ?? 0}cr {secsLeft.toFixed(0)}s
                   </text>
                 </g>
               );
@@ -1198,6 +1253,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             <span style={{ fontWeight: 800, color: '#fbbf24', fontSize: '0.9rem', animation: 'mc-pulse 1s infinite' }}>
               🎯 TAP ENEMY SQUARE{targetType ? ` — ALL ${targetType.toUpperCase()}` : ''}
               {keepFireArmed && targetType ? ' · 🔒 WILL LOCK' : ''}
+              {targetDesperation ? ' · ☢️ DESPERATION — ONE SHOT' : ''}
             </span>
             <button type="button" onClick={cancelTargeting}
               style={{ background: 'rgba(255,255,255,0.1)', border: '1px solid var(--border)', borderRadius: 8, color: '#fff', fontWeight: 800, padding: '4px 10px' }}>✖</button>
@@ -1210,12 +1266,14 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
           style={{
             position: 'absolute',
             // Horizontal: spans the bottom edge. Vertical: a column pinned to
-            // the right side. `bottom` is always 8 — omitting it in horizontal
-            // mode made the dock fall to its static position, which sits past
-            // the overflow:hidden parent and clips it away entirely.
+            // the right side, starting below the top HUD (resource bars +
+            // help/zoom buttons) so the two never overlap. `bottom` is always
+            // 8 — omitting it in horizontal mode made the dock fall to its
+            // static position, which sits past the overflow:hidden parent and
+            // clips it away entirely.
             left: dockVertical ? undefined : 8,
             right: 8,
-            top: dockVertical ? 8 : undefined,
+            top: dockVertical ? 76 : undefined,
             bottom: 8,
             width: dockVertical ? 180 : undefined,
             display: 'flex',
@@ -1254,6 +1312,34 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                 </span>
               )}
             </button>
+            {/* ── Desperation strike: one-time comeback warhead, unlocked at
+                50% core HP. Shown always so the unlock condition is visible;
+                greyed until armed, gone once spent. */}
+            {!myDesperation.used && (
+              <button
+                type="button"
+                onClick={() => { if (myDesperation.unlocked) startDesperationTargeting(); }}
+                disabled={!myDesperation.unlocked}
+                title={
+                  myDesperation.unlocked
+                    ? '☢️ Fire the desperation strike — 2000 dmg over a wide blast. ONE SHOT, pick the tile well.'
+                    : '🔒 Unlocks when your core drops to 50% HP'
+                }
+                style={{
+                  padding: dockCompact ? '5px 9px' : '7px 13px', borderRadius: 999, fontWeight: 800,
+                  fontSize: dockCompact ? '0.68rem' : '0.74rem', color: '#fff',
+                  display: 'flex', alignItems: 'center', gap: 5,
+                  background: myDesperation.unlocked ? 'rgba(244,63,94,0.24)' : 'rgba(255,255,255,0.04)',
+                  border: `1px solid ${myDesperation.unlocked ? 'rgba(244,63,94,0.7)' : 'var(--border)'}`,
+                  animation: myDesperation.unlocked ? 'mc-pulse 1.2s infinite' : undefined,
+                  whiteSpace: 'nowrap',
+                  opacity: myDesperation.unlocked ? 1 : 0.55,
+                  cursor: myDesperation.unlocked ? 'pointer' : 'not-allowed',
+                }}
+              >
+                <span>{myDesperation.unlocked ? (targetDesperation ? '☢️ AIMING…' : '☢️ DESPERATION') : '🔒 DESPERATION'}</span>
+              </button>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 6, pointerEvents: 'auto', justifyContent: dockVertical ? 'center' : 'flex-end', flexWrap: 'wrap', flexDirection: dockVertical ? 'column' : 'row' }}>
             {(['single', 'scatter'] as const).map(t => {
@@ -1288,7 +1374,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
               {dockVertical ? '↔️ Horizontal' : '↕️ Vertical'}
             </button>
           </div>
-          <div className="mc-dock" style={{ display: 'flex', gap: dockCompact ? 3 : 6, overflowX: 'auto', pointerEvents: 'auto', scrollbarWidth: 'none', flexDirection: dockVertical ? 'column' : 'row', flexWrap: dockVertical ? 'nowrap' : 'wrap', alignItems: dockVertical ? 'stretch' : 'center', minHeight: dockVertical ? 'auto' : undefined, maxHeight: dockVertical ? '100%' : undefined }}>
+          <div className="mc-dock" style={{ display: 'flex', gap: dockCompact ? 3 : 6, overflowX: dockVertical ? 'hidden' : 'auto', overflowY: dockVertical ? 'auto' : 'hidden', pointerEvents: 'auto', scrollbarWidth: 'none', flexDirection: dockVertical ? 'column' : 'row', flexWrap: dockVertical ? 'nowrap' : 'wrap', alignItems: dockVertical ? 'stretch' : 'center', minHeight: dockVertical ? 'auto' : undefined, maxHeight: dockVertical ? '100%' : undefined }}>
             {myLaunchers.map(l => {
               const stock = l.stock ?? 0;
               const maxStock = l.maxStock ?? MAX_STOCK;
@@ -1399,9 +1485,9 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
         </Modal>
       )}
 
-      {/* ── Building dialog ── */}
+      {/* ── Building dialog (compact sheet — keeps the map visible) ── */}
       {selected && (
-        <Modal onClose={() => setSelectedId(null)} title={`${BUILDING_META[selected.type].emoji} ${BUILDING_META[selected.type].name}${selected.type !== 'core' ? ` — Level ${selected.level}/5` : ''}`}>
+        <Modal compact onClose={() => setSelectedId(null)} title={`${BUILDING_META[selected.type].emoji} ${BUILDING_META[selected.type].name}${selected.type !== 'core' ? ` — Level ${selected.level}/5` : ''}`}>
           <BuildingPanel
             b={selected}
             isMine={selected.ownerId === myId}
@@ -1409,9 +1495,12 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             upgradeCost={upgradeCost}
             coreIncome={coreIncome}
             pendingUp={Object.values(mc.pending ?? {}).find(p => p.kind === 'upgrade' && p.upgradeOf === selected.id) ?? null}
+            pendingSell={Object.values(mc.pending ?? {}).find(p => p.kind === 'sell' && p.sellOf === selected.id) ?? null}
             coverCount={selectedInfluence?.shields.length ?? 0}
             healerCount={selectedInfluence?.healers.length ?? 0}
             onUpgrade={() => { onUpgrade(selected.id); setSelectedId(null); }}
+            onSell={() => onSell(selected.id)}
+            onCancelSell={() => onCancelSell(selected.id)}
             onLoad={() => onLoad({ launcherId: selected.id })}
             onToggleAutobuild={() => onToggleAutobuild(selected.id)}
             onFire={() => startTargeting(selected.id)}
@@ -1489,7 +1578,7 @@ function IslandPlacard({ y, name, mine, dir, color }: {
   );
 }
 
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+function Modal({ title, onClose, children, compact }: { title: string; onClose: () => void; children: React.ReactNode; compact?: boolean }) {
   // Escape closes too (mobile hardware back / desktop keyboards).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -1511,13 +1600,17 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
         onClick={(e) => e.stopPropagation()}
         className="glass animate-fade-up"
         style={{
-          width: '100%', maxWidth: 560, maxHeight: '82vh', overflowY: 'auto',
-          borderRadius: 'var(--radius-xl)', padding: 20, background: 'rgba(13,18,32,0.97)',
+          // Compact sheets (building dialog) stay small so most of the map
+          // stays visible; full sheets (build menu, help) keep their size.
+          width: '100%', maxWidth: compact ? 400 : 560,
+          maxHeight: compact ? '46vh' : '82vh', overflowY: 'auto',
+          borderRadius: 'var(--radius-xl)', padding: compact ? 14 : 20,
+          background: 'rgba(13,18,32,0.97)',
           border: '1px solid var(--border)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <span style={{ fontWeight: 800, fontSize: '1.05rem' }}>{title}</span>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: compact ? 8 : 12 }}>
+          <span style={{ fontWeight: 800, fontSize: compact ? '0.95rem' : '1.05rem' }}>{title}</span>
           <button type="button" onClick={onClose} aria-label="Close dialog"
             style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(255,255,255,0.06)', border: '1px solid var(--border)', color: '#fff', fontSize: '1rem', fontWeight: 800 }}>
             ✖
@@ -1529,16 +1622,19 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
   );
 }
 
-function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendingUp, coverCount, healerCount, onUpgrade, onLoad, onToggleAutobuild, onFire }: {
+function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendingUp, pendingSell, coverCount, healerCount, onUpgrade, onSell, onCancelSell, onLoad, onToggleAutobuild, onFire }: {
   b: MissileBuilding;
   isMine: boolean;
   myResources: number;
   upgradeCost: number | null;
   coreIncome: number;
   pendingUp: { targetLevel: number; completeAt: number } | null;
+  pendingSell: { completeAt: number; refund?: number } | null;
   coverCount?: number;
   healerCount?: number;
   onUpgrade: () => void;
+  onSell: () => void;
+  onCancelSell: () => void;
   onLoad: () => void;
   onToggleAutobuild: () => void;
   onFire: () => void;
@@ -1601,9 +1697,9 @@ function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendin
   return (
     <div>
       {!isMine && <div className="badge badge-rose" style={{ marginBottom: 8 }}>ENEMY BUILDING</div>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 10 }}>
         {rows.map(([k, v], i) => (
-          <div key={i} className="text-sm" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '8px 12px', background: 'rgba(255,255,255,0.03)', borderRadius: 10 }}>
+          <div key={i} className="text-sm" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '6px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: 10, fontSize: '0.82rem' }}>
             <span className="text-muted">{k}</span><span style={{ fontWeight: 700, textAlign: 'right' }}>{v}</span>
           </div>
         ))}
@@ -1614,12 +1710,37 @@ function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendin
           className={`btn btn-full ${!pendingUp && upgradeCost !== null && myResources >= upgradeCost ? 'btn-primary' : 'btn-secondary'}`}
           disabled={!!pendingUp || upgradeCost === null || myResources < upgradeCost}
           onClick={onUpgrade}
-          style={{ marginBottom: 8, padding: '14px' }}
+          style={{ marginBottom: 8, padding: '10px' }}
         >
           {pendingUp
             ? `⏳ Upgrading to Lv${pendingUp.targetLevel}… ${upSecs.toFixed(0)}s left`
             : upgradeCost === null ? '⭐ MAX LEVEL' : `⬆ Upgrade to Lv${b.level + 1} (${upgradeCost}cr, ${nextUpSecs}s)`}
         </button>
+      )}
+      {isMine && b.type !== 'core' && (
+        pendingSell ? (
+          <div style={{ marginBottom: 8, padding: '10px 12px', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.4)', borderRadius: 'var(--radius-md)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: '0.85rem', marginBottom: 6 }}>
+              <span>💰 Demolishing… +{pendingSell.refund ?? sellRefundFor(b)}cr</span>
+              <span>{Math.max(0, (pendingSell.completeAt - Date.now()) / 1000).toFixed(0)}s</span>
+            </div>
+            <button type="button" onClick={onCancelSell}
+              style={{ width: '100%', padding: '8px', borderRadius: 8, fontWeight: 800, fontSize: '0.8rem', color: '#fff', background: 'rgba(255,255,255,0.06)', border: '1px solid var(--border)' }}>
+              Keep building
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-full btn-secondary"
+            disabled={!!pendingUp}
+            title={pendingUp ? 'Finish the upgrade first (or wait for it to complete)' : `Demolish over ${SELL_SECONDS}s for 70% back (+${sellRefundFor(b)}cr)`}
+            onClick={onSell}
+            style={{ marginBottom: 8, padding: '10px', opacity: pendingUp ? 0.5 : 1 }}
+          >
+            {`💰 Sell (+${sellRefundFor(b)}cr, ${SELL_SECONDS}s)`}
+          </button>
+        )
       )}
       {isMine && b.type === 'launcher' && (
         loading ? (
@@ -1637,7 +1758,7 @@ function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendin
             type="button"
             className="btn btn-full btn-secondary"
             onClick={onLoad}
-            style={{ marginBottom: 8, padding: '14px' }}
+            style={{ marginBottom: 8, padding: '10px' }}
             title={stockFull ? 'Stockpile full' : broke ? `Need ${b.missileCost}cr` : `Build 1 missile for ${b.missileCost}cr (~${LOAD_SECONDS}s)`}
           >
             {stockFull ? `📦 Stockpile full (${maxStock}/${maxStock})` : broke ? `🔨 Build missile — need ${b.missileCost}cr` : `🔨 Build missile (${b.missileCost}cr)`}
@@ -1650,7 +1771,7 @@ function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendin
           onClick={onToggleAutobuild}
           title={b.autobuild ? 'AUTO ON — tap to stop auto-loading missiles' : 'AUTO OFF — tap to auto-load whenever affordable'}
           style={{
-            width: '100%', marginBottom: 8, padding: '12px 14px', borderRadius: 'var(--radius-md)',
+            width: '100%', marginBottom: 8, padding: '10px 12px', borderRadius: 'var(--radius-md)',
             fontWeight: 800, fontSize: '0.9rem', color: '#fff',
             background: b.autobuild ? 'rgba(74,222,128,0.18)' : 'rgba(255,255,255,0.04)',
             border: `2px solid ${b.autobuild ? 'rgba(74,222,128,0.6)' : 'var(--border)'}`,
@@ -1660,7 +1781,7 @@ function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendin
         </button>
       )}
       {isMine && b.type === 'launcher' && (
-        <button type="button" className="btn btn-full btn-rose" onClick={onFire} disabled={stock <= 0} style={{ padding: '14px', opacity: stock <= 0 ? 0.5 : 1 }}>
+        <button type="button" className="btn btn-full btn-rose" onClick={onFire} disabled={stock <= 0} style={{ padding: '10px', opacity: stock <= 0 ? 0.5 : 1 }}>
           {stock <= 0 ? '🎯 No missiles — build some first' : `🎯 FIRE VOLLEY ×${stock}`}
         </button>
       )}

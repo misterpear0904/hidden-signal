@@ -29,11 +29,14 @@ import {
   updateMissileCommandOptions,
   buildMissileBuilding,
   upgradeMissileBuilding,
+  sellMissileBuilding,
+  cancelMissileSell,
   loadMissile,
   toggleAutobuild,
   launchMissile,
   launchMissileType,
   setKeepFire,
+  fireDesperation,
   tickMissileRoom,
   setPlayerDifficulty,
   submitChromaGuess,
@@ -69,6 +72,8 @@ import {
   resolveRound,
   advanceRound,
   playerDisconnected,
+  rejoinRoom,
+  REJOIN_GRACE_MS,
   deleteRoom,
   sweepInactiveRooms,
   isHost,
@@ -346,7 +351,7 @@ function roomPublicState(room, forPlayerId = null) {
     chromaOptions: room.chromaOptions || { difficulty: 'easy', fairPoints: true, extremeMode: false },
     territoryOptions: room.territoryOptions || { extremeMode: false },
     liarOptions: room.liarOptions || { extremeMode: false },
-    missileCommandOptions: room.missileCommandOptions || { startingResources: 200, economyTickMs: 500, maxLevel: 5, fogOfWar: false },
+    missileCommandOptions: room.missileCommandOptions || { startingResources: 200, economyTickMs: 500, maxLevel: 5, fogOfWar: true, fogHistory: false },
     missileCommandState: (() => {
       const s = room.missileCommandState || null;
       if (!s || !s.fogOfWar || !forPlayerId || !s.exploredTiles) return s;
@@ -685,6 +690,28 @@ io.on('connection', (socket) => {
     broadcastRoomState(result.room);
   });
 
+  socket.on('sell-missile-building', ({ roomCode, buildingId } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const room = getRoomOrExpire(socket, roomCode);
+    if (!room) return;
+    const id = typeof buildingId === 'string' ? buildingId : buildingId?.buildingId;
+    const result = sellMissileBuilding(roomCode, socket.id, id);
+    if (!result) return socket.emit('error', 'Cannot sell now');
+    if (result.error) return socket.emit('error', result.error);
+    broadcastRoomState(result.room);
+  });
+
+  socket.on('cancel-missile-sell', ({ roomCode, buildingId } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const room = getRoomOrExpire(socket, roomCode);
+    if (!room) return;
+    const id = typeof buildingId === 'string' ? buildingId : buildingId?.buildingId;
+    const result = cancelMissileSell(roomCode, socket.id, id);
+    if (!result) return socket.emit('error', 'Cannot cancel sale now');
+    if (result.error) return socket.emit('error', result.error);
+    broadcastRoomState(result.room);
+  });
+
   socket.on('launch-missile', ({ roomCode, action } = {}) => {
     if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const room = getRoomOrExpire(socket, roomCode);
@@ -735,6 +762,18 @@ io.on('connection', (socket) => {
     if (!room) return;
     const result = setKeepFire(roomCode, socket.id, action);
     if (!result) return socket.emit('error', 'Cannot set keep-fire now');
+    if (result.error) return socket.emit('error', result.error);
+    broadcastRoomState(result.room);
+  });
+
+  socket.on('fire-desperation', ({ roomCode, targetGx, targetGy } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const room = getRoomOrExpire(socket, roomCode);
+    if (!room) return;
+    const gx = typeof targetGx === 'number' ? targetGx : targetGx?.gx;
+    const gy = typeof targetGy === 'number' ? targetGy : targetGy?.gy;
+    const result = fireDesperation(roomCode, socket.id, { targetGx: gx, targetGy: gy });
+    if (!result) return socket.emit('error', 'Cannot fire now');
     if (result.error) return socket.emit('error', result.error);
     broadcastRoomState(result.room);
   });
@@ -1082,13 +1121,45 @@ io.on('connection', (socket) => {
     const room = playerDisconnected(socket.id);
     if (room) {
       broadcastRoomState(room);
-      // Clean up empty rooms
+      // Don't delete immediately: a backgrounded phone drops its socket for
+      // seconds at a time. playerDisconnected scheduled deletion after
+      // REJOIN_GRACE_MS; the periodic sweep enforces it.
       if (room.players.every(p => !p.connected)) {
         clearRoomTimer(room.code);
-        deleteRoom(room.code);
-        logger.info('room_deleted', { roomCode: room.code, reason: 'all_players_disconnected' });
+        logger.info('room_abandoned_grace', { roomCode: room.code, deleteAt: room.deleteAt });
       }
     }
+  });
+
+  // Reclaim a disconnected slot after a reconnect (socket ids change, so the
+  // fresh socket must be mapped back onto the existing player).
+  socket.on('rejoin-room', ({ roomCode, playerName } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    if (!playerName?.trim() || !roomCode?.trim()) return socket.emit('error', 'Name and code required');
+    const code = roomCode.trim().toUpperCase();
+    const result = rejoinRoom(code, socket.id, playerName.trim().substring(0, 20));
+    if (result.error) {
+      if (result.error === 'Room not found') {
+        socket.emit('room-expired', { roomCode: code, reason: 'Room no longer exists (server restart or expired)' });
+      }
+      return socket.emit('error', result.error);
+    }
+    logger.room.join(code, socket.id, { playerName: playerName.trim().substring(0, 20), rejoined: true });
+    socket.join(code);
+    socket.emit('room-joined', { roomCode: code, playerId: socket.id });
+    broadcastRoomState(result.room);
+  });
+
+  // Fresh state pull (used after reconnects and visibility returns).
+  socket.on('room-state-request', ({ roomCode } = {}) => {
+    if (!checkRateLimit(socket.id)) return;
+    if (!roomCode) return;
+    const room = getRoom(roomCode.trim().toUpperCase());
+    if (!room) {
+      socket.emit('room-expired', { roomCode, reason: 'Room no longer exists (server restart or expired)' });
+      return;
+    }
+    socket.emit('room-state', roomPublicState(room, socket.id));
   });
 });
 
