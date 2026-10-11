@@ -65,7 +65,7 @@ export const GAME_CATALOGUE: GameDefinition[] = [
       { icon: '🚀', text: 'Launchers stockpile up to 3 slow-cruise missiles (5s each, or AUTO toggle). FIRE a volley, or 🔥 ALL of one type at a single square!' },
       { icon: '💥', text: 'Single = precise 120 dmg. Scatter = 5 × 35 (175 total!) — highest overall damage, best shield-breaker.' },
       { icon: '⬆️', text: 'Tap any building for exact stats: upgrade to Level 5 (3s → 30s build times, all parallel), load missiles, or FIRE!' },
-      { icon: '💥', text: 'Destroy the enemy Core (⭐, 2000 HP + slow regen) to win!' },
+      { icon: '💥', text: 'Destroy the enemy Core (⭐, 4000 HP + slow regen) to win!' },
       { icon: '🔍', text: 'Full-screen canvas: drag to pan, wheel/pinch to zoom, ? for help. Mobile-friendly tap controls.' },
     ],
   },

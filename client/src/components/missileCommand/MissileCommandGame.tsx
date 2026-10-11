@@ -224,25 +224,23 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   }, [mc]);
 
   // ── Frame loop: drives missile interpolation + flash expiry ──
-  // Idle-aware: when there are no missiles in flight and no live flashes,
-  // nothing on screen moves, so we stop burning 10 renders/sec. React state
-  // updates still re-render normally — this only skips the no-op ticks.
+  // Idle-aware: when nothing on screen moves we stop rendering entirely (no
+  // idle CPU/GPU burn). While something IS moving, every frame is rendered —
+  // missiles interpolate over ~10s and any throttle (this used to be 10fps)
+  // reads as visible stepping.
   // Reads liveness through refs so the loop is subscribed exactly once
-  // (putting flashes.length in deps tore down + re-created the rAF chain
-  // on every flash appearing/disappearing).
+  // (a flashes.length dep would re-create the rAF chain on every flash).
   useEffect(() => {
     let raf = 0;
-    let last = 0;
     let idle = false;
-    const loop = (t: number) => {
+    const loop = () => {
       raf = requestAnimationFrame(loop);
       const busy = snapRef.current.missiles.length > 0 || flashesLenRef.current > 0;
-      if (!busy) { idle = true; last = 0; return; }
-      // Resuming from idle: draw immediately, don't wait for the first tick.
-      if (idle) { idle = false; last = -Infinity; }
-      if (t - last > 100) {
-        last = t;
-        setFrame(f => f + 1);
+      if (!busy) { idle = true; return; }
+      // Resuming from idle: draw immediately rather than waiting a frame.
+      idle = false;
+      setFrame(f => f + 1);
+      if (flashesLenRef.current > 0) {
         setFlashes(f => (f.length ? f.filter(fl => fl.expires > Date.now()) : f));
       }
     };
@@ -298,6 +296,24 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   const shieldBuildings = useMemo(() => buildings.filter(b => b.type === 'shield' || b.type === 'shield_heavy'), [buildings]);
   const selected: MissileBuilding | null = (selectedId && mc.buildings[selectedId]) || null;
   const selCellKey = selected ? { side: selected.side, key: `${selected.gx},${selected.gy}` } : null;
+  // Incoming influence for the selected OWN building: shields covering it,
+  // plus (if it is a shield) healers in range of it. Only own buildings —
+  // enemy influence would leak fog-hidden positions.
+  const selectedInfluence = useMemo(() => {
+    if (!selected || selected.ownerId !== myId) return null;
+    const dist = (a: { gx: number; gy: number }, b: { gx: number; gy: number }) =>
+      Math.abs(a.gx - b.gx) + Math.abs(a.gy - b.gy);
+    const shields = buildings.filter(s =>
+      (s.type === 'shield' || s.type === 'shield_heavy') &&
+      s.side === selected.side && s.id !== selected.id &&
+      dist(s, selected) <= (s.shieldTiles ?? shieldTiles));
+    const isShield = selected.type === 'shield' || selected.type === 'shield_heavy';
+    const healers = isShield
+      ? buildings.filter(h => h.type === 'healer' && h.side === selected.side && dist(h, selected) <= healerTiles)
+      : [];
+    if (!shields.length && !healers.length) return null;
+    return { shields, healers };
+  }, [selected, buildings, myId, shieldTiles, healerTiles]);
   const myBuildings = useMemo(() => buildings.filter(b => b.ownerId === myId), [buildings, myId]);
   const myCore = useMemo(() => buildings.find(b => b.type === 'core' && b.side === mySide), [buildings, mySide]);
   const enemyCore = useMemo(() => buildings.find(b => b.type === 'core' && b.side !== mySide), [buildings, mySide]);
@@ -326,7 +342,6 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   const fogOfWar = mc.fogOfWar ?? false;
   const getExplored = (pid: string) => fogOfWar && mc.exploredTiles ? (mc.exploredTiles[pid] ?? {}) : {};
   const myExplored = myId ? getExplored(myId) : {};
-  const enemyExplored = enemyId ? getExplored(enemyId) : {};
   // Fog layer built once per explored-set change (4Hz from server ticks)
   // instead of on every 10fps frame tick — 91 cells × 2 rects is the single
   // biggest node count in the whole SVG.
@@ -334,43 +349,54 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     if (!fogOfWar || !mySide) return null;
     const enemySide = mySide === 'top' ? 'bottom' : 'top';
     const t = Date.now();
-    const hidden: Array<{ gx: number; gy: number; faded: boolean }> = [];
+    // Three layers: never-seen tiles get opaque fog; remembered tiles get a
+    // grey wash so the player keeps last-knowledge of the layout.
+    const hidden: Array<{ gx: number; gy: number }> = [];
+    const remembered: Array<{ gx: number; gy: number }> = [];
     for (let i = 0; i < cols * rows; i++) {
       const gx = i % cols;
       const gy = Math.floor(i / cols);
-      const expiresAt = myExplored[`${gx},${gy}`];
-      if (expiresAt === undefined) { hidden.push({ gx, gy, faded: false }); continue; }
-      // 0 = permanently explored; otherwise still revealed until it expires.
-      if (expiresAt === 0 || expiresAt > t) continue;
-      hidden.push({ gx, gy, faded: true });
+      const v = myExplored[`${gx},${gy}`];
+      if (v === undefined) { hidden.push({ gx, gy }); continue; }
+      if (v === 0 || v > t) continue; // live — no fog at all
+      remembered.push({ gx, gy });    // -1 / lapsed
     }
-    if (!hidden.length) return null;
+    if (!hidden.length && !remembered.length) return null;
+    const wash = (cells: Array<{ gx: number; gy: number }>, fill: string, opacity: number) =>
+      cells.map(({ gx, gy }) => {
+        const r = cellRect(enemySide, gx, gy, cols, rows);
+        return (
+          <rect key={`fog-${gx}-${gy}`} x={r.x} y={r.y} width={r.w} height={r.h} rx={4}
+            fill={fill} stroke="rgba(255,255,255,0.05)" strokeWidth={0.5} opacity={opacity}
+            pointerEvents="none" />
+        );
+      });
     return (
       <g key="fog-of-war" pointerEvents="none">
-        {hidden.map(({ gx, gy, faded }) => {
-          const r = cellRect(enemySide, gx, gy, cols, rows);
-          return (
-            <g key={`${gx}-${gy}`} pointerEvents="none" opacity={faded ? 0.3 : 0.6}>
-              <rect x={r.x} y={r.y} width={r.w} height={r.h} rx={4}
-                fill="rgba(0,0,0,0.85)" stroke="rgba(255,255,255,0.05)" strokeWidth={0.5} />
-              <rect x={r.x + 1} y={r.y + 1} width={r.w - 2} height={r.h - 2} rx={3}
-                fill="rgba(20,20,30,0.9)" />
-            </g>
-          );
-        })}
+        {wash(hidden, 'rgba(0,0,0,0.88)', 1)}
+        {/* Remembered: a grey wash over the buildings so they read as
+            last-known rather than currently observed. */}
+        {wash(remembered, 'rgba(70,84,104,0.5)', 0.8)}
       </g>
     );
   }, [fogOfWar, mySide, myExplored, cols, rows]);
   const now = Date.now();
-  // Helper: check if a tile is explored (permanent=0, or temporary not expired)
-  const isExplored = (tiles: Record<string, number> | undefined, gx: number, gy: number) => {
-    if (!tiles) return false;
-    const key = `${gx},${gy}`;
-    const expiresAt = tiles[key];
-    if (expiresAt === undefined) return false;
-    if (expiresAt === 0) return true; // permanent
-    return expiresAt > now; // temporary, check expiration
+  // Vision state of an enemy tile.
+  //   'live'   — revealed right now (permanent core, or inside an active reveal)
+  //   'stale'  — was revealed, the reveal lapsed; show a dimmed last-known view
+  //   'hidden' — never seen; opaque fog
+  // exploredTiles encoding: 0 = permanent, -1 = remembered, >0 = expiry ms
+  const visionOf = (gx: number, gy: number): 'live' | 'stale' | 'hidden' => {
+    if (!fogOfWar) return 'live';
+    const v = myExplored[`${gx},${gy}`];
+    if (v === undefined) return 'hidden';
+    if (v === -1) return 'stale';
+    return v > now ? 'live' : 'stale';
   };
+  // Can I currently see an enemy tile? Stale tiles do NOT count — they're
+  // memory, not vision, so aura/beam effects that depend on live sight must
+  // not leak through them.
+  const canSeeEnemyAt = (gx: number, gy: number) => visionOf(gx, gy) === 'live';
 
   // ── View transform ──
   const vbW = WORLD / zoom, vbH = WORLD / zoom;
@@ -418,20 +444,27 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
       return;
     }
 
-    // 2. Building tapped → open dialog
+    // 2. On touch, opening anything on your own island is LONG-PRESS only.
+    //    A plain tap just closes whatever was open — applied to buildings and
+    //    empty cells alike, so the gesture never depends on what's under the
+    //    finger (previously tap opened buildings while long-press opened empty
+    //    cells, so each gesture was dead for half the island).
+    if (isTouch) {
+      setBuildCell(null);
+      setSelectedId(null);
+      return;
+    }
+
+    // 3. Mouse/pen — tap to open.
     const b = byCell.get(`${cell.side}:${cell.gx}:${cell.gy}`);
     if (b) {
       setBuildCell(null);
       setSelectedId(b.id);
       return;
     }
-
-    // 3. Empty own square → build popup. On touch this is long-press only
-    // (a plain tap just clears selection); mouse/pen keep tap-to-build.
     if (cell.side === mySide) {
       setSelectedId(null);
-      if (isTouch) setBuildCell(null);
-      else setBuildCell(cell);
+      setBuildCell(cell);
     } else {
       setBuildCell(null);
       setSelectedId(null);
@@ -472,12 +505,17 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
         longPressFiredRef.current = true;
         const w = toWorld(e.clientX, e.clientY);
         const cell = worldToCell(w.x, w.y, cols, rows);
-        if (cell && cell.side === mySide) {
-          // Only trigger long-press on empty own cells (not on buildings)
-          const b = byCell.get(`${cell.side}:${cell.gx}:${cell.gy}`);
-          if (!b) {
-            setBuildCell(cell); // open build menu
-          }
+        if (!cell || cell.side !== mySide) return;
+        // Long-press opens WHATEVER is on the cell — a building's panel or,
+        // on an empty square, the build menu. Same gesture for both, so it
+        // never depends on what happens to be under the finger.
+        const b = byCell.get(`${cell.side}:${cell.gx}:${cell.gy}`);
+        if (b) {
+          setBuildCell(null);
+          setSelectedId(b.id);
+        } else {
+          setSelectedId(null);
+          setBuildCell(cell);
         }
       }, LONG_PRESS_MS);
     }
@@ -710,9 +748,14 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             buildKey={buildCell?.side === 'bottom' ? `${buildCell.gx},${buildCell.gy}` : null}
           />
 
-          {/* Shield coverage — hex tiles with animated gradients, pulsing borders */}
+          {/* Shield coverage — hex tiles with animated gradients, pulsing borders.
+              A shield's aura is only drawn when I can actually see the
+              generator, so fogged enemy shields don't reveal their own
+              coverage — that would be free scouting information. */}
           {shieldBuildings.map(b => {
             const isMine = b.ownerId === myId;
+            if (!isMine && visionOf(b.gx, b.gy) === 'hidden') return null; // never seen
+            const stale = !isMine && visionOf(b.gx, b.gy) === 'stale';
             const pct = (b.shieldHp ?? 0) / (b.maxShieldHp ?? 1);
             const isSel = selected?.id === b.id;
             const isHeavy = b.type === 'shield_heavy';
@@ -724,17 +767,17 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             const edgeColor = isHeavy ? '#60a5fa' : '#38bdf8';
             const edgeColorEnemy = isHeavy ? '#f43f5e' : '#fb7185';
             return (
-              <g key={`sh-${b.id}`} pointerEvents="none" filter={pct > 0 && isSel ? `url(#${glowFilter})` : undefined}>
-                {cells.map(c => {
+              <g key={`sh-${b.id}`} pointerEvents="none"
+                filter={stale ? 'saturate(0.4)' : (showShieldGrid && pct > 0 && isSel ? `url(#${glowFilter})` : undefined)}
+                opacity={stale ? 0.5 : 1}>
+                {showShieldGrid && cells.map(c => {
                   const r = cellRect(b.side, c.gx, c.gy, cols, rows);
                   return (
                     <g key={`${c.gx}-${c.gy}`}>
                       <rect x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={7}
                         fill={`url(#${gradId})`} />
-                      {showShieldGrid && (
-                        <rect x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={7}
-                          fill={`url(#${hexPatternId})`} opacity={isSel ? 1 : pct > 0.15 ? 0.7 : 0.35} />
-                      )}
+                      <rect x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={7}
+                        fill={`url(#${hexPatternId})`} opacity={isSel ? 1 : pct > 0.15 ? 0.7 : 0.35} />
                       <rect x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={7}
                         fill="none"
                         stroke={!isMine ? edgeColorEnemy : edgeColor}
@@ -744,7 +787,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                     </g>
                   );
                 })}
-                {isSel && pct > 0 && (
+                {showShieldGrid && isSel && pct > 0 && (
                   <path d={coverageOutlinePath(b.side, cells, cols, rows)}
                     fill="none" stroke={edgeColor} strokeWidth={3.5} strokeDasharray="14 5" className="mc-march" strokeLinejoin="round" />
                 )}
@@ -792,8 +835,10 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             );
           })()}
 
-          {/* Heal effect (visible to BOTH players): beam + pulses + ripple */}
-          {buildings.filter(b => b.type === 'healer' && b.healTargetId).map(h => {
+          {/* Heal effect (visible to BOTH players): beam + pulses + ripple.
+              Under fog, an enemy healer's beam gives away its exact tile, so
+              it's only drawn once I have vision of that healer. */}
+          {buildings.filter(b => b.type === 'healer' && b.healTargetId && (b.ownerId === myId || canSeeEnemyAt(b.gx, b.gy))).map(h => {
             const t = mc.buildings[h.healTargetId!];
             if (!t) return null;
             const hr = cellRect(h.side, h.gx, h.gy, cols, rows);
@@ -838,6 +883,42 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             );
           })}
 
+          {/* Incoming influence for the selected own building: dashed links +
+              corner rings on each shield covering it and each healer in range.
+              Own island only, so no fog positions can leak. */}
+          {selectedInfluence && selected && (() => {
+            const sr = cellRect(selected.side, selected.gx, selected.gy, cols, rows);
+            const link = (
+              b: MissileBuilding,
+              color: string,
+              label: string,
+            ) => {
+              const r = cellRect(b.side, b.gx, b.gy, cols, rows);
+              return (
+                <g key={`inf-${b.id}`} pointerEvents="none">
+                  <line x1={r.cx} y1={r.cy} x2={sr.cx} y2={sr.cy}
+                    stroke={color} strokeWidth={2.5} strokeDasharray="8 6" opacity={0.9} />
+                  <rect x={r.x - 2} y={r.y - 2} width={r.w + 4} height={r.h + 4} rx={11}
+                    fill="none" stroke={color} strokeWidth={2.5} strokeDasharray="7 5" />
+                  <circle cx={r.cx} cy={r.cy} r={Math.min(r.w, r.h) * 0.52} fill="none"
+                    stroke={color} strokeWidth={1.5} opacity={0.55}>
+                    <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.52};${Math.min(r.w, r.h) * 0.68}`} dur="1.4s" repeatCount="indefinite" />
+                    <animate attributeName="opacity" values="0.55;0" dur="1.4s" repeatCount="indefinite" />
+                  </circle>
+                  <text x={(r.cx + sr.cx) / 2} y={(r.cy + sr.cy) / 2 - 8} textAnchor="middle"
+                    fontSize={15} fontWeight={900} stroke="rgba(0,0,0,0.85)" strokeWidth={3}
+                    paintOrder="stroke">{label}</text>
+                </g>
+              );
+            };
+            return (
+              <g key="influence" pointerEvents="none">
+                {selectedInfluence.shields.map(s => link(s, '#7dd3fc', '🛡️'))}
+                {selectedInfluence.healers.map(h => link(h, '#86efac', '💚'))}
+              </g>
+            );
+          })()}
+
           {/* Missiles in flight (interpolated, fanned by lane).
               Kept to 3 lean nodes each (trail, head, target) with no CSS
               animations so big scatter volleys stay smooth. */}
@@ -857,9 +938,14 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             const px = sx + dx * t + ox, py = sy + dy * t + oy;
             const col = m.launcherType === 'single' ? '#fbbf24' : '#fb7185';
             const armed = (m.deployAt ?? 0) <= now;
+            // Fade out over the last 15% of the flight. Without this the
+            // client reaches the target before the server's next 250ms tick
+            // removes it, so the missile freezes on the tile for one tick and
+            // then blinks out.
+            const arrival = t > 0.85 ? Math.max(0, 1 - (t - 0.85) / 0.15) : 1;
             const tc = cellRect(m.ownerId === mc.sides.top ? 'bottom' : 'top', m.targetGx, m.targetGy, cols, rows);
             return (
-              <g key={m.id} pointerEvents="none" opacity={armed ? 1 : 0.45}>
+              <g key={m.id} pointerEvents="none" opacity={(armed ? 1 : 0.45) * arrival}>
                 <line x1={sx + ox} y1={sy + oy} x2={px} y2={py} stroke={col} strokeWidth={3} opacity={0.5} />
                 <text x={px} y={py} textAnchor="middle" dominantBaseline="central" fontSize={armed ? 22 : 15}>{armed ? '🚀' : '⏳'}</text>
                 <rect x={tc.x + 2} y={tc.y + 2} width={tc.w - 4} height={tc.h - 4} rx={8}
@@ -901,11 +987,15 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             const hpPct = b.type === 'core' ? (b.coreHp! / b.maxCoreHp!) : (b.hp! / b.maxHp!);
             const shieldPct = (b.type === 'shield' || b.type === 'shield_heavy') ? (b.shieldHp! / b.maxShieldHp!) : 1;
             const emoji = b.type === 'launcher' ? (b.launcherType === 'single' ? '🎯' : '💥') : b.type === 'core' ? '⭐' : meta.emoji;
-            // Fog of war: hide enemy buildings unless explored (core always visible)
-            const explored = b.type === 'core' || isMine || !fogOfWar || isExplored(isMine ? myExplored : enemyExplored, b.gx, b.gy);
-            if (!explored) return null;
+            // Fog of war: hide enemy buildings I have no vision of (cores always show).
+            const vis = isMine ? 'live' : visionOf(b.gx, b.gy);
+            if (vis === 'hidden') return null;
+            // A remembered (lapsed) tile is drawn dim + desaturated so it
+            // reads as "this is what I last knew", not "this is live".
+            const stale = vis === 'stale';
             return (
-              <g key={b.id} pointerEvents="none">
+              <g key={b.id} pointerEvents="none" opacity={stale ? 0.55 : 1}
+                filter={stale ? 'saturate(0.35)' : undefined}>
                 {isSel && (
                   <rect x={r.x - 2} y={r.y - 2} width={r.w + 4} height={r.h + 4} rx={12}
                     fill="none" stroke="#fff" strokeWidth={3.5} strokeDasharray="10 7" />
@@ -1007,12 +1097,27 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                     })}
                   </g>
                 )}
-                {/* stock / loading badge for own launchers */}
-                {b.type === 'launcher' && isMine && (((b.loadingUntil ?? 0) > now) || (b.stock ?? 0) > 0) && (
-                  <text x={r.x + r.w - 8} y={r.y + 18} textAnchor="end" fontSize={15}>
-                    {(b.loadingUntil ?? 0) > now ? '⏳' : `🚀${b.stock ?? 0}`}
-                  </text>
-                )}
+                {/* stock badge + missile build progress for own launchers */}
+                {b.type === 'launcher' && isMine && (((b.loadingUntil ?? 0) > now) || (b.stock ?? 0) > 0) && (() => {
+                  const loading = (b.loadingUntil ?? 0) > now;
+                  const loadPct = loading ? Math.min(1, Math.max(0, 1 - (b.loadingUntil! - now) / (LOAD_SECONDS * 1000))) : 0;
+                  return (
+                    <g>
+                      {!loading && (b.stock ?? 0) > 0 && (
+                        <text x={r.x + r.w - 8} y={r.y + 18} textAnchor="end" fontSize={15}>
+                          {`🚀${b.stock ?? 0}`}
+                        </text>
+                      )}
+                      {loading && (
+                        <g>
+                          <rect x={r.x + 6} y={r.y + 12} width={r.w - 12} height={5} rx={2.5} fill="rgba(0,0,0,0.65)" />
+                          <rect x={r.x + 6} y={r.y + 12} width={(r.w - 12) * loadPct} height={5} rx={2.5}
+                            fill="#fbbf24" />
+                        </g>
+                      )}
+                    </g>
+                  );
+                })()}
               </g>
             );
           })}
@@ -1104,12 +1209,15 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
           data-testid="launcher-dock"
           style={{
             position: 'absolute',
-            right: dockVertical ? 8 : undefined,
+            // Horizontal: spans the bottom edge. Vertical: a column pinned to
+            // the right side. `bottom` is always 8 — omitting it in horizontal
+            // mode made the dock fall to its static position, which sits past
+            // the overflow:hidden parent and clips it away entirely.
             left: dockVertical ? undefined : 8,
+            right: 8,
             top: dockVertical ? 8 : undefined,
-            bottom: dockVertical ? 8 : undefined,
+            bottom: 8,
             width: dockVertical ? 180 : undefined,
-            height: dockVertical ? undefined : undefined,
             display: 'flex',
             flexDirection: dockVertical ? 'column' : 'row',
             gap: 6,
@@ -1301,6 +1409,8 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             upgradeCost={upgradeCost}
             coreIncome={coreIncome}
             pendingUp={Object.values(mc.pending ?? {}).find(p => p.kind === 'upgrade' && p.upgradeOf === selected.id) ?? null}
+            coverCount={selectedInfluence?.shields.length ?? 0}
+            healerCount={selectedInfluence?.healers.length ?? 0}
             onUpgrade={() => { onUpgrade(selected.id); setSelectedId(null); }}
             onLoad={() => onLoad({ launcherId: selected.id })}
             onToggleAutobuild={() => onToggleAutobuild(selected.id)}
@@ -1315,7 +1425,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
           <div className="text-sm text-muted" style={{ lineHeight: 1.7, display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div>👆 <b>Tap an empty square</b> on your island to build (Generator +2/s, Shield 300 HP, Shield Healer 8/s).</div>
             <div>🏠 <b>Tap any building</b> for stats, upgrades &amp; fire control. Gold ★ show its level.</div>
-            <div>⭐ Your <b>Core pays +{coreIncome}/s</b> — destroy the enemy Core (2000 HP) to win!</div>
+            <div>⭐ Your <b>Core pays +{coreIncome}/s</b> — destroy the enemy Core (4000 HP) to win!</div>
             <div>🛡️ Shields <b>fully block</b> blasts while charged (≈ 25 covered squares). Empty covered squares still drain the shield. Hide Generators inside!</div>
             <div>💚 Shield Healers fix <b>one shield at a time</b> (weakest first — green beam shows it).</div>
             <div>🚀 <b>Load up to {MAX_STOCK} missiles</b> per launcher ({LOAD_SECONDS}s each, ＋ or AUTO), then <b>FIRE the volley</b> — or <b>🔥 ALL</b> of one type at once!</div>
@@ -1390,7 +1500,10 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
     <div
       onClick={onClose}
       style={{
-        position: 'fixed', inset: 0, zIndex: 500, background: 'rgba(0,0,0,0.6)',
+        // Transparent scrim: still catches outside clicks to close, but does
+        // NOT dim the map — you keep reading the board while inspecting a
+        // tile or building. The sheet's own border/blur carries the depth.
+        position: 'fixed', inset: 0, zIndex: 500, background: 'transparent',
         display: 'flex', alignItems: 'flex-end', justifyContent: 'center', padding: 12,
       }}
     >
@@ -1416,19 +1529,27 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
   );
 }
 
-function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendingUp, onUpgrade, onLoad, onToggleAutobuild, onFire }: {
+function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendingUp, coverCount, healerCount, onUpgrade, onLoad, onToggleAutobuild, onFire }: {
   b: MissileBuilding;
   isMine: boolean;
   myResources: number;
   upgradeCost: number | null;
   coreIncome: number;
   pendingUp: { targetLevel: number; completeAt: number } | null;
+  coverCount?: number;
+  healerCount?: number;
   onUpgrade: () => void;
   onLoad: () => void;
   onToggleAutobuild: () => void;
   onFire: () => void;
 }) {
   const rows: Array<[string, string]> = [];
+  if (isMine && (coverCount || healerCount)) {
+    const bits: string[] = [];
+    if (coverCount) bits.push(`🛡️ ×${coverCount} covering`);
+    if (healerCount) bits.push(`💚 ×${healerCount} in heal range`);
+    rows.push(['🔗 Protection', bits.join(' • ') + ' — highlighted on the map']);
+  }
   if (b.type === 'economy') {
     rows.push(['💰 Income', `+${b.incomePerSec}/s${b.level < 5 ? ` (Lv${b.level + 1} → +${STATS.economy.income[b.level + 1]}/s)` : ' (MAX)'}`]);
     rows.push(['❤ Structure', `${Math.ceil(b.hp ?? 0)} / ${b.maxHp} HP`]);

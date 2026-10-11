@@ -347,7 +347,13 @@ function roomPublicState(room, forPlayerId = null) {
     territoryOptions: room.territoryOptions || { extremeMode: false },
     liarOptions: room.liarOptions || { extremeMode: false },
     missileCommandOptions: room.missileCommandOptions || { startingResources: 200, economyTickMs: 500, maxLevel: 5, fogOfWar: false },
-    missileCommandState: room.missileCommandState || null,
+    missileCommandState: (() => {
+      const s = room.missileCommandState || null;
+      if (!s || !s.fogOfWar || !forPlayerId || !s.exploredTiles) return s;
+      // Fog of war: only send this player's own explored tiles. Sending the
+      // opponent's map would reveal where they have fired missiles.
+      return { ...s, exploredTiles: { [forPlayerId]: s.exploredTiles[forPlayerId] ?? {} } };
+    })(),
     chromaState: room.chromaState || null,
     territoryState: publicTerritoryState,
     blendState: publicBlendState,
@@ -1087,7 +1093,9 @@ io.on('connection', (socket) => {
 });
 
 // ─── Missile Command real-time tick (silo'd) ────────────────────────────
-// Advances economy, healers, missiles and core regen ~4x/sec for active games.
+// Advances economy, healers, missiles and core regen for active games.
+// ~150ms (6.7Hz) rather than 250ms: clients extrapolate between these
+// snapshots, and a 4Hz reference path made fast missiles visibly steppy.
 setInterval(() => {
   try {
     const now = Date.now();
@@ -1100,7 +1108,7 @@ setInterval(() => {
   } catch (e) {
     console.error('[missile-tick] failed', e);
   }
-}, 250);
+}, 150);
 
 httpServer.listen(PORT, () => {
   logger.info('Server started', { port: PORT, rooms: rooms.size });

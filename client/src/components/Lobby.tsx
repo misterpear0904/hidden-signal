@@ -609,7 +609,7 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
               )}
             </div>
             <p className="text-xs text-muted" style={{ marginTop: 10, lineHeight: 1.5 }}>
-              🏝️ Top vs Bottom islands — you can only build on your own side. ⭐ Core has 2000 HP + slow regen. Destroy it to win!
+              🏝️ Top vs Bottom islands — you can only build on your own side. ⭐ Core has 4000 HP + slow regen. Destroy it to win!
             </p>
           </div>
         )}

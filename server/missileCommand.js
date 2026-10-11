@@ -28,7 +28,7 @@ export const MISSILE_CONFIG = {
   coreIncomePerSec: 5,
   // Core
   core: {
-    maxHp: 2000,
+    maxHp: 4000,
     regenPerSec: 2,
     // exact middle cell of each island grid
     cell: { gx: 6, gy: 3 },
@@ -575,7 +575,7 @@ function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage) {
 }
 
 // Fog of war constants
-const FOG_REVEAL_RADIUS = 3; // Manhattan distance around impact
+const FOG_REVEAL_RADIUS = 2; // Manhattan distance around impact
 const FOG_TEMPORARY_DURATION = 5000; // 5 seconds in ms
 
 // Idempotently re-assert core visibility. Mostly redundant now that state
@@ -613,12 +613,14 @@ function exploreAround(state, ownerId, gx, gy, radius = FOG_REVEAL_RADIUS, durat
   }
 }
 
-// Expire temporary fog revelations
+// Expire temporary fog revelations. A tile that goes dark is REMEMBERED
+// (-1), not forgotten: the player keeps a dimmed last-known view of it, which
+// is what makes fog of war readable instead of pure guesswork.
 function expireFog(state, now) {
   if (!state.fogOfWar) return;
   for (const tiles of Object.values(state.exploredTiles)) {
     for (const [key, expiresAt] of Object.entries(tiles)) {
-      if (expiresAt > 0 && expiresAt <= now) delete tiles[key];
+      if (expiresAt > 0 && expiresAt <= now) tiles[key] = -1;
     }
   }
 }

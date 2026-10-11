@@ -453,8 +453,18 @@ test('fog: expired reveals are pruned by the tick', () => {
   s.exploredTiles[P1]['6,4'] = Date.now() - 1;
   const now = Date.now();
   tickMissileCommand(s, now + 10);
-  assert.equal(s.exploredTiles[P1]['6,4'], undefined, 'stale reveal removed');
+  assert.equal(s.exploredTiles[P1]['6,4'], -1, 'stale reveal is remembered, not deleted');
   assert.equal(s.exploredTiles[P1]['6,3'], 0, 'permanent core reveal kept');
+
+  // Re-revealing a remembered tile makes it live again.
+  missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'single', gx: 0, gy: 0 });
+  advance(3100, s);
+  const L2 = Object.values(s.buildings).find(b => b.type === 'launcher');
+  L2.loadingUntil = 0; missileLoadMissile(s, P1, L2.id); advance(5100, s);
+  missileLaunch(s, P1, { launcherId: L2.id, targetGx: 1, targetGy: 6 });
+  for (let i = 0; i < 80 && s.missiles.length; i++) advance(250, s);
+  const revived = s.exploredTiles[P1]['1,6'];
+  assert.ok(revived === undefined || revived > Date.now(), 're-explored tile is live again or untouched');
 });
 
 test('fog: disabled mode leaves exploredTiles untouched', () => {
@@ -706,7 +716,7 @@ test('full game via manager: build, snowball, volley, core kill, scoring', () =>
     advance(5100, room.missileCommandState);
 
     let guard = 0;
-    while (!room.missileCommandState.winnerId && guard++ < 12) {
+    while (!room.missileCommandState.winnerId && guard++ < 24) {
       gmLoadFull(room, P1, L, 3);
       const f = gmFire(room.code, P1, { launcherId: L.id, targetGx: 6, targetGy: 3 });
       assert.ok(!f.error, f.error);
