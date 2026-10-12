@@ -92,6 +92,7 @@ export default function App() {
     cancelMissileSell,
     loadMissile,
     toggleAutobuild,
+    toggleAllAutobuild,
     launchMissile,
     launchMissileType,
     setKeepFire,
@@ -152,6 +153,7 @@ export default function App() {
   const handleLaunchMissileType = useCallback((action: MissileTypeLaunchAction) => { if (roomCode) launchMissileType(roomCode, action); }, [roomCode, launchMissileType]);
   const handleLoadMissile = useCallback((action: MissileLoadAction) => { if (roomCode) loadMissile(roomCode, action); }, [roomCode, loadMissile]);
   const handleToggleAutobuild = useCallback((launcherId: string) => { if (roomCode) toggleAutobuild(roomCode, { launcherId }); }, [roomCode, toggleAutobuild]);
+  const handleToggleAllAutobuild = useCallback((enabled: boolean) => { if (roomCode) toggleAllAutobuild(roomCode, enabled); }, [roomCode, toggleAllAutobuild]);
   const handleSetKeepFire = useCallback((action: MissileKeepFireAction) => { if (roomCode) setKeepFire(roomCode, action); }, [roomCode, setKeepFire]);
   const handleFireDesperation = useCallback((action: MissileDesperationAction) => { if (roomCode) fireDesperation(roomCode, action); }, [roomCode, fireDesperation]);
   const handleClaimSupplyShip = useCallback(() => { if (roomCode) claimSupplyShip(roomCode); }, [roomCode, claimSupplyShip]);
@@ -319,6 +321,7 @@ export default function App() {
             onCancelSell={handleCancelMissileSell}
             onLoad={handleLoadMissile}
             onToggleAutobuild={handleToggleAutobuild}
+            onToggleAllAutobuild={handleToggleAllAutobuild}
             onLaunch={handleLaunchMissile}
             onLaunchType={handleLaunchMissileType}
             onSetKeepFire={handleSetKeepFire}

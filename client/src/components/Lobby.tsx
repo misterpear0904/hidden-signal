@@ -71,7 +71,7 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
 
   const chromaOptions = roomState.chromaOptions || { difficulty: 'easy', playerDifficulties: {}, fairPoints: true, extremeMode: false };
   const territoryOptions = roomState.territoryOptions || { extremeMode: false };
-  const missileCommandOptions = roomState.missileCommandOptions || { startingResources: 200, economyTickMs: 500, maxLevel: 5, fogOfWar: true, fogHistory: false, supplyShip: false };
+  const missileCommandOptions = roomState.missileCommandOptions || { startingResources: 200, fogOfWar: true, fogHistory: false, supplyShip: false };
   const myDifficulty = chromaOptions.playerDifficulties?.[myId] || 'easy';
 
   return (

@@ -219,6 +219,25 @@ export interface ConstructionSite {
   refund?: number; // credits paid out when kind === 'sell' completes
 }
 
+export interface MissilePlayerStats {
+  damageDealt: number;
+  shieldAbsorbedByEnemy: number;
+  shieldBlocked: number;
+  structureDamage: number;
+  coreDamage: number;
+  missilesLaunched: number;
+  volleys: number;
+  buildingsBuilt: number;
+  buildingsLost: number;
+  buildingsDestroyed: number;
+  buildingsSold: number;
+  incomeEconomy: number;
+  incomeCore: number;
+  incomeSupply: number;
+  supplyClaims: number;
+  shieldHealed: number;
+}
+
 export interface MissileCommandState {
   sides: { top: string; bottom: string };
   gridCols: number;
@@ -233,9 +252,11 @@ export interface MissileCommandState {
   desperation?: Record<string, { unlocked: boolean; used: boolean }>;
   resources: Record<string, number>;
   gameStartTime: number;
+  gameEndTime?: number | null;
+  stats?: Record<string, MissilePlayerStats>;
   lastEconomyTick: number;
   winnerId: string | null;
-  winReason: 'core_destroyed' | 'timeout' | null;
+  winReason: 'core_destroyed' | 'draw' | 'timeout' | null;
   fogOfWar: boolean;
   fogHistory: boolean;
   supplyShipEnabled?: boolean;
@@ -295,8 +316,6 @@ export interface MissileDesperationAction {
 
 export interface MissileCommandOptions {
   startingResources: number;
-  economyTickMs: number;
-  maxLevel: number;
   fogOfWar: boolean;
   fogHistory: boolean;
   supplyShip: boolean;

@@ -71,7 +71,7 @@ export const MISSILE_CONFIG = {
       damage: [0, 120, 200, 300, 420, 560],
       blast: 0, // tiles (Manhattan) — hits the single target cell
       cooldownMs: [0, 4000, 3800, 3500, 3200, 2800],
-      speed: 0.103125, // slow cruise — time to see and react (75% pace)
+      speed: 0.07734375, // slow cruise — time to see and react
       hp: [0, 120, 180, 250, 330, 420],
     },
     scatter: {
@@ -81,7 +81,7 @@ export const MISSILE_CONFIG = {
       pellets: 5,
       blast: 0,
       cooldownMs: [0, 6000, 5700, 5400, 5000, 4600],
-      speed: 0.09375,
+      speed: 0.0703125,
       hp: [0, 120, 180, 250, 330, 420],
     },
   },
@@ -94,7 +94,7 @@ export const MISSILE_CONFIG = {
     damage: 2000,
     blast: 2, // Manhattan radius
     pierce: 0, // no shield bypass — raw damage only
-    speed: 0.12,
+    speed: 0.09,
   },
   // Neutral supply ship (optional lobby toggle, off by default). A freighter
   // periodically crosses the channel; either player can tap it to claim a
@@ -108,7 +108,7 @@ export const MISSILE_CONFIG = {
     firstShipMs: 25000, // first sailing after game start
     channelY: 0.5, // normalized y of the shipping lane
     barrageDamage: 80, // per-tile damage of the missile-rain payout
-    barrageSpeed: 0.12, // cruise speed of rain missiles
+    barrageSpeed: 0.09, // cruise speed of rain missiles
     barrageStaggerMs: 150, // ripple between rain missiles
     baseCoverage: 0.25, // enemy-tile fraction rained on, before scaling
     maxCoverage: 0.5, // ...never more than half the island
@@ -243,9 +243,11 @@ export function createMissileCommandState(playerIds, options = {}) {
     lastSupply: null,
     resources,
     gameStartTime: now,
+    gameEndTime: null,
     lastEconomyTick: now,
     winnerId: null,
     winReason: null,
+    stats: { [p1]: freshMissileStats(), [p2]: freshMissileStats() },
     fogOfWar,
     fogHistory,
     // exploredTiles[playerId]["gx,gy"] = 0 permanent, -1 remembered, else expiry ms
@@ -253,6 +255,40 @@ export function createMissileCommandState(playerIds, options = {}) {
   };
 }
 
+export function freshMissileStats() {
+  return {
+    damageDealt: 0, // raw HP removed from enemy (structure + core, post-shield)
+    shieldAbsorbedByEnemy: 0, // your missiles eaten by enemy shield pools
+    shieldBlocked: 0, // damage YOUR shields absorbed (defensive)
+    structureDamage: 0, // non-core structure HP removed by you
+    coreDamage: 0, // core HP removed by you
+    missilesLaunched: 0, // projectiles (scatter pellets count individually)
+    volleys: 0, // launcher-volleys fired (one launcher firing once)
+    buildingsBuilt: 0,
+    buildingsLost: 0, // your buildings destroyed by enemy fire
+    buildingsDestroyed: 0, // enemy buildings you destroyed
+    buildingsSold: 0,
+    incomeEconomy: 0,
+    incomeCore: 0,
+    incomeSupply: 0,
+    supplyClaims: 0,
+    shieldHealed: 0, // pool HP restored (healers + self-repair)
+  };
+}
+
+function ensureStats(state, playerId) {
+  if (!state.stats) state.stats = {};
+  if (!state.stats[playerId]) state.stats[playerId] = freshMissileStats();
+  return state.stats[playerId];
+}
+
+function ensureAllStats(state) {
+  if (!state.stats) state.stats = {};
+  for (const pid of [state.sides?.top, state.sides?.bottom]) {
+    if (pid) ensureStats(state, pid);
+  }
+  return state.stats;
+}
 function buildCostFor(buildingType, launcherType) {
   if (buildingType === 'launcher') return MISSILE_CONFIG.costs[`launcher_${launcherType}`]?.build ?? 150;
   if (buildingType === 'shield_heavy') return MISSILE_CONFIG.costs.shield_heavy?.build ?? 40;
@@ -315,9 +351,13 @@ function materializeBuilding(state, p) {
     b.stock = 0;
     b.maxStock = MISSILE_CONFIG.maxStock;
     b.loadingUntil = 0;
-    b.autobuild = true;
+    // Autobuild defaults OFF: a new launcher must not silently drain income
+    // into missiles before the player even opens its panel. One tap on AUTO
+    // (or LOAD) starts the pipeline.
+    b.autobuild = false;
   }
   state.buildings[p.id] = b;
+  try { ensureStats(state, p.ownerId).buildingsBuilt += 1; } catch { /* stats optional */ }
   return b;
 }
 
@@ -366,7 +406,7 @@ export function missileBuildBuilding(state, playerId, action) {
   const now = Date.now();
   const site = {
     id: uid('c'), kind: 'build', type: buildingType, launcherType: buildingType === 'launcher' ? launcherType : undefined,
-    side, gx, gy, ownerId: playerId, targetLevel: 1,
+    side, gx, gy, ownerId: playerId, targetLevel: 1, cost,
     completeAt: now + (MISSILE_CONFIG.buildMs[1] ?? 3000) / surgeRate(state, playerId, now),
   };
   if (!state.pending) state.pending = {};
@@ -405,7 +445,7 @@ export function missileUpgradeBuilding(state, playerId, buildingId) {
   const now = Date.now();
   const job = {
     id: uid('c'), kind: 'upgrade', type: b.type, launcherType: b.launcherType,
-    side: b.side, gx: b.gx, gy: b.gy, ownerId: playerId, targetLevel,
+    side: b.side, gx: b.gx, gy: b.gy, ownerId: playerId, targetLevel, cost,
     upgradeOf: buildingId,
     completeAt: now + (MISSILE_CONFIG.buildMs[targetLevel] ?? 5000) / surgeRate(state, playerId, now),
   };
@@ -523,12 +563,34 @@ export function missileToggleAutobuild(state, playerId, launcherId) {
   return { building: launcher };
 }
 
+// Set EVERY own launcher's autobuild flag at once (the dock's AUTO ALL
+// button). Explicit boolean — no fuzzy toggling, so retries are idempotent.
+export function missileToggleAllAutobuild(state, playerId, enabled) {
+  if (state.winnerId) return { error: 'Game is over' };
+  if (!missileSideForPlayer(state, playerId)) return { error: 'You are not in this match' };
+  if (typeof enabled !== 'boolean') return { error: 'Pass true or false' };
+  let count = 0;
+  for (const b of Object.values(state.buildings)) {
+    if (b.type !== 'launcher' || b.ownerId !== playerId) continue;
+    if (!!b.autobuild !== enabled) {
+      b.autobuild = enabled;
+      count++;
+    }
+  }
+  return { enabled, count };
+}
+
 // Fire one launcher's entire stockpile at a cell — everything launches at
 // the SAME time (no stagger). Each missile gets a visual lane (-2..2) so
 // stacked volleys fan out instead of overlapping pixel-perfect.
 function fireVolley(state, launcher, enemySide, targetGx, targetGy, now) {
   const stock = launcher.stock ?? 0;
   if (stock <= 0) return [];
+  // Per-launcher fire-rate gate. Cooldowns were configured and tracked but
+  // never read — this is what differentiates single (4s) vs scatter (6s)
+  // and rate-limits keep-fire autofire. Checked BEFORE consuming stock.
+  const cd = launcher.cooldownMs ?? 0;
+  if (cd > 0 && now - (launcher.lastFiredAt ?? 0) < cd) return [];
   launcher.stock = 0;
   launcher.lastFiredAt = now;
   const added = [];
@@ -542,6 +604,11 @@ function fireVolley(state, launcher, enemySide, targetGx, targetGy, now) {
     added.push(...pattern);
   }
   state.missiles.push(...added);
+  try {
+    const st = ensureStats(state, launcher.ownerId);
+    st.missilesLaunched += added.length;
+    st.volleys += 1;
+  } catch { /* stats optional */ }
   return added;
 }
 
@@ -556,13 +623,20 @@ export function missileLaunch(state, playerId, action) {
   if (launcher.ownerId !== playerId) return { error: 'Not your launcher' };
   if (!isValidCell(targetGx, targetGy)) return { error: 'Invalid target square' };
   if ((launcher.stock ?? 0) <= 0) return { error: 'No missiles stockpiled — build some first' };
+  const now = Date.now();
+  const cd = launcher.cooldownMs ?? 0;
+  if (cd > 0 && now - (launcher.lastFiredAt ?? 0) < cd) {
+    const wait = Math.ceil((cd - (now - launcher.lastFiredAt)) / 1000);
+    return { error: `Launcher recharging… ${wait}s` };
+  }
   const enemySide = side === 'top' ? 'bottom' : 'top';
-  const added = fireVolley(state, launcher, enemySide, targetGx, targetGy, Date.now());
+  const added = fireVolley(state, launcher, enemySide, targetGx, targetGy, now);
   return { missiles: added };
 }
 
 // Fire ALL loaded launchers of one type at the same cell ("launch all").
-// Each launcher's full stock goes; launchers ripple 300ms apart per missile.
+// Each launcher's full stock goes; launchers ripple 300ms apart so the
+// barrage reads as a wave instead of one instant stack.
 export function missileLaunchType(state, playerId, launcherType, targetGx, targetGy) {
   if (state.winnerId) return { error: 'Game is over' };
   const side = missileSideForPlayer(state, playerId);
@@ -576,8 +650,12 @@ export function missileLaunchType(state, playerId, launcherType, targetGx, targe
   const enemySide = side === 'top' ? 'bottom' : 'top';
   const now = Date.now();
   const added = [];
+  let li = 0;
   for (const launcher of launchers) {
-    added.push(...fireVolley(state, launcher, enemySide, targetGx, targetGy, now));
+    const batch = fireVolley(state, launcher, enemySide, targetGx, targetGy, now);
+    for (const m of batch) m.deployAt = now + li * 300;
+    li++;
+    added.push(...batch);
   }
   return { missiles: added };
 }
@@ -604,7 +682,7 @@ export function missileSetKeepFire(state, playerId, action) {
 
 // Fire the one-time desperation strike. Needs no launcher and costs nothing —
 // the price was nearly losing. Launches from the owner's core as a single
-// shield-piercing warhead.
+// NON-piercing warhead (shields absorb it normally).
 export function missileFireDesperation(state, playerId, action) {
   if (state.winnerId) return { error: 'Game is over' };
   const side = missileSideForPlayer(state, playerId);
@@ -638,6 +716,11 @@ export function missileFireDesperation(state, playerId, action) {
   };
   flag.used = true;
   state.missiles.push(m);
+  try {
+    const st = ensureStats(state, playerId);
+    st.missilesLaunched += 1;
+    st.volleys += 1;
+  } catch { /* stats optional */ }
   return { missiles: [m] };
 }
 
@@ -685,6 +768,11 @@ export function missileClaimShip(state, playerId) {
     const amount = Math.floor(Math.min(cfg.maxCredits, cfg.baseCredits * scale));
     state.resources[playerId] = (state.resources[playerId] ?? 0) + amount;
     detail = { amount };
+    try {
+      const st = ensureStats(state, playerId);
+      st.incomeSupply += amount;
+      st.supplyClaims += 1;
+    } catch { /* stats optional */ }
   } else if (kind === 'barrage') {
     const cols = MISSILE_CONFIG.gridCols, rows = MISSILE_CONFIG.gridRows;
     const count = Math.round(cols * rows * Math.min(cfg.maxCoverage, cfg.baseCoverage * scale));
@@ -721,6 +809,12 @@ export function missileClaimShip(state, playerId) {
     });
     state.missiles.push(...added);
     detail = { tiles: tiles.length };
+    try {
+      const st = ensureStats(state, playerId);
+      st.missilesLaunched += added.length;
+      st.volleys += 1;
+      st.supplyClaims += 1;
+    } catch { /* stats optional */ }
   } else {
     const durationMs = Math.round(cfg.surgeBaseMs * scale);
     // In-flight work jumps to halfway done; new work started inside the
@@ -736,6 +830,7 @@ export function missileClaimShip(state, playerId) {
     if (!state.buildSurge) state.buildSurge = {};
     state.buildSurge[playerId] = now + durationMs;
     detail = { seconds: Math.round(durationMs / 1000) };
+    try { ensureStats(state, playerId).supplyClaims += 1; } catch { /* stats optional */ }
   }
   state.supplyShip = null;
   state.nextShipAt = now + cfg.intervalMs + Math.random() * (cfg.jitterMs ?? 0);
@@ -787,6 +882,10 @@ function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage, pierce
 
   const destroyed = [];
   let hitAny = false;
+  // Snapshot shield pools + structure HP so the post-game breakdown can split
+  // each blast into shield-absorbed vs structure vs core damage.
+  const shieldBefore = new Map(shields.map(s => [s.id, s.shieldHp ?? 0]));
+  const structBefore = new Map(buildings.map(b => [b.id, b.type === 'core' ? (b.coreHp ?? 0) : (b.hp ?? 0)]));
   for (const b of buildings) {
     const d = cellDist(b.gx, b.gy, gx, gy);
     if (d > blast) continue;
@@ -833,6 +932,48 @@ function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage, pierce
       .sort((a, c) => pctLeft(c) - pctLeft(a));
     absorbThrough(guards, damage * (1 - Math.max(0, Math.min(1, pierce))));
   }
+  try {
+    ensureAllStats(state);
+    let absorbed = 0;
+    for (const s of shields) {
+      const before = shieldBefore.get(s.id) ?? 0;
+      absorbed += Math.max(0, before - (s.shieldHp ?? 0));
+    }
+    let struct = 0;
+    let core = 0;
+    for (const b of buildings) {
+      const before = structBefore.get(b.id) ?? 0;
+      const after = b.type === 'core' ? (b.coreHp ?? 0) : (b.hp ?? (state.buildings[b.id]?.hp ?? 0));
+      const dealt = Math.max(0, before - after);
+      if (dealt <= 0) continue;
+      if (b.type === 'core') core += dealt;
+      else struct += dealt;
+    }
+    const atk = ensureStats(state, ownerId);
+    atk.shieldAbsorbedByEnemy += absorbed;
+    atk.structureDamage += struct;
+    atk.coreDamage += core;
+    atk.damageDealt += struct + core;
+    // Defensive credit: absorbed damage belongs to whoever owns the shields.
+    // In 1v1 every shield on the enemy side shares one owner, but attribute
+    // per-shield so future modes stay correct.
+    const blockedByOwner = new Map();
+    for (const s of shields) {
+      const before = shieldBefore.get(s.id) ?? 0;
+      const lost = Math.max(0, before - (s.shieldHp ?? 0));
+      if (lost > 0) blockedByOwner.set(s.ownerId, (blockedByOwner.get(s.ownerId) ?? 0) + lost);
+    }
+    for (const [pid, amt] of blockedByOwner) ensureStats(state, pid).shieldBlocked += amt;
+    // Kills / losses for destroyed non-core buildings.
+    for (const id of destroyed) {
+      const victim = buildings.find(b => b.id === id);
+      const victimId = victim?.ownerId ?? state.sides?.[enemySide];
+      if (victim && victim.type !== 'core') {
+        atk.buildingsDestroyed += 1;
+        if (victimId) ensureStats(state, victimId).buildingsLost += 1;
+      }
+    }
+  } catch { /* stats optional */ }
   return destroyed;
 }
 
@@ -851,6 +992,45 @@ function initFogOfWar(state) {
     if (state.exploredTiles[p1][key] === undefined) state.exploredTiles[p1][key] = 0;
     if (state.exploredTiles[p2][key] === undefined) state.exploredTiles[p2][key] = 0;
   }
+}
+
+// Per-player broadcast view. Fog of war used to be client-side only: the
+// server sent BOTH islands' full buildings/pending maps to everyone, so any
+// modified client could see the whole enemy island. This redacts to what the
+// viewer may know — own everything, enemy cores (permanently revealed, see
+// above), enemy buildings/pending only on live tiles. Deliberately KEPT
+// visible: enemy missiles in flight (incoming ordnance must stay reactable),
+// resources (HUD totals), supply ship (neutral), desperation flags (enemy
+// core HP is public via the permanently revealed core anyway).
+export function filterMissileStateForPlayer(state, forPlayerId, now = Date.now()) {
+  if (!state || !state.fogOfWar || !forPlayerId || !state.exploredTiles) return state;
+  const mine = state.exploredTiles[forPlayerId] ?? {};
+  const live = (gx, gy) => {
+    const v = mine[`${gx},${gy}`];
+    return v === 0 || (typeof v === 'number' && v > now);
+  };
+  const buildings = {};
+  for (const [id, b] of Object.entries(state.buildings)) {
+    if (b.ownerId === forPlayerId || b.type === 'core' || live(b.gx, b.gy)) buildings[id] = b;
+  }
+  const pending = {};
+  for (const [id, p] of Object.entries(state.pending || {})) {
+    if (p.ownerId === forPlayerId || live(p.gx, p.gy)) pending[id] = p;
+  }
+  const stats = (state.winnerId || state.winReason)
+    ? state.stats
+    : { [forPlayerId]: state.stats?.[forPlayerId] };
+  const keepFire = state.keepFire
+    ? { [forPlayerId]: state.keepFire[forPlayerId] ?? null }
+    : state.keepFire;
+  return {
+    ...state,
+    buildings,
+    pending,
+    stats,
+    keepFire,
+    exploredTiles: { [forPlayerId]: mine },
+  };
 }
 
 // Explore tiles around a point (missile impact) for the attacker
@@ -893,7 +1073,7 @@ function expireFog(state, now) {
 
 // Advance simulation by dt seconds. Returns events for logging.
 export function tickMissileCommand(state, now = Date.now()) {
-  if (!state || state.winnerId) return { events: [] };
+  if (!state || state.winnerId || state.gameEndTime) return { events: [] };
   const events = [];
   const last = state.lastEconomyTick || now;
   const dt = Math.max(0, Math.min(5, (now - last) / 1000));
@@ -936,6 +1116,11 @@ export function tickMissileCommand(state, now = Date.now()) {
         if (!occupiedCell(state, p.side, p.gx, p.gy)) {
           const b = materializeBuilding(state, p);
           events.push({ type: 'built', id: b.id });
+        } else {
+          // Cell was taken while building — refund the upfront payment
+          // instead of eating it silently.
+          state.resources[p.ownerId] = (state.resources[p.ownerId] ?? 0) + (p.cost ?? 0);
+          events.push({ type: 'build-failed', id: p.id });
         }
       } else if (p.kind === 'upgrade') {
         const b = state.buildings[p.upgradeOf];
@@ -943,6 +1128,10 @@ export function tickMissileCommand(state, now = Date.now()) {
         if (b && b.type !== 'core' && b.level === p.targetLevel - 1) {
           applyLevelUp(state, b);
           events.push({ type: 'upgraded', id: b.id, level: b.level });
+        } else {
+          // Building died mid-upgrade — refund the upfront payment.
+          state.resources[p.ownerId] = (state.resources[p.ownerId] ?? 0) + (p.cost ?? 0);
+          events.push({ type: 'upgrade-failed', id: p.upgradeOf });
         }
       } else if (p.kind === 'sell') {
         const b = state.buildings[p.sellOf];
@@ -953,6 +1142,7 @@ export function tickMissileCommand(state, now = Date.now()) {
           delete state.buildings[p.sellOf];
           state.resources[p.ownerId] = (state.resources[p.ownerId] ?? 0) + (p.refund ?? 0);
           events.push({ type: 'sold', id: p.sellOf, refund: p.refund ?? 0 });
+          try { ensureStats(state, p.ownerId).buildingsSold += 1; } catch { /* stats optional */ }
         }
       }
     }
@@ -1003,13 +1193,17 @@ export function tickMissileCommand(state, now = Date.now()) {
   // 1. Economy income (continuous) — generators plus each living core's baseline
   for (const b of Object.values(state.buildings)) {
     if (b.type !== 'economy') continue;
-    state.resources[b.ownerId] = (state.resources[b.ownerId] ?? 0) + (b.incomePerSec ?? 0) * dt;
+    const gain = (b.incomePerSec ?? 0) * dt;
+    state.resources[b.ownerId] = (state.resources[b.ownerId] ?? 0) + gain;
+    try { ensureStats(state, b.ownerId).incomeEconomy += gain; } catch { /* stats optional */ }
   }
   const coreIncome = state.coreIncomePerSec ?? MISSILE_CONFIG.coreIncomePerSec;
   for (const b of Object.values(state.buildings)) {
     if (b.type !== 'core') continue;
     if ((b.coreHp ?? 0) <= 0) continue;
-    state.resources[b.ownerId] = (state.resources[b.ownerId] ?? 0) + coreIncome * dt;
+    const gain = coreIncome * dt;
+    state.resources[b.ownerId] = (state.resources[b.ownerId] ?? 0) + gain;
+    try { ensureStats(state, b.ownerId).incomeCore += gain; } catch { /* stats optional */ }
   }
   // 2. Core regen (dead cores stay dead)
   for (const b of Object.values(state.buildings)) {
@@ -1034,15 +1228,19 @@ export function tickMissileCommand(state, now = Date.now()) {
       if (pct < bestPct) { bestPct = pct; best = s; }
     }
     if (best && bestPct < 1 - 1e-6) {
-      best.shieldHp = Math.min(best.maxShieldHp, (best.shieldHp ?? 0) + (h.healPerSec ?? 0) * dt);
+      const before = best.shieldHp ?? 0;
+      best.shieldHp = Math.min(best.maxShieldHp, before + (h.healPerSec ?? 0) * dt);
       h.healTargetId = best.id;
+      try { ensureStats(state, h.ownerId).shieldHealed += Math.max(0, best.shieldHp - before); } catch { /* stats optional */ }
     } else {
       h.healTargetId = null;
     }
   }
   for (const s of shields) {
     const selfRate = (MISSILE_CONFIG.healer.healPerSec[Math.max(1, Math.min(5, s.level))] ?? 0) / 8;
-    s.shieldHp = Math.min(s.maxShieldHp, (s.shieldHp ?? 0) + selfRate * dt);
+    const before = s.shieldHp ?? 0;
+    s.shieldHp = Math.min(s.maxShieldHp, before + selfRate * dt);
+    try { ensureStats(state, s.ownerId).shieldHealed += Math.max(0, s.shieldHp - before); } catch { /* stats optional */ }
   }
   // 4. Missiles (banked volleys deploy 300ms apart)
   const remaining = [];
@@ -1096,8 +1294,17 @@ export function tickMissileCommand(state, now = Date.now()) {
       const winnerSide = deadSide === 'top' ? 'bottom' : 'top';
       state.winnerId = state.sides[winnerSide];
       state.winReason = 'core_destroyed';
+      state.gameEndTime = now;
       state.keepFire = {};
       events.push({ type: 'core_destroyed', side: deadSide, winnerId: state.winnerId });
+    } else {
+      // Simultaneous destruction — neither side wins. Ends the game as a
+      // draw so the tick doesn't run forever on two dead cores.
+      state.winnerId = null;
+      state.winReason = 'draw';
+      state.gameEndTime = now;
+      state.keepFire = {};
+      events.push({ type: 'draw' });
     }
   }
   // NOTE: resources stay fractional internally (no per-tick rounding — that

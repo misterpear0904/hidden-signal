@@ -71,6 +71,7 @@ export interface SocketHookReturn {
   cancelMissileSell: (roomCode: string, action: MissileUpgradeAction) => void;
   loadMissile: (roomCode: string, action: MissileLoadAction) => void;
   toggleAutobuild: (roomCode: string, action: MissileLoadAction) => void;
+  toggleAllAutobuild: (roomCode: string, enabled: boolean) => void;
   launchMissile: (roomCode: string, action: MissileLaunchAction) => void;
   launchMissileType: (roomCode: string, action: MissileTypeLaunchAction) => void;
   setKeepFire: (roomCode: string, action: MissileKeepFireAction) => void;
@@ -517,6 +518,10 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('launch-missile', { roomCode: code, action });
   }, []);
 
+  // NOTE: most missile emits nest args under `action`; these two spread
+  // instead. The server defensively accepts both shapes (see the
+  // launch-missile-type / fire-desperation handlers in server/index.js),
+  // so keep them as-is unless both sides change together.
   const launchMissileType = useCallback((code: string, action: MissileTypeLaunchAction) => {
     socketRef.current?.emit('launch-missile-type', { roomCode: code, ...action });
   }, []);
@@ -527,6 +532,10 @@ export function useSocket(): SocketHookReturn {
 
   const toggleAutobuild = useCallback((code: string, action: MissileLoadAction) => {
     socketRef.current?.emit('toggle-autobuild', { roomCode: code, launcherId: action.launcherId });
+  }, []);
+
+  const toggleAllAutobuild = useCallback((code: string, enabled: boolean) => {
+    socketRef.current?.emit('toggle-all-autobuild', { roomCode: code, enabled });
   }, []);
 
   const setKeepFire = useCallback((code: string, action: MissileKeepFireAction) => {
@@ -599,6 +608,7 @@ export function useSocket(): SocketHookReturn {
     cancelMissileSell,
     loadMissile,
     toggleAutobuild,
+    toggleAllAutobuild,
     launchMissile,
     launchMissileType,
     setKeepFire,

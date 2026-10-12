@@ -11,6 +11,7 @@ import {
   missileUpgradeBuilding,
   missileLoadMissile,
   missileToggleAutobuild,
+  missileToggleAllAutobuild,
   missileLaunch,
   missileLaunchType,
   missileSetKeepFire,
@@ -22,6 +23,7 @@ import {
   tickMissileCommand,
   missileIncomePerSec,
   cellDist,
+  filterMissileStateForPlayer,
 } from './missileCommand.js';
 import {
   rooms,
@@ -191,8 +193,7 @@ test('scatter volley: one pattern per banked missile', () => {
   assert.equal(v.missiles.length, 10, '2 banked × 5 pellets');
 });
 
-test('autobuild fills stockpile unattended, pauses when broke', () => {
-  const s = fresh(35); // exactly one single missile + change
+test('autobuild fills stockpile unattended, pauses when broke', () => {  const s = fresh(35); // exactly one single missile + change
   missileBuildBuilding(s, P1, { buildingType: 'economy', gx: 0, gy: 0 });
   advance(3100, s);
   // NOTE: starting 35cr won't cover a launcher; fund directly for this unit test
@@ -200,11 +201,33 @@ test('autobuild fills stockpile unattended, pauses when broke', () => {
   missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'single', gx: 1, gy: 0 });
   advance(3100, s);
   const L = Object.values(s.buildings).find(b => b.type === 'launcher');
-  assert.equal(L.autobuild, true, 'launchers auto-build by default');
+  assert.equal(L.autobuild, false, 'launchers do NOT auto-build by default (opt-in per launcher)');
+  missileToggleAutobuild(s, P1, L.id); // opt in
+  assert.equal(L.autobuild, true, 'toggle enables autobuild');
   for (let i = 0; i < 120 && L.stock < 2; i++) advance(500, s);
   assert.ok((L.stock ?? 0) >= 2, `autobuild stocks without clicks (stock=${L.stock})`);
   missileToggleAutobuild(s, P1, L.id);
   assert.equal(L.autobuild, false);
+});
+
+test('bulk autobuild toggle flips every own launcher (explicit boolean)', () => {
+  const s = fresh();
+  missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'single', gx: 0, gy: 0 });
+  missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'scatter', gx: 1, gy: 0 });
+  missileBuildBuilding(s, P2, { buildingType: 'launcher', launcherType: 'single', gx: 2, gy: 0 });
+  advance(3100, s);
+  const mine = Object.values(s.buildings).filter(b => b.type === 'launcher' && b.ownerId === P1);
+  const theirs = Object.values(s.buildings).find(b => b.type === 'launcher' && b.ownerId === P2);
+  assert.ok(theirs, 'enemy launcher materialized');
+  assert.equal(mine.length, 2);
+  assert.ok(mine.every(b => b.autobuild === false), 'new launchers default off');
+  assert.equal(missileToggleAllAutobuild(s, P1, true).count, 2, 'both flipped on');
+  assert.ok(mine.every(b => b.autobuild === true));
+  assert.equal(theirs.autobuild, false, 'enemy launcher untouched');
+  assert.equal(missileToggleAllAutobuild(s, P1, true).count, 0, 'idempotent retry flips nothing');
+  assert.equal(missileToggleAllAutobuild(s, P1, false).count, 2, 'both flipped off');
+  assert.equal(missileToggleAllAutobuild(s, P1, 'yes').error, 'Pass true or false', 'non-boolean rejected');
+  assert.equal(missileToggleAllAutobuild(s, 'stranger', true).error, 'You are not in this match');
 });
 
 test('destroying the core wins the game; dead cores do not regen', () => {
@@ -666,9 +689,8 @@ function gmBuildDone(room, playerId, type, gx, gy, launcherType) {
 }
 
 function gmLoadFull(room, playerId, launcher, n = 3) {
-  // Deterministic manual loads: pause auto-production first (launchers
-  // auto-build by default, so the stockpile may already be filling), then
-  // top up to exactly n.
+  // Deterministic manual loads: pause auto-production first (in case the
+  // launcher opted in), then top up to exactly n.
   if (launcher.autobuild) missileToggleAutobuild(room.missileCommandState, playerId, launcher.id);
   let guard = 0;
   while (launcher.stock < n && guard++ < 10) {
@@ -966,6 +988,133 @@ test('desperation unlocks at 50% core HP and latches through regen', () => {
   tickMissileCommand(s, Date.now());
   assert.equal(s.desperation[P1].unlocked, true, 'latches');
   assert.equal(s.desperation[P2].unlocked, false, 'healthy side stays locked');
+});
+
+// ── P0/P1 regression tests: draws, refunds, cooldowns, stagger, fog ───────
+
+test('double-KO ends the game as a scoreless draw (no soft-lock)', () => {
+  const room = gmRoom();
+  startGame(room.code);
+  const mc = () => room.missileCommandState;
+  mc().buildings.core_top.coreHp = 0;
+  mc().buildings.core_bottom.coreHp = 0;
+  const { events } = tickMissileCommand(mc(), fakeNow);
+  assert.equal(mc().winReason, 'draw');
+  assert.equal(mc().winnerId, null);
+  assert.ok(mc().gameEndTime, 'game clock stops');
+  assert.ok(events.some(e => e.type === 'draw'), 'draw event emitted');
+  // Second tick: no duplicate draw, no resurrection.
+  const again = tickMissileCommand(mc(), fakeNow);
+  assert.ok(!again.events.some(e => e.type === 'draw'), 'draw fires once');
+  // Room wrapper transitions phase with no score awarded.
+  const res = tickMissileRoom(room, fakeNow);
+  assert.equal(room.phase, 'missile-command-end');
+  assert.equal(room.players[0].score, 0, 'no points on draw');
+  assert.equal(room.players[1].score, 0, 'no points on draw');
+});
+
+test('fizzled builds and upgrades refund the upfront payment', () => {
+  const room = gmRoom();
+  startGame(room.code);
+  const mc = () => room.missileCommandState;
+  // Build fizzle: pending sites reserve their cell at order time, so craft
+  // the race directly — a building lands on the site's cell mid-construction.
+  const order = gmBuild(room.code, P1, { buildingType: 'economy', gx: 0, gy: 0 });
+  assert.ok(!order.error, order.error);
+  const before = mc().resources[P1];
+  mc().buildings.squatter = {
+    id: 'squatter', type: 'shield', side: 'top', gx: 0, gy: 0, level: 1,
+    ownerId: P1, hp: 150, maxHp: 150, shieldHp: 375, maxShieldHp: 375, shieldTiles: 3,
+  };
+  const res = advance(3100, mc());
+  assert.ok(!mc().buildings[order.pending.id], 'no building from fizzled site');
+  assert.ok(res.events.some(e => e.type === 'build-failed'), 'fizzle event emitted');
+  // +50 refund, plus 5/s core income accrued over the 3.1s fast-forward.
+  assert.ok(Math.abs(mc().resources[P1] - (before + 50 + 5 * 3.1)) < 0.01, 'build cost refunded');
+  delete mc().buildings.squatter;
+  // Upgrade fizzle: building destroyed mid-upgrade refunds.
+  const eco = gmBuildDone(room, P1, 'economy', 1, 1);
+  const up = gmUpgrade(room.code, P1, eco.id);
+  assert.ok(!up.error, up.error);
+  const beforeUp = mc().resources[P1];
+  delete mc().buildings[eco.id]; // blown up mid-upgrade
+  const res2 = advance(5100, mc());
+  assert.ok(res2.events.some(e => e.type === 'upgrade-failed'), 'upgrade fizzle event');
+  // +60 refund, plus core-only income (the (0,0) site fizzled and this
+  // economy was deleted); advance() clamps dt to 5s.
+  assert.ok(Math.abs(mc().resources[P1] - (beforeUp + 60 + 5 * 5)) < 0.01, 'upgrade cost refunded');
+});
+
+test('launcher cooldown gates volleys and preserves stock', () => {
+  const room = gmRoom();
+  startGame(room.code);
+  const mc = () => room.missileCommandState;
+  const la = gmBuildDone(room, P1, 'launcher', 3, 0, 'single');
+  gmLoadFull(room, P1, la, 3);
+  const first = gmFire(room.code, P1, { launcherId: la.id, targetGx: 0, targetGy: 0 });
+  assert.ok(!first.error, first.error);
+  assert.equal(la.stock, 0, 'volley consumes stock');
+  // Reload instantly and fire inside the 4s single cooldown.
+  la.stock = 3;
+  const again = gmFire(room.code, P1, { launcherId: la.id, targetGx: 0, targetGy: 0 });
+  assert.ok(again.error && /recharg/i.test(again.error), `cooldown error, got: ${again.error}`);
+  assert.equal(la.stock, 3, 'stock preserved while cooling');
+  // After the cooldown the same launcher fires fine.
+  advance(4100, mc());
+  la.stock = 3;
+  const later = gmFire(room.code, P1, { launcherId: la.id, targetGx: 0, targetGy: 0 });
+  assert.ok(!later.error, later.error);
+});
+
+test('launch-all ripples launchers 300ms apart', () => {
+  const room = gmRoom();
+  startGame(room.code);
+  const mc = () => room.missileCommandState;
+  const a = gmBuildDone(room, P1, 'launcher', 3, 0, 'single');
+  const b = gmBuildDone(room, P1, 'launcher', 4, 0, 'single');
+  gmLoadFull(room, P1, a, 1);
+  gmLoadFull(room, P1, b, 1);
+  const r = gmFireType(room.code, P1, 'single', 0, 0);
+  assert.ok(!r.error, r.error);
+  const times = mc().missiles.map(m => m.deployAt).sort((x, y) => x - y);
+  assert.equal(times.length, 2, 'both launchers fired');
+  assert.equal(times[1] - times[0], 300, '300ms ripple between launchers');
+});
+
+test('fog redaction hides unscouted enemy state from broadcast', () => {
+  const room = gmRoom();
+  startGame(room.code);
+  const mc = () => room.missileCommandState;
+  gmBuildDone(room, P2, 'economy', 0, 0); // never scouted by P1
+  const view = filterMissileStateForPlayer(mc(), P1, fakeNow);
+  assert.ok(view.buildings.core_top && view.buildings.core_bottom, 'cores always visible');
+  assert.ok(!Object.values(view.buildings).some(b => b.ownerId === P2 && b.type === 'economy'), 'unscouted enemy building hidden');
+  assert.ok(Object.values(view.buildings).some(b => b.ownerId === P1), 'own buildings kept');
+  // Pending sites scoped the same way.
+  gmBuild(room.code, P2, { buildingType: 'shield', gx: 1, gy: 1 });
+  const view2 = filterMissileStateForPlayer(mc(), P1, fakeNow);
+  assert.ok(!Object.values(view2.pending).some(p => p.ownerId === P2), 'unscouted enemy site hidden');
+  gmBuild(room.code, P1, { buildingType: 'shield', gx: 2, gy: 2 });
+  const view3 = filterMissileStateForPlayer(mc(), P1, fakeNow);
+  assert.ok(Object.values(view3.pending).some(p => p.ownerId === P1), 'own site kept');
+  // exploredTiles and stats scoped pre-end, full post-end.
+  assert.deepEqual(Object.keys(view3.exploredTiles), [P1], 'only own fog map sent');
+  assert.deepEqual(Object.keys(view3.stats), [P1], 'only own stats sent mid-game');
+  mc().winnerId = P2;
+  mc().winReason = 'core_destroyed';
+  const endView = filterMissileStateForPlayer(mc(), P1, fakeNow);
+  assert.ok(endView.stats[P1] && endView.stats[P2], 'full stats at end');
+  // Fog off → passthrough.
+  mc().fogOfWar = false;
+  assert.equal(filterMissileStateForPlayer(mc(), P1, fakeNow), mc(), 'passthrough with fog off');
+});
+
+test('economy ticks do not refresh room activity (abandoned games expire)', () => {
+  const room = gmRoom();
+  startGame(room.code);
+  room.lastActivityMs = fakeNow - 1000;
+  tickMissileRoom(room, fakeNow);
+  assert.equal(room.lastActivityMs, fakeNow - 1000, 'tick leaves activity alone');
 });
 
 test('desperation fire: validation, one-shot, needs no launcher', () => {

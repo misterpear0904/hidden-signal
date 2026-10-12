@@ -34,6 +34,7 @@ import {
   cancelMissileSell,
   loadMissile,
   toggleAutobuild,
+  toggleAllAutobuild,
   launchMissile,
   launchMissileType,
   setKeepFire,
@@ -94,6 +95,8 @@ import {
   LIAR_BID_SEC_VALUE,
   BLUFF_BET_SEC_VALUE,
 } from './gameManager.js';
+// Fog redaction lives in the silo'd game module (not the wrapper layer).
+import { filterMissileStateForPlayer } from './missileCommand.js';
 
 // CORS: production requires CLIENT_ORIGIN to be set to your frontend URL
 // (e.g., https://hidden-signal-client.onrender.com).
@@ -353,14 +356,8 @@ function roomPublicState(room, forPlayerId = null) {
     chromaOptions: room.chromaOptions || { difficulty: 'easy', fairPoints: true, extremeMode: false },
     territoryOptions: room.territoryOptions || { extremeMode: false },
     liarOptions: room.liarOptions || { extremeMode: false },
-    missileCommandOptions: room.missileCommandOptions || { startingResources: 200, economyTickMs: 500, maxLevel: 5, fogOfWar: true, fogHistory: false, supplyShip: false },
-    missileCommandState: (() => {
-      const s = room.missileCommandState || null;
-      if (!s || !s.fogOfWar || !forPlayerId || !s.exploredTiles) return s;
-      // Fog of war: only send this player's own explored tiles. Sending the
-      // opponent's map would reveal where they have fired missiles.
-      return { ...s, exploredTiles: { [forPlayerId]: s.exploredTiles[forPlayerId] ?? {} } };
-    })(),
+    missileCommandOptions: room.missileCommandOptions || { startingResources: 200, fogOfWar: true, fogHistory: false, supplyShip: false },
+    missileCommandState: filterMissileStateForPlayer(room.missileCommandState, forPlayerId, Date.now()),
     chromaState: room.chromaState || null,
     territoryState: publicTerritoryState,
     blendState: publicBlendState,
@@ -741,6 +738,16 @@ io.on('connection', (socket) => {
     if (!room) return;
     const id = typeof launcherId === 'string' ? launcherId : launcherId?.launcherId;
     const result = toggleAutobuild(roomCode, socket.id, id);
+    if (!result) return socket.emit('error', 'Cannot toggle now');
+    if (result.error) return socket.emit('error', result.error);
+    broadcastRoomState(result.room);
+  });
+
+  socket.on('toggle-all-autobuild', ({ roomCode, enabled } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const room = getRoomOrExpire(socket, roomCode);
+    if (!room) return;
+    const result = toggleAllAutobuild(roomCode, socket.id, enabled);
     if (!result) return socket.emit('error', 'Cannot toggle now');
     if (result.error) return socket.emit('error', result.error);
     broadcastRoomState(result.room);
@@ -1179,6 +1186,8 @@ io.on('connection', (socket) => {
 // Advances economy, healers, missiles and core regen for active games.
 // ~150ms (6.7Hz) rather than 250ms: clients extrapolate between these
 // snapshots, and a 4Hz reference path made fast missiles visibly steppy.
+// Snapshots go out only on visible changes (or a 1Hz heartbeat for economy
+// numbers); missiles in flight always stream so interpolation stays smooth.
 setInterval(() => {
   try {
     const now = Date.now();
@@ -1186,7 +1195,12 @@ setInterval(() => {
       if (room.phase !== 'missile-command-play' || !room.missileCommandState) continue;
       if (room.missileCommandState.winnerId) continue;
       const res = tickMissileRoom(room, now);
-      if (res) broadcastRoomState(res.room);
+      if (!res) continue;
+      const inFlight = (room.missileCommandState.missiles?.length ?? 0) > 0;
+      if (res.events.length > 0 || inFlight || now - (room.missileLastBroadcastMs ?? 0) >= 1000) {
+        room.missileLastBroadcastMs = now;
+        broadcastRoomState(res.room);
+      }
     }
   } catch (e) {
     console.error('[missile-tick] failed', e);

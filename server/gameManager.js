@@ -10,6 +10,7 @@ import {
   missileCancelSell,
   missileLoadMissile,
   missileToggleAutobuild,
+  missileToggleAllAutobuild,
   missileLaunch,
   missileLaunchType,
   missileSetKeepFire,
@@ -76,7 +77,7 @@ export function createRoom(hostId, hostName) {
     chromaOptions: { difficulty: 'easy', playerDifficulties: {}, fairPoints: true, extremeMode: false },
     territoryOptions: { extremeMode: false },
     liarOptions: { extremeMode: false },
-    missileCommandOptions: { startingResources: MISSILE_CONFIG.startingResources, economyTickMs: MISSILE_CONFIG.economyTickMs, maxLevel: MISSILE_CONFIG.maxLevel, fogOfWar: true, fogHistory: false, supplyShip: false },
+    missileCommandOptions: { startingResources: MISSILE_CONFIG.startingResources, fogOfWar: true, fogHistory: false, supplyShip: false },
     chromaState: null,
     territoryState: null,
     blendState: null,
@@ -194,7 +195,7 @@ export function updateMissileCommandOptions(code, options) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'lobby') return null;
   if (!options || typeof options !== 'object') return null;
-  const next = { ...(room.missileCommandOptions || { startingResources: MISSILE_CONFIG.startingResources, economyTickMs: MISSILE_CONFIG.economyTickMs, maxLevel: MISSILE_CONFIG.maxLevel, fogOfWar: true, fogHistory: false, supplyShip: false }) };
+  const next = { ...(room.missileCommandOptions || { startingResources: MISSILE_CONFIG.startingResources, fogOfWar: true, fogHistory: false, supplyShip: false }) };
   if (typeof options.startingResources === 'number' && options.startingResources >= 50 && options.startingResources <= 500) {
     next.startingResources = Math.round(options.startingResources);
   }
@@ -1727,6 +1728,16 @@ export function toggleAutobuild(code, playerId, launcherId) {
   return { room, building: res.building };
 }
 
+export function toggleAllAutobuild(code, playerId, enabled) {
+  const room = rooms.get(code);
+  if (!room || !room.missileCommandState) return null;
+  if (room.phase !== 'missile-command-play') return null;
+  const res = missileToggleAllAutobuild(room.missileCommandState, playerId, enabled);
+  if (res.error) return { room, error: res.error };
+  room.lastActivityMs = Date.now();
+  return { room, enabled: res.enabled, count: res.count };
+}
+
 export function setKeepFire(code, playerId, action) {
   const room = rooms.get(code);
   if (!room || !room.missileCommandState) return null;
@@ -1761,8 +1772,9 @@ export function tickMissileRoom(room, now = Date.now()) {
   if (!room?.missileCommandState) return null;
   if (room.phase !== 'missile-command-play') return null;
   const { events } = tickMissileCommand(room.missileCommandState, now);
-  room.lastActivityMs = now;
-  if (room.missileCommandState.winnerId) {
+  // NOTE: no lastActivityMs bump here — only real player actions keep a room
+  // alive, so abandoned games expire via sweepInactiveRooms.
+  if (room.missileCommandState.winReason) {
     const winner = room.players.find(p => p.id === room.missileCommandState.winnerId);
     if (winner) winner.score += 5;
     room.phase = 'missile-command-end';
