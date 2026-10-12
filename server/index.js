@@ -5,6 +5,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import { logger } from './logger.js';
+import { PROTOCOL_VERSION } from './version.js';
 
 // Helper: get room or emit room-expired and return null
 function getRoomOrExpire(socket, roomCode) {
@@ -37,6 +38,7 @@ import {
   launchMissileType,
   setKeepFire,
   fireDesperation,
+  claimSupplyShip,
   tickMissileRoom,
   setPlayerDifficulty,
   submitChromaGuess,
@@ -144,7 +146,7 @@ app.use(express.json());
 
 app.get('/health', (req, res) => {
   logger.health.check('ok', { rooms: rooms.size, timestamp: Date.now() });
-  res.json({ status: 'ok', timestamp: Date.now(), rooms: rooms.size });
+  res.json({ status: 'ok', timestamp: Date.now(), rooms: rooms.size, protocolVersion: PROTOCOL_VERSION });
 });
 
 const httpServer = createServer(app);
@@ -351,7 +353,7 @@ function roomPublicState(room, forPlayerId = null) {
     chromaOptions: room.chromaOptions || { difficulty: 'easy', fairPoints: true, extremeMode: false },
     territoryOptions: room.territoryOptions || { extremeMode: false },
     liarOptions: room.liarOptions || { extremeMode: false },
-    missileCommandOptions: room.missileCommandOptions || { startingResources: 200, economyTickMs: 500, maxLevel: 5, fogOfWar: true, fogHistory: false },
+    missileCommandOptions: room.missileCommandOptions || { startingResources: 200, economyTickMs: 500, maxLevel: 5, fogOfWar: true, fogHistory: false, supplyShip: false },
     missileCommandState: (() => {
       const s = room.missileCommandState || null;
       if (!s || !s.fogOfWar || !forPlayerId || !s.exploredTiles) return s;
@@ -774,6 +776,16 @@ io.on('connection', (socket) => {
     const gy = typeof targetGy === 'number' ? targetGy : targetGy?.gy;
     const result = fireDesperation(roomCode, socket.id, { targetGx: gx, targetGy: gy });
     if (!result) return socket.emit('error', 'Cannot fire now');
+    if (result.error) return socket.emit('error', result.error);
+    broadcastRoomState(result.room);
+  });
+
+  socket.on('claim-supply-ship', ({ roomCode } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const room = getRoomOrExpire(socket, roomCode);
+    if (!room) return;
+    const result = claimSupplyShip(roomCode, socket.id);
+    if (!result) return socket.emit('error', 'Cannot claim now');
     if (result.error) return socket.emit('error', result.error);
     broadcastRoomState(result.room);
   });

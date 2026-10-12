@@ -238,6 +238,10 @@ export interface MissileCommandState {
   winReason: 'core_destroyed' | 'timeout' | null;
   fogOfWar: boolean;
   fogHistory: boolean;
+  supplyShipEnabled?: boolean;
+  supplyShip?: { id: string; dir: number; fromX: number; toX: number; y: number; startAt: number; endAt: number } | null;
+  buildSurge?: Record<string, number>; // playerId -> ms timestamp a 2x build-speed window expires
+  lastSupply?: { ownerId: string; kind: string; detail: Record<string, number>; at: number } | null;
   exploredTiles?: Record<string, Record<string, number>>; // playerId -> tileKey -> expiresAt (0 = permanent)
 }
 
@@ -295,6 +299,7 @@ export interface MissileCommandOptions {
   maxLevel: number;
   fogOfWar: boolean;
   fogHistory: boolean;
+  supplyShip: boolean;
 }
 
 export interface Player {

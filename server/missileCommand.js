@@ -96,6 +96,26 @@ export const MISSILE_CONFIG = {
     pierce: 0, // no shield bypass — raw damage only
     speed: 0.12,
   },
+  // Neutral supply ship (optional lobby toggle, off by default). A freighter
+  // periodically crosses the channel; either player can tap it to claim a
+  // random payout. Every payout scales with net-worth disparity (your
+  // buildings' invested value vs theirs), clamped 0.5x–2x, so the player
+  // who is behind gets more.
+  supplyShip: {
+    intervalMs: 60000, // average time between sailings
+    jitterMs: 15000, // randomized ± on top of the interval
+    crossMs: 18000, // time to cross the channel (claim window)
+    firstShipMs: 25000, // first sailing after game start
+    channelY: 0.5, // normalized y of the shipping lane
+    barrageDamage: 80, // per-tile damage of the missile-rain payout
+    barrageSpeed: 0.12, // cruise speed of rain missiles
+    barrageStaggerMs: 150, // ripple between rain missiles
+    baseCoverage: 0.25, // enemy-tile fraction rained on, before scaling
+    maxCoverage: 0.5, // ...never more than half the island
+    baseCredits: 500, // credits payout, before scaling
+    maxCredits: 1000, // ...capped here
+    surgeBaseMs: 30000, // 2x build-speed window, before scaling
+  },
   buildingHpFallback: 120,
 };
 
@@ -212,6 +232,15 @@ export function createMissileCommandState(playerIds, options = {}) {
     // Desperation strike per player: { unlocked, used }. Unlocks once your
     // core hits 50% HP and latches — healing back above it keeps the unlock.
     desperation: { [p1]: { unlocked: false, used: false }, [p2]: { unlocked: false, used: false } },
+    // Neutral supply ship (optional). supplyShip is the live freighter or
+    // null; nextShipAt schedules the next sailing; buildSurge maps playerId
+    // to the ms timestamp a 2x build-speed window expires; lastSupply is the
+    // most recent claim, so clients can toast it.
+    supplyShipEnabled: options.supplyShip ?? false,
+    supplyShip: null,
+    nextShipAt: now + (MISSILE_CONFIG.supplyShip.firstShipMs ?? 25000),
+    buildSurge: {},
+    lastSupply: null,
     resources,
     gameStartTime: now,
     lastEconomyTick: now,
@@ -259,6 +288,13 @@ export function totalInvestedFor(type, launcherType, level) {
 // ordered and stored on the job, so the payout can't shift mid-sale.
 export function sellRefundForBuilding(b) {
   return Math.floor(totalInvestedFor(b.type, b.launcherType, b.level ?? 1) * (MISSILE_CONFIG.sellRefundRate ?? 0.7));
+}
+
+// Build-speed multiplier from an active shipyard-surge payout (2x while the
+// window lasts, 1x otherwise). Applied to construction, upgrades, and
+// missile loads started inside the window.
+export function surgeRate(state, playerId, now = Date.now()) {
+  return (state.buildSurge?.[playerId] ?? 0) > now ? 2 : 1;
 }
 
 // Create the level-1 building for a finished construction site.
@@ -331,7 +367,7 @@ export function missileBuildBuilding(state, playerId, action) {
   const site = {
     id: uid('c'), kind: 'build', type: buildingType, launcherType: buildingType === 'launcher' ? launcherType : undefined,
     side, gx, gy, ownerId: playerId, targetLevel: 1,
-    completeAt: now + (MISSILE_CONFIG.buildMs[1] ?? 3000),
+    completeAt: now + (MISSILE_CONFIG.buildMs[1] ?? 3000) / surgeRate(state, playerId, now),
   };
   if (!state.pending) state.pending = {};
   state.pending[site.id] = site;
@@ -371,7 +407,7 @@ export function missileUpgradeBuilding(state, playerId, buildingId) {
     id: uid('c'), kind: 'upgrade', type: b.type, launcherType: b.launcherType,
     side: b.side, gx: b.gx, gy: b.gy, ownerId: playerId, targetLevel,
     upgradeOf: buildingId,
-    completeAt: now + (MISSILE_CONFIG.buildMs[targetLevel] ?? 5000),
+    completeAt: now + (MISSILE_CONFIG.buildMs[targetLevel] ?? 5000) / surgeRate(state, playerId, now),
   };
   if (!state.pending) state.pending = {};
   state.pending[job.id] = job;
@@ -471,7 +507,7 @@ export function missileLoadMissile(state, playerId, launcherId) {
     return { error: `Need ${launcher.missileCost} credits to build a missile` };
   }
   state.resources[playerId] -= launcher.missileCost;
-  launcher.loadingUntil = now + (MISSILE_CONFIG.loadMs ?? 5000);
+  launcher.loadingUntil = now + (MISSILE_CONFIG.loadMs ?? 5000) / surgeRate(state, playerId, now);
   return { building: launcher };
 }
 
@@ -603,6 +639,115 @@ export function missileFireDesperation(state, playerId, action) {
   flag.used = true;
   state.missiles.push(m);
   return { missiles: [m] };
+}
+
+// Net worth: total invested value of a player's living buildings (cores
+// excluded — they were never built). Drives supply-ship payout scaling.
+export function netWorthFor(state, playerId) {
+  let worth = 0;
+  for (const b of Object.values(state.buildings)) {
+    if (b.ownerId !== playerId || b.type === 'core') continue;
+    worth += totalInvestedFor(b.type, b.launcherType, b.level ?? 1);
+  }
+  return worth;
+}
+
+// Payout scale from net-worth disparity: the further behind you are, the
+// bigger the freighter's gift. 1x when even, up to 2x when crushed, down to
+// 0.5x when ahead (the leader still gets something for contesting it).
+export function supplyScaleFor(myWorth, enemyWorth) {
+  const ratio = enemyWorth / Math.max(1, myWorth);
+  return Math.max(0.5, Math.min(2, ratio));
+}
+
+// Claim the neutral supply freighter by tapping it. First tap wins; the ship
+// sails on and the next one is scheduled. One of three payouts, all scaled
+// by net-worth disparity:
+//   credits — up to 1000cr straight into your wallet
+//   barrage — a ripple of ship-launched missiles over random enemy tiles
+//   surge   — 2x construction/upgrade/missile-load speed for a scaled window
+export function missileClaimShip(state, playerId) {
+  if (state.winnerId) return { error: 'Game is over' };
+  const side = missileSideForPlayer(state, playerId);
+  if (!side) return { error: 'You are not in this match' };
+  if (!state.supplyShipEnabled) return { error: 'Supply ships are off' };
+  const ship = state.supplyShip;
+  const now = Date.now();
+  if (!ship || now > ship.endAt) return { error: 'No supply ship right now' };
+  const enemySide = side === 'top' ? 'bottom' : 'top';
+  const enemyId = state.sides[enemySide];
+  const scale = supplyScaleFor(netWorthFor(state, playerId), netWorthFor(state, enemyId));
+  const cfg = MISSILE_CONFIG.supplyShip;
+  const kinds = ['credits', 'barrage', 'surge'];
+  const kind = kinds[Math.floor(Math.random() * kinds.length)];
+  let detail = {};
+  if (kind === 'credits') {
+    const amount = Math.floor(Math.min(cfg.maxCredits, cfg.baseCredits * scale));
+    state.resources[playerId] = (state.resources[playerId] ?? 0) + amount;
+    detail = { amount };
+  } else if (kind === 'barrage') {
+    const cols = MISSILE_CONFIG.gridCols, rows = MISSILE_CONFIG.gridRows;
+    const count = Math.round(cols * rows * Math.min(cfg.maxCoverage, cfg.baseCoverage * scale));
+    // Distinct random enemy tiles, most-distant-first is unnecessary — pure lottery.
+    const tiles = [];
+    const seen = new Set();
+    let guard = 0;
+    while (tiles.length < count && guard++ < count * 20) {
+      const gx = Math.floor(Math.random() * cols), gy = Math.floor(Math.random() * rows);
+      const key = `${gx},${gy}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      tiles.push({ gx, gy });
+    }
+    const from = { x: shipXAt(ship, now), y: ship.y };
+    const added = tiles.map((t, i) => {
+      const to = cellToWorld(enemySide, t.gx, t.gy);
+      return {
+        id: uid('m'),
+        ownerId: playerId,
+        launcherId: null,
+        launcherType: 'single',
+        supplyBarrage: true,
+        startX: from.x, startY: from.y,
+        targetX: to.x, targetY: to.y,
+        targetGx: t.gx, targetGy: t.gy,
+        currentX: from.x, currentY: from.y,
+        damage: cfg.barrageDamage, blast: 0,
+        speed: cfg.barrageSpeed ?? 0.12,
+        createdAt: now,
+        deployAt: now + i * (cfg.barrageStaggerMs ?? 150),
+        lane: (i % 5) - 2,
+      };
+    });
+    state.missiles.push(...added);
+    detail = { tiles: tiles.length };
+  } else {
+    const durationMs = Math.round(cfg.surgeBaseMs * scale);
+    // In-flight work jumps to halfway done; new work started inside the
+    // window builds at 2x (see surgeRate at each timer-creation point).
+    for (const p of Object.values(state.pending ?? {})) {
+      if (p.ownerId !== playerId || (p.kind !== 'build' && p.kind !== 'upgrade')) continue;
+      if ((p.completeAt ?? 0) > now) p.completeAt = now + (p.completeAt - now) / 2;
+    }
+    for (const b of Object.values(state.buildings)) {
+      if (b.type !== 'launcher' || b.ownerId !== playerId) continue;
+      if ((b.loadingUntil ?? 0) > now) b.loadingUntil = now + (b.loadingUntil - now) / 2;
+    }
+    if (!state.buildSurge) state.buildSurge = {};
+    state.buildSurge[playerId] = now + durationMs;
+    detail = { seconds: Math.round(durationMs / 1000) };
+  }
+  state.supplyShip = null;
+  state.nextShipAt = now + cfg.intervalMs + Math.random() * (cfg.jitterMs ?? 0);
+  state.lastSupply = { ownerId: playerId, kind, detail, at: now };
+  return { supply: state.lastSupply };
+}
+
+// Normalized x of the freighter at time `now` (shared by server scheduling
+// and client rendering so both agree where the ship is).
+export function shipXAt(ship, now) {
+  const t = Math.max(0, Math.min(1, (now - ship.startAt) / Math.max(1, ship.endAt - ship.startAt)));
+  return ship.fromX + (ship.toX - ship.fromX) * t;
 }
 
 // Apply explosion damage centered on an enemy grid cell with Manhattan radius.
@@ -760,6 +905,28 @@ export function tickMissileCommand(state, now = Date.now()) {
   // Expire temporary fog revelations
   expireFog(state, now);
 
+  // 0d. Supply freighter schedule: sail one crossing, then go dark until
+  // the next sailing. Unclaimed ships simply sail away.
+  if (state.supplyShipEnabled && !state.winnerId) {
+    const scfg = MISSILE_CONFIG.supplyShip;
+    if (!state.supplyShip && now >= (state.nextShipAt ?? 0)) {
+      const dir = Math.random() < 0.5 ? 1 : -1;
+      state.supplyShip = {
+        id: uid('sh'),
+        dir,
+        fromX: dir > 0 ? -0.12 : 1.12,
+        toX: dir > 0 ? 1.12 : -0.12,
+        y: scfg.channelY ?? 0.5,
+        startAt: now,
+        endAt: now + (scfg.crossMs ?? 18000),
+      };
+      events.push({ type: 'supply-sailed', id: state.supplyShip.id });
+    } else if (state.supplyShip && now >= state.supplyShip.endAt) {
+      state.supplyShip = null;
+      state.nextShipAt = now + scfg.intervalMs + Math.random() * (scfg.jitterMs ?? 0);
+    }
+  }
+
   // 0. Construction & upgrades completing now (each runs its own timer)
   if (state.pending) {
     for (const [pid, p] of Object.entries(state.pending)) {
@@ -810,7 +977,7 @@ export function tickMissileCommand(state, now = Date.now()) {
     if ((b.stock ?? 0) >= (b.maxStock ?? MISSILE_CONFIG.maxStock)) continue;
     if ((state.resources[b.ownerId] ?? 0) < (b.missileCost || 0)) continue;
     state.resources[b.ownerId] -= b.missileCost;
-    b.loadingUntil = now + (MISSILE_CONFIG.loadMs ?? 5000);
+    b.loadingUntil = now + (MISSILE_CONFIG.loadMs ?? 5000) / surgeRate(state, b.ownerId, now);
   }
 
   // 0c. Keep-firing locks: anything stockpiled goes out at the locked tile

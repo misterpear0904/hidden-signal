@@ -1,6 +1,7 @@
 import { useEffect, useCallback } from 'react';
 import './index.css';
 import { useSocket, type GuessData } from './hooks/useSocket';
+import { useVersionCheck } from './hooks/useVersionCheck';
 import type { ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileLaunchAction, MissileTypeLaunchAction, MissileLoadAction, MissileKeepFireAction, MissileDesperationAction, MissileCommandOptions } from './types/game';
 import { TOTAL_ROUNDS } from './constants';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -95,6 +96,7 @@ export default function App() {
     launchMissileType,
     setKeepFire,
     fireDesperation,
+    claimSupplyShip,
     updateMissileCommandOptions,
   } = useSocket();
 
@@ -104,6 +106,9 @@ export default function App() {
     const t = setTimeout(clearError, 4000);
     return () => clearTimeout(t);
   }, [error, clearError]);
+
+  // Server/client contract check — prompts for refresh on mismatch.
+  const { mismatch: versionMismatch, serverVersion } = useVersionCheck();
 
   const me = roomState?.players.find(p => p.id === myId);
   const isHost = me?.isHost ?? false;
@@ -149,6 +154,7 @@ export default function App() {
   const handleToggleAutobuild = useCallback((launcherId: string) => { if (roomCode) toggleAutobuild(roomCode, { launcherId }); }, [roomCode, toggleAutobuild]);
   const handleSetKeepFire = useCallback((action: MissileKeepFireAction) => { if (roomCode) setKeepFire(roomCode, action); }, [roomCode, setKeepFire]);
   const handleFireDesperation = useCallback((action: MissileDesperationAction) => { if (roomCode) fireDesperation(roomCode, action); }, [roomCode, fireDesperation]);
+  const handleClaimSupplyShip = useCallback(() => { if (roomCode) claimSupplyShip(roomCode); }, [roomCode, claimSupplyShip]);
   const handleUpdateMissileCommandOptions = useCallback((options: Partial<MissileCommandOptions>) => { if (roomCode) updateMissileCommandOptions(roomCode, options); }, [roomCode, updateMissileCommandOptions]);
 
   // ─── Phase Router ──────────────────────────────────────────────────────────
@@ -317,6 +323,7 @@ export default function App() {
             onLaunchType={handleLaunchMissileType}
             onSetKeepFire={handleSetKeepFire}
             onFireDesperation={handleFireDesperation}
+            onClaimSupplyShip={handleClaimSupplyShip}
             onPlayAgain={handlePlayAgain}
           />
         );
@@ -382,6 +389,31 @@ export default function App() {
   return (
     <>
       <div className="bg-mesh" />
+      {versionMismatch && (
+        <div
+          role="alert"
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, zIndex: 2000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
+            padding: '10px 16px', background: 'rgba(124,45,18,0.97)',
+            borderBottom: '2px solid rgba(251,191,36,0.7)', color: '#fff',
+            fontWeight: 800, fontSize: '0.9rem', textAlign: 'center',
+          }}
+        >
+          <span>🔄 A new version is available (server v{serverVersion}) — refresh to keep playing.</span>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            style={{
+              padding: '8px 18px', borderRadius: 999, fontWeight: 800, fontSize: '0.85rem',
+              color: '#000', background: '#fbbf24', border: 'none', cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Refresh now
+          </button>
+        </div>
+      )}
       <ErrorBoundary>
         {renderPhase()}
       </ErrorBoundary>

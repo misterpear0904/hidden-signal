@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type { RoomState, RoleData, RoundRevealData, ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileUpgradeAction, MissileLaunchAction, MissileTypeLaunchAction, MissileLoadAction, MissileKeepFireAction, MissileDesperationAction, MissileCommandOptions } from '../types/game';
+import { saveRoomSession, clearRoomSession, readRoomSession } from '../utils/roomSession';
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
 
@@ -74,6 +75,7 @@ export interface SocketHookReturn {
   launchMissileType: (roomCode: string, action: MissileTypeLaunchAction) => void;
   setKeepFire: (roomCode: string, action: MissileKeepFireAction) => void;
   fireDesperation: (roomCode: string, action: MissileDesperationAction) => void;
+  claimSupplyShip: (roomCode: string) => void;
   updateMissileCommandOptions: (roomCode: string, options: Partial<MissileCommandOptions>) => void;
 }
 
@@ -100,6 +102,16 @@ export function useSocket(): SocketHookReturn {
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const serverSleepingRef = useRef(false);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Restore a session after an accidental refresh — helpers in
+  // utils/roomSession (unit-tested). sessionStorage survives reloads but is
+  // per-tab, so a second tab can never steal this slot.
+  const saveSession = saveRoomSession;
+  const clearSession = clearRoomSession;
+  const readSession = readRoomSession;
+  // One restore attempt per mount: guards the refresh race where the old
+  // socket's disconnect hasn't been processed yet when we rejoin.
+  const restoreAttemptedRef = useRef(false);
 
   // Keep roomCodeRef in sync with roomCode
   useEffect(() => {
@@ -198,6 +210,23 @@ export function useSocket(): SocketHookReturn {
         } else if (roomCodeRef.current) {
           s.emit('room-state-request', { roomCode: roomCodeRef.current });
         }
+      } else if (!restoreAttemptedRef.current && !roomCodeRef.current) {
+        // Fresh mount (e.g. after an accidental refresh): walk back into the
+        // stored session. Single attempt, with one delayed retry for the race
+        // where the old socket's disconnect hasn't landed server-side yet.
+        restoreAttemptedRef.current = true;
+        const attemptRestore = () => {
+          if (roomCodeRef.current) return; // joined manually meanwhile
+          const session = readSession();
+          if (!session) return;
+          playerNameRef.current = session.playerName;
+          console.log('[socket] restoring session for room', session.roomCode);
+          s.emit('rejoin-room', { roomCode: session.roomCode, playerName: session.playerName });
+        };
+        attemptRestore();
+        setTimeout(() => {
+          if (!roomCodeRef.current) attemptRestore();
+        }, 2500);
       }
       // Start heartbeat to detect dead rooms
       if (heartbeatRef.current) clearInterval(heartbeatRef.current);
@@ -269,6 +298,8 @@ export function useSocket(): SocketHookReturn {
       setRoomCode(code);
       setInRoom(true);
       setRoomExpired(null);
+      // Persist so an accidental refresh can walk straight back in.
+      if (playerNameRef.current) saveSession(code, playerNameRef.current);
     };
     const onRoomState = (state: RoomState) => {
       setRoomState(state);
@@ -289,6 +320,7 @@ export function useSocket(): SocketHookReturn {
       setMyRole(null);
       setRoundReveal(null);
       setRoomCode(code ?? '');
+      clearSession();
       setError('You were kicked from the lobby by the host');
     };
     const onEndVoteFailed = ({ declinedBy }: { declinedBy: string }) => {
@@ -302,6 +334,7 @@ export function useSocket(): SocketHookReturn {
       setMyRole(null);
       setRoundReveal(null);
       setRoomCode(code ?? '');
+      clearSession();
     };
 
     s.on('connect', onConnect);
@@ -504,6 +537,10 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('fire-desperation', { roomCode: code, ...action });
   }, []);
 
+  const claimSupplyShip = useCallback((code: string) => {
+    socketRef.current?.emit('claim-supply-ship', { roomCode: code });
+  }, []);
+
   const updateMissileCommandOptions = useCallback((code: string, options: Partial<MissileCommandOptions>) => {
     socketRef.current?.emit('update-missile-command-options', { roomCode: code, options });
   }, []);
@@ -566,6 +603,7 @@ export function useSocket(): SocketHookReturn {
     launchMissileType,
     setKeepFire,
     fireDesperation,
+    claimSupplyShip,
     updateMissileCommandOptions,
   };
 }

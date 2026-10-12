@@ -71,7 +71,7 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
 
   const chromaOptions = roomState.chromaOptions || { difficulty: 'easy', playerDifficulties: {}, fairPoints: true, extremeMode: false };
   const territoryOptions = roomState.territoryOptions || { extremeMode: false };
-  const missileCommandOptions = roomState.missileCommandOptions || { startingResources: 200, economyTickMs: 500, maxLevel: 5, fogOfWar: true, fogHistory: false };
+  const missileCommandOptions = roomState.missileCommandOptions || { startingResources: 200, economyTickMs: 500, maxLevel: 5, fogOfWar: true, fogHistory: false, supplyShip: false };
   const myDifficulty = chromaOptions.playerDifficulties?.[myId] || 'easy';
 
   return (
@@ -211,6 +211,7 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
                   <div className="flex flex-wrap gap-4 justify-center">
                     {p.isHost && <div className="badge badge-amber" style={{ fontSize: '0.6rem' }}>Host</div>}
                     {p.id === myId && <div className="badge badge-cyan" style={{ fontSize: '0.6rem' }}>You</div>}
+                    {!p.connected && <div className="badge badge-rose" style={{ fontSize: '0.6rem' }}>⚠ Disconnected — waiting…</div>}
                     {selectedGameId === 'chroma-shift' && (
                       <div
                         className="badge"
@@ -629,6 +630,30 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
                   style={{ minWidth: 80 }}
                 >
                   {missileCommandOptions.fogHistory ? 'ON' : 'OFF'}
+                </button>
+              ) : (
+                <span className="badge badge-muted">(Host Setting)</span>
+              )}
+            </div>
+            {/* Neutral supply freighter: sails the channel, tap to claim.
+                Payouts scale with how far behind you are on buildings. */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', background: 'rgba(255,255,255,0.03)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)', marginTop: 10 }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                  🚢 Supply Ship
+                </div>
+                <div className="text-xs text-muted" style={{ marginTop: 2 }}>
+                  A freighter crosses the channel — tap it for credits, a missile rain, or 2x build speed. Bigger rewards when behind!
+                </div>
+              </div>
+              {isHost ? (
+                <button
+                  type="button"
+                  onClick={() => onUpdateMissileCommandOptions({ supplyShip: !missileCommandOptions.supplyShip })}
+                  className={`btn btn-sm ${missileCommandOptions.supplyShip ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ minWidth: 80 }}
+                >
+                  {missileCommandOptions.supplyShip ? 'ON' : 'OFF'}
                 </button>
               ) : (
                 <span className="badge badge-muted">(Host Setting)</span>

@@ -20,6 +20,7 @@ import type {
   MissileDesperationAction,
 } from '../../types/game';
 import { WORLD, TOP_RECT, BOTTOM_RECT, cellRect, BUILD_OPTIONS, BUILD_CATEGORIES, STATS, BUILDING_META, upgradeCostFor, sellRefundFor, SELL_SECONDS, SHIELD_COVER_CELLS, SHIELD_HEAVY_COVER_CELLS, HEALER_COVER_CELLS, CORE_INCOME_FALLBACK, MAX_STOCK, BUILD_SECONDS, LOAD_SECONDS } from './config';
+import { visionOfTile, canSeeEnemyAtTile } from './fog';
 import { BUILD_ID } from '../../buildInfo';
 
 interface Props {
@@ -36,6 +37,7 @@ interface Props {
   onLaunchType: (action: MissileTypeLaunchAction) => void;
   onSetKeepFire: (action: MissileKeepFireAction) => void;
   onFireDesperation: (action: MissileDesperationAction) => void;
+  onClaimSupplyShip: () => void;
   onPlayAgain: () => void;
 }
 
@@ -132,7 +134,7 @@ function coveredCells(gx: number, gy: number, range: number, cols: number, rows:
   return out;
 }
 
-export default function MissileCommandGame({ roomState, myId, isHost, onBuild, onUpgrade, onSell, onCancelSell, onLoad, onToggleAutobuild, onLaunch, onLaunchType, onSetKeepFire, onFireDesperation, onPlayAgain }: Props) {
+export default function MissileCommandGame({ roomState, myId, isHost, onBuild, onUpgrade, onSell, onCancelSell, onLoad, onToggleAutobuild, onLaunch, onLaunchType, onSetKeepFire, onFireDesperation, onClaimSupplyShip, onPlayAgain }: Props) {
   const mc = roomState.missileCommandState;
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -159,6 +161,9 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     (document.fullscreenEnabled || (document as unknown as { webkitFullscreenEnabled?: boolean }).webkitFullscreenEnabled);
   const [, setFrame] = useState(0);
   const [flashes, setFlashes] = useState<Flash[]>([]);
+  // Last-seen supply claim (drives the claim toast below).
+  const lastSupplySeenRef = useRef(0);
+  const [supplyToast, setSupplyToast] = useState<string | null>(null);
 
   const gestureRef = useRef({
     // Per-pointer tracking: a stationary resting thumb must not cancel a
@@ -228,6 +233,25 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   useEffect(() => {
     if (mc) snapRef.current = { missiles: mc.missiles.map(m => ({ ...m })), at: Date.now() };
   }, [mc]);
+
+  // ── Supply-claim toast: announce new claims once, then fade ──
+  useEffect(() => {
+    const s = mc?.lastSupply;
+    if (!s || s.at <= lastSupplySeenRef.current) return;
+    lastSupplySeenRef.current = s.at;
+    const who = s.ownerId === myId ? 'You' : (roomState.players.find(p => p.id === s.ownerId)?.name ?? 'Enemy');
+    const what = s.kind === 'credits'
+      ? `+${s.detail.amount}cr`
+      : s.kind === 'barrage'
+        ? `${s.detail.tiles} missiles inbound`
+        : `2x build speed for ${s.detail.seconds}s`;
+    setSupplyToast(`🚢 ${who} claimed the freighter: ${what}!`);
+  }, [mc, myId, roomState.players]);
+  useEffect(() => {
+    if (!supplyToast) return;
+    const t = setTimeout(() => setSupplyToast(null), 4500);
+    return () => clearTimeout(t);
+  }, [supplyToast]);
 
   // Fog: an open enemy panel is a live feed — close it the moment vision
   // lapses, or it keeps streaming HP/stats through the fog.
@@ -346,6 +370,8 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   const myDesperation = mc.desperation?.[myId] ?? { unlocked: false, used: false };
 
   const enemyName = enemyId ? (roomState.players.find(p => p.id === enemyId)?.name ?? 'Enemy') : 'Enemy';
+  // Null-safe: unknown/loader states report nothing rather than a false alarm.
+  const enemyConnected = enemyId ? (roomState.players.find(p => p.id === enemyId)?.connected ?? true) : true;
   const winnerName = mc.winnerId ? (roomState.players.find(p => p.id === mc.winnerId)?.name ?? '???') : null;
   // Island placards in the channel name each side by its owner, so you can
   // tell the two shores apart at a glance even when zoomed out.
@@ -396,25 +422,15 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     );
   }, [fogOfWar, mySide, myExplored, cols, rows]);
   const now = Date.now();
-  // Vision state of an enemy tile.
-  //   'live'   — revealed right now (permanent core, or inside an active reveal)
-  //   'stale'  — was revealed, the reveal lapsed; show a dimmed last-known
-  //              view, but ONLY when the lobby enabled fog history
-  //   'hidden' — never seen (or history off); opaque fog
+  // Vision state of an enemy tile — pure helpers in ./fog (unit-tested).
   // exploredTiles encoding: 0 = permanent, -1 = remembered, >0 = expiry ms
   const fogHistory = mc.fogHistory ?? false;
-  const visionOf = (gx: number, gy: number): 'live' | 'stale' | 'hidden' => {
-    if (!fogOfWar) return 'live';
-    const v = myExplored[`${gx},${gy}`];
-    if (v === undefined) return 'hidden';
-    if (v === 0 || v > now) return 'live';
-    // Lapsed reveal: remembered only with history on, otherwise fully dark.
-    return fogHistory ? 'stale' : 'hidden';
-  };
+  const visionOpts = { fogOfWar, fogHistory, now };
+  const visionOf = (gx: number, gy: number) => visionOfTile(myExplored, visionOpts, gx, gy);
   // Can I currently see an enemy tile? Stale tiles do NOT count — they're
   // memory, not vision, so aura/beam effects that depend on live sight must
   // not leak through them.
-  const canSeeEnemyAt = (gx: number, gy: number) => visionOf(gx, gy) === 'live';
+  const canSeeEnemyAt = (gx: number, gy: number) => canSeeEnemyAtTile(myExplored, visionOpts, gx, gy);
 
   // ── View transform ──
   const vbW = WORLD / zoom, vbH = WORLD / zoom;
@@ -439,8 +455,25 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     setTargetDesperation(false);
   }
 
+  // Normalized-x of the supply freighter at time `t` (mirrors the server's
+  // shipXAt so both agree where the ship is).
+  function shipPosAt(ship: { fromX: number; toX: number; y: number; startAt: number; endAt: number }, t: number) {
+    const f = Math.max(0, Math.min(1, (t - ship.startAt) / Math.max(1, ship.endAt - ship.startAt)));
+    return { x: (ship.fromX + (ship.toX - ship.fromX) * f) * WORLD, y: ship.y * WORLD };
+  }
+
   function handleTap(wx: number, wy: number, isTouch: boolean) {
     if (!mySide) return;
+    // Neutral supply freighter first: tapping it claims the payout for
+    // whoever taps first. Generous radius — it's a small moving target.
+    const freighter = mc?.supplyShip;
+    if (freighter) {
+      const sp = shipPosAt(freighter, Date.now());
+      if (Math.hypot(wx - sp.x, wy - sp.y) < 55) {
+        onClaimSupplyShip();
+        return;
+      }
+    }
     const cell = worldToCell(wx, wy, cols, rows);
     if (!cell) { setBuildCell(null); setSelectedId(null); return; }
 
@@ -995,6 +1028,23 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             );
           })}
 
+          {/* Neutral supply freighter crossing the channel. First tap claims
+              it — position interpolated from the server's sailing schedule. */}
+          {mc.supplyShip && (() => {
+            const sp = shipPosAt(mc.supplyShip, now);
+            return (
+              <g key={`freighter-${mc.supplyShip.id}`} pointerEvents="none">
+                <line
+                  x1={sp.x - (mc.supplyShip.dir > 0 ? 70 : -70)} y1={sp.y}
+                  x2={sp.x} y2={sp.y}
+                  stroke="rgba(255,255,255,0.35)" strokeWidth={4} strokeLinecap="round"
+                />
+                <circle cx={sp.x} cy={sp.y} r={30} fill="rgba(251,191,36,0.12)" stroke="#fbbf24" strokeWidth={2} strokeDasharray="8 6" />
+                <text x={sp.x} y={sp.y} textAnchor="middle" dominantBaseline="central" fontSize={32}>🚢</text>
+              </g>
+            );
+          })()}
+
           {/* Keep-firing lock: where my missiles will keep landing. Both
               players can see it — it's an automated, self-firing gun. */}
           {myKeepFire && mySide && (() => {
@@ -1213,7 +1263,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
         <div style={{ position: 'absolute', top: 8, left: 8, right: 8, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'stretch', pointerEvents: 'none' }}>
           <div style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 12px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
             <div className="text-xs" style={{ fontWeight: 800, color: 'var(--amber-400)', fontSize: '1.05rem', lineHeight: 1.1 }}>💰 {myResources}</div>
-            <div className="text-xs text-muted" style={{ fontSize: '0.65rem' }}>+{myIncome}/s • {roomState.code}</div>
+            <div className="text-xs text-muted" style={{ fontSize: '0.65rem' }}>+{myIncome}/s • {roomState.code}{((mc.buildSurge?.[myId] ?? 0) > now) && <span style={{ color: '#4ade80', fontWeight: 800 }}> • ⚡2x {Math.ceil(((mc.buildSurge?.[myId] ?? 0) - now) / 1000)}s</span>}</div>
           </div>
           <div style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 10px', flex: 1, minWidth: 120 }}>
             <div className="text-xs" style={{ fontWeight: 800, fontSize: '0.65rem' }}>⭐ YOU {mySide === 'top' ? '🔼' : '🔽'} {myCore ? `${Math.ceil(myCore.coreHp!)}/${myCore.maxCoreHp}` : ''}</div>
@@ -1222,7 +1272,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             </div>
           </div>
           <div style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 10px', flex: 1, minWidth: 120 }}>
-            <div className="text-xs" style={{ fontWeight: 800, fontSize: '0.65rem' }}>⭐ {enemyName.toUpperCase()} {enemyCore ? `${Math.ceil(enemyCore.coreHp!)}/${enemyCore.maxCoreHp}` : ''}</div>
+            <div className="text-xs" style={{ fontWeight: 800, fontSize: '0.65rem' }}>⭐ {enemyName.toUpperCase()} {enemyCore ? `${Math.ceil(enemyCore.coreHp!)}/${enemyCore.maxCoreHp}` : ''}{enemyConnected === false && <span style={{ color: 'var(--amber-400)' }}> • ⚠ disconnected</span>}</div>
             <div style={{ height: 6, background: 'rgba(255,255,255,0.12)', borderRadius: 3, overflow: 'hidden', marginTop: 3 }}>
               <div style={{ width: `${enemyCorePct}%`, height: '100%', background: 'linear-gradient(90deg,#fb7185,#f43f5e)' }} />
             </div>
@@ -1248,6 +1298,11 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
         </div>
 
         {/* ── Targeting banner ── */}
+        {supplyToast && !isTargeting && (
+          <div style={{ position: 'absolute', top: 74, left: '50%', transform: 'translateX(-50%)', pointerEvents: 'none', display: 'flex', gap: 8, alignItems: 'center', background: 'rgba(0,0,0,0.72)', border: '1px solid rgba(74,222,128,0.6)', borderRadius: 12, padding: '8px 12px', whiteSpace: 'nowrap' }}>
+            <span style={{ fontWeight: 800, color: '#4ade80', fontSize: '0.9rem' }}>{supplyToast}</span>
+          </div>
+        )}
         {isTargeting && (
           <div style={{ position: 'absolute', top: 74, left: '50%', transform: 'translateX(-50%)', pointerEvents: 'auto', display: 'flex', gap: 8, alignItems: 'center', background: 'rgba(0,0,0,0.72)', border: '1px solid rgba(251,191,36,0.6)', borderRadius: 12, padding: '8px 12px', whiteSpace: 'nowrap' }}>
             <span style={{ fontWeight: 800, color: '#fbbf24', fontSize: '0.9rem', animation: 'mc-pulse 1s infinite' }}>
@@ -1517,6 +1572,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             <div>⭐ Your <b>Core pays +{coreIncome}/s</b> — destroy the enemy Core (4000 HP) to win!</div>
             <div>🛡️ Shields <b>fully block</b> blasts while charged (≈ 25 covered squares). Empty covered squares still drain the shield. Hide Generators inside!</div>
             <div>💚 Shield Healers fix <b>one shield at a time</b> (weakest first — green beam shows it).</div>
+            <div>🚢 If supply ships are on, a freighter crosses the channel — <b>tap it first</b> for credits, a missile rain, or 2x build speed. Rewards scale up when behind!</div>
             <div>🚀 <b>Load up to {MAX_STOCK} missiles</b> per launcher ({LOAD_SECONDS}s each, ＋ or AUTO), then <b>FIRE the volley</b> — or <b>🔥 ALL</b> of one type at once!</div>
             <div>💥 <b>Scatter does the most total damage</b> — best shield-breaker. Single is precise.</div>
             <div>⏱ Buildings take time: <b>3s → 5s → 10s → 20s → 30s</b> by level. Build many in parallel!</div>

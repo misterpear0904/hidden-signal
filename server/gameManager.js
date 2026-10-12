@@ -14,6 +14,7 @@ import {
   missileLaunchType,
   missileSetKeepFire,
   missileFireDesperation,
+  missileClaimShip,
   tickMissileCommand,
   missileSideForPlayer,
   missileIncomePerSec,
@@ -75,7 +76,7 @@ export function createRoom(hostId, hostName) {
     chromaOptions: { difficulty: 'easy', playerDifficulties: {}, fairPoints: true, extremeMode: false },
     territoryOptions: { extremeMode: false },
     liarOptions: { extremeMode: false },
-    missileCommandOptions: { startingResources: MISSILE_CONFIG.startingResources, economyTickMs: MISSILE_CONFIG.economyTickMs, maxLevel: MISSILE_CONFIG.maxLevel, fogOfWar: true, fogHistory: false },
+    missileCommandOptions: { startingResources: MISSILE_CONFIG.startingResources, economyTickMs: MISSILE_CONFIG.economyTickMs, maxLevel: MISSILE_CONFIG.maxLevel, fogOfWar: true, fogHistory: false, supplyShip: false },
     chromaState: null,
     territoryState: null,
     blendState: null,
@@ -193,7 +194,7 @@ export function updateMissileCommandOptions(code, options) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'lobby') return null;
   if (!options || typeof options !== 'object') return null;
-  const next = { ...(room.missileCommandOptions || { startingResources: MISSILE_CONFIG.startingResources, economyTickMs: MISSILE_CONFIG.economyTickMs, maxLevel: MISSILE_CONFIG.maxLevel, fogOfWar: true, fogHistory: false }) };
+  const next = { ...(room.missileCommandOptions || { startingResources: MISSILE_CONFIG.startingResources, economyTickMs: MISSILE_CONFIG.economyTickMs, maxLevel: MISSILE_CONFIG.maxLevel, fogOfWar: true, fogHistory: false, supplyShip: false }) };
   if (typeof options.startingResources === 'number' && options.startingResources >= 50 && options.startingResources <= 500) {
     next.startingResources = Math.round(options.startingResources);
   }
@@ -205,6 +206,10 @@ export function updateMissileCommandOptions(code, options) {
   // Building history in fog: remembered last-known buildings. Off by default.
   if (typeof options.fogHistory === 'boolean') {
     next.fogHistory = options.fogHistory;
+  }
+  // Neutral supply freighter in the channel. Off by default.
+  if (typeof options.supplyShip === 'boolean') {
+    next.supplyShip = options.supplyShip;
   }
   room.missileCommandOptions = next;
   room.lastActivityMs = Date.now();
@@ -358,6 +363,7 @@ export function startGame(code) {
       startingResources: room.missileCommandOptions?.startingResources ?? MISSILE_CONFIG.startingResources,
       fogOfWar: room.missileCommandOptions?.fogOfWar ?? true,
       fogHistory: room.missileCommandOptions?.fogHistory ?? false,
+      supplyShip: room.missileCommandOptions?.supplyShip ?? false,
     });
     room.phase = 'missile-command-play';
     room.lastActivityMs = Date.now();
@@ -1739,6 +1745,16 @@ export function fireDesperation(code, playerId, action) {
   if (res.error) return { room, error: res.error };
   room.lastActivityMs = Date.now();
   return { room, missiles: res.missiles };
+}
+
+export function claimSupplyShip(code, playerId) {
+  const room = rooms.get(code);
+  if (!room || !room.missileCommandState) return null;
+  if (room.phase !== 'missile-command-play') return null;
+  const res = missileClaimShip(room.missileCommandState, playerId);
+  if (res.error) return { room, error: res.error };
+  room.lastActivityMs = Date.now();
+  return { room, supply: res.supply };
 }
 
 export function tickMissileRoom(room, now = Date.now()) {
