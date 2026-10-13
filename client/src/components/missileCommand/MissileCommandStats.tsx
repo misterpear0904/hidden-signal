@@ -39,6 +39,65 @@ export function matchDurationSec(mc: MissileCommandState): number {
   return Math.max(0, Math.round((end - (mc.gameStartTime ?? end)) / 1000));
 }
 
+export interface IncomePoint { t: number; top: number; bottom: number; }
+
+// Normalized income-rate series for the post-game chart. Tolerates short,
+// missing, or malformed histories (old servers predate tracking).
+export function incomeSeries(mc: MissileCommandState | null | undefined): IncomePoint[] {
+  const raw = mc?.incomeHistory?.samples ?? [];
+  const out: IncomePoint[] = [];
+  for (const s of raw) {
+    if (!Array.isArray(s) || s.length < 3) continue;
+    const t = Number(s[0]), top = Number(s[1]), bottom = Number(s[2]);
+    if (!Number.isFinite(t) || !Number.isFinite(top) || !Number.isFinite(bottom)) continue;
+    out.push({ t: Math.max(0, t), top: Math.max(0, top), bottom: Math.max(0, bottom) });
+  }
+  return out;
+}
+
+function IncomeChart({ mc, topName, botName }: { mc: MissileCommandState; topName: string; botName: string }) {
+  const series = incomeSeries(mc);
+  if (series.length === 0) {
+    return <div className="text-xs text-muted">Income history unavailable for this match.</div>;
+  }
+  // Cap rendered points so marathon games stay a cheap polyline.
+  const stride = Math.max(1, Math.ceil(series.length / 240));
+  const pts = series.filter((_, i) => i % stride === 0 || i === series.length - 1);
+  const maxT = Math.max(matchDurationSec(mc), pts[pts.length - 1].t, 1);
+  const maxV = Math.max(1, ...pts.map(p => Math.max(p.top, p.bottom)));
+  const yMax = Math.ceil(maxV * 1.15);
+  const W = 480, H = 150, padL = 36, padB = 20, padT = 10, padR = 10;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const x = (t: number) => padL + (Math.min(t, maxT) / maxT) * iw;
+  const y = (v: number) => padT + ih - (Math.min(v, yMax) / yMax) * ih;
+  const last = pts[pts.length - 1];
+  const gridVals = [0, yMax / 2, yMax];
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: '0.78rem', fontWeight: 700, marginBottom: 6 }}>
+        <span style={{ color: '#22d3ee' }}>● {topName} — {last.top.toFixed(1)}/s</span>
+        <span style={{ color: '#fb7185' }}>● {botName} — {last.bottom.toFixed(1)}/s</span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', display: 'block' }} role="img" aria-label={`Income per second over time for ${topName} versus ${botName}`}>
+        {gridVals.map(v => (
+          <Fragment key={v}>
+            <line x1={padL} y1={y(v)} x2={W - padR} y2={y(v)} stroke="rgba(255,255,255,0.12)" strokeWidth={1} />
+            <text x={padL - 5} y={y(v) + 3.5} textAnchor="end" fontSize={10} fill="rgba(255,255,255,0.55)">{v >= 10 ? Math.round(v) : v.toFixed(1)}</text>
+          </Fragment>
+        ))}
+        {[0, maxT / 2, maxT].map(t => (
+          <text key={t} x={x(t)} y={H - 5} textAnchor="middle" fontSize={10} fill="rgba(255,255,255,0.55)">{formatDuration(Math.round(t))}</text>
+        ))}
+        <polyline points={pts.map(p => `${x(p.t).toFixed(1)},${y(p.bottom).toFixed(1)}`).join(' ')} fill="none" stroke="#fb7185" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+        <polyline points={pts.map(p => `${x(p.t).toFixed(1)},${y(p.top).toFixed(1)}`).join(' ')} fill="none" stroke="#22d3ee" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+        <circle cx={x(last.t)} cy={y(last.bottom)} r={3.5} fill="#fb7185" />
+        <circle cx={x(last.t)} cy={y(last.top)} r={3.5} fill="#22d3ee" />
+      </svg>
+      <div className="text-xs text-muted" style={{ marginTop: 4 }}>Income / second over the match — watch the snowball take off</div>
+    </div>
+  );
+}
+
 export function formatDuration(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
@@ -215,6 +274,10 @@ export default function MissileCommandStats({ mc, players, myId }: Props) {
         <div style={{ marginTop: 8 }}>
           <Bar a={totalIncome(top)} b={totalIncome(bot)} colorA="#fbbf24" colorB="#f59e0b" />
           <div className="text-xs text-muted" style={{ marginTop: 4 }}>Total income share</div>
+        </div>
+        <div style={{ marginTop: 10 }}>
+          <div className="text-xs text-muted" style={{ marginBottom: 4, fontWeight: 700 }}>INCOME OVER TIME (/s)</div>
+          <IncomeChart mc={mc} topName={topName} botName={botName} />
         </div>
       </section>
 

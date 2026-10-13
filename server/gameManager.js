@@ -9,8 +9,7 @@ import {
   missileSellBuilding,
   missileCancelSell,
   missileLoadMissile,
-  missileToggleAutobuild,
-  missileToggleAllAutobuild,
+  missileRebuildRubble,
   missileLaunch,
   missileLaunchType,
   missileSetKeepFire,
@@ -29,6 +28,14 @@ export const rooms = new Map();
 export const TOTAL_ROUNDS = 5;
 const HIDDEN_ROUNDS = 5;
 const CHROMA_ROUNDS = 5;
+// Grid sizes must match the client (ChromaShiftGame gridDim): 5x5 standard,
+// 10x10 extreme. Single source of truth — a mismatch strands tiles that can
+// never be the target and silently rejects clicks on them.
+const CHROMA_STANDARD_TILES = 25;
+const CHROMA_EXTREME_TILES = 100;
+function chromaTotalTiles(room) {
+  return room.chromaOptions?.extremeMode ? CHROMA_EXTREME_TILES : CHROMA_STANDARD_TILES;
+}
 const SIGNAL_TIME = 60;    // seconds
 const DISCUSS_TIME = 60;   // seconds
 const GUESS_TIME = 45;     // seconds
@@ -108,9 +115,23 @@ export function joinRoom(code, playerId, playerName) {
   if (!room) return { error: 'Room not found' };
   if (room.phase !== 'lobby') return { error: 'Game already in progress' };
   if (room.players.find(p => p.id === playerId)) return { error: 'Already in room' };
+  // Reclaim a disconnected same-name slot instead of pushing a duplicate.
+  // Refresh races / second tabs otherwise inflate the roster (ghost entries
+  // shift everyone's placements). Mirrors rejoin-room semantics.
+  const cleanName = playerName.trim().substring(0, 20);
+  const ghost = room.players.find(p => !p.connected && p.name.trim().toLowerCase() === cleanName.toLowerCase());
+  if (ghost) {
+    const oldId = ghost.id;
+    ghost.id = playerId;
+    ghost.connected = true;
+    delete room.deleteAt;
+    room.lastActivityMs = Date.now();
+    remapPlayerId(room, oldId, playerId);
+    return { room, reclaimed: true };
+  }
   if (room.players.length >= 12) return { error: 'Room is full' };
 
-  room.players.push({ id: playerId, name: playerName, score: 0, isHost: false, connected: true });
+  room.players.push({ id: playerId, name: cleanName, score: 0, isHost: false, connected: true });
   delete room.deleteAt;
   return { room };
 }
@@ -428,7 +449,7 @@ function chromaFullPoints(room, playerId) {
 }
 
 function startChromaRound(room) {
-  const totalTiles = room.chromaOptions.extremeMode ? 64 : 25;
+  const totalTiles = chromaTotalTiles(room);
   const targetTileIndex = Math.floor(Math.random() * totalTiles);
   const baseIndex = (room.round - 1) % BASE_GRADIENT_PALETTES.length;
   const targetIndex = (room.round * 2 + 1) % TARGET_GRADIENT_PALETTES.length;
@@ -461,7 +482,7 @@ export function submitChromaGuess(code, playerId, tileIndex) {
 
   const player = room.players.find(p => p.id === playerId);
   if (!player) return null;
-  const totalTiles = room.chromaOptions?.extremeMode ? 64 : 25;
+  const totalTiles = chromaTotalTiles(room);
   if (!Number.isInteger(tileIndex) || tileIndex < 0 || tileIndex >= totalTiles) return null;
 
   if (tileIndex === room.chromaState.targetTileIndex) {
@@ -729,9 +750,13 @@ function awardLiarPoints(room, playerId, pts) {
   room.liarState.points[playerId] = (room.liarState.points[playerId] || 0) + pts;
 }
 
-function liarOpponentId(room, playerId) {
-  const other = room.players.find(p => p.id !== playerId);
-  return other ? other.id : null;
+function liarNextBidder(room, playerId) {
+  // Table order rotation (wraps). With 2 players this is just the opponent;
+  // with 3+ every player gets a turn instead of ping-ponging between two.
+  const ids = room.players.map(p => p.id);
+  const i = ids.indexOf(playerId);
+  if (i === -1) return ids[0] ?? null;
+  return ids[(i + 1) % ids.length];
 }
 
 export function submitLiarBid(code, playerId, qty, face) {
@@ -751,7 +776,7 @@ export function submitLiarBid(code, playerId, qty, face) {
 
   const player = room.players.find(p => p.id === playerId);
   room.liarState.bids.push({ playerId, playerName: player?.name || '???', qty, face });
-  room.liarState.toActId = liarOpponentId(room, playerId);
+  room.liarState.toActId = liarNextBidder(room, playerId);
   room.phase = 'liar-bid';
   room.timerEnd = Date.now() + LIAR_BID_SEC * 1000;
   room.lastActivityMs = Date.now();
@@ -799,8 +824,11 @@ export function resolveLiarCall(code, playerId, kind) {
 export function expireLiarBid(code) {
   const room = rooms.get(code);
   if (!room || room.phase !== 'liar-bid' || !room.liarState) return null;
-  // Player to act timed out: opponent takes the round
-  const winnerId = liarOpponentId(room, room.liarState.toActId) || room.liarState.toActId;
+  // Player to act timed out: last bidder takes the round (in 2p that is the
+  // opponent; with 3+ it is whoever made the standing bid). No bids yet:
+  // next in table order wins.
+  const lastBid = room.liarState.bids[room.liarState.bids.length - 1];
+  const winnerId = lastBid?.playerId || liarNextBidder(room, room.liarState.toActId) || room.liarState.toActId;
   const winner = room.players.find(p => p.id === winnerId);
   awardLiarPoints(room, winnerId, LIAR_WIN_POINTS);
   room.liarState.winnerId = winnerId;
@@ -1513,6 +1541,18 @@ function hasEndVotePassed(room) {
   return connected.length > 0 && connected.every(p => room.endVote.yesIds.includes(p.id));
 }
 
+// A passed end-vote finishes the game early: show the final standings
+// (scores kept) on the end screen, where the host's Back to Lobby button
+// returns everyone to the lobby. Never resets scores here — that happens
+// in resetToLobby when leaving the end screen.
+function finishGameEarly(room) {
+  room.phase = 'end';
+  room.timerEnd = null;
+  room.endVote = null;
+  room.lastActivityMs = Date.now();
+  return room;
+}
+
 export function startEndVote(code, playerId) {
   const room = rooms.get(code);
   if (!room) return { error: 'Room not found' };
@@ -1528,7 +1568,7 @@ export function startEndVote(code, playerId) {
   };
   room.lastActivityMs = Date.now();
   if (hasEndVotePassed(room)) {
-    resetToLobby(room);
+    finishGameEarly(room);
     return { room, passed: true };
   }
   return { room, started: true };
@@ -1552,7 +1592,7 @@ export function submitEndVote(code, playerId, agree) {
   if (!room.endVote.yesIds.includes(playerId)) room.endVote.yesIds.push(playerId);
   room.lastActivityMs = Date.now();
   if (hasEndVotePassed(room)) {
-    resetToLobby(room);
+    finishGameEarly(room);
     return { room, passed: true };
   }
   return { room, voted: true };
@@ -1619,6 +1659,19 @@ function remapIdDeep(value, oldId, newId) {
   return value;
 }
 
+// Remap one socket id to another across the roster-adjacent game state
+// (reconnects change socket ids). Shared by rejoin-room and the join-room
+// ghost-reclaim path so a returning player never splits into two entries.
+function remapPlayerId(room, oldId, newId) {
+  if (oldId === newId) return;
+  for (const key of ['roles', 'signals', 'guesses', 'endVote', 'chromaState', 'territoryState', 'blendState', 'liarState', 'bluffState', 'missileCommandState']) {
+    if (room[key]) room[key] = remapIdDeep(room[key], oldId, newId);
+  }
+  if (room.chromaOptions?.playerDifficulties) {
+    room.chromaOptions.playerDifficulties = remapIdDeep(room.chromaOptions.playerDifficulties, oldId, newId);
+  }
+}
+
 // Reclaim a disconnected player's slot after a reconnect (new socket id).
 // Matches by room code + player name against DISCONNECTED slots only, so a
 // connected player can never be hijacked. Remaps the old socket id to the new
@@ -1636,14 +1689,7 @@ export function rejoinRoom(code, newSocketId, playerName) {
   player.connected = true;
   delete room.deleteAt;
   room.lastActivityMs = Date.now();
-  if (oldId !== newSocketId) {
-    for (const key of ['roles', 'signals', 'guesses', 'endVote', 'chromaState', 'territoryState', 'blendState', 'liarState', 'bluffState', 'missileCommandState']) {
-      if (room[key]) room[key] = remapIdDeep(room[key], oldId, newSocketId);
-    }
-    if (room.chromaOptions?.playerDifficulties) {
-      room.chromaOptions.playerDifficulties = remapIdDeep(room.chromaOptions.playerDifficulties, oldId, newSocketId);
-    }
-  }
+  remapPlayerId(room, oldId, newSocketId);
   return { room, playerId: newSocketId, reclaimed: true };
 }
 
@@ -1688,6 +1734,16 @@ export function cancelMissileSell(code, playerId, buildingId) {
   return { room, cancelled: res.cancelled };
 }
 
+export function rebuildRubble(code, playerId, rubbleId) {
+  const room = rooms.get(code);
+  if (!room || !room.missileCommandState) return null;
+  if (room.phase !== 'missile-command-play') return null;
+  const res = missileRebuildRubble(room.missileCommandState, playerId, rubbleId);
+  if (res.error) return { room, error: res.error };
+  room.lastActivityMs = Date.now();
+  return { room, building: res.building };
+}
+
 export function launchMissile(code, playerId, action) {
   const room = rooms.get(code);
   if (!room || !room.missileCommandState) return null;
@@ -1716,26 +1772,6 @@ export function loadMissile(code, playerId, launcherId) {
   if (res.error) return { room, error: res.error };
   room.lastActivityMs = Date.now();
   return { room, building: res.building };
-}
-
-export function toggleAutobuild(code, playerId, launcherId) {
-  const room = rooms.get(code);
-  if (!room || !room.missileCommandState) return null;
-  if (room.phase !== 'missile-command-play') return null;
-  const res = missileToggleAutobuild(room.missileCommandState, playerId, launcherId);
-  if (res.error) return { room, error: res.error };
-  room.lastActivityMs = Date.now();
-  return { room, building: res.building };
-}
-
-export function toggleAllAutobuild(code, playerId, enabled) {
-  const room = rooms.get(code);
-  if (!room || !room.missileCommandState) return null;
-  if (room.phase !== 'missile-command-play') return null;
-  const res = missileToggleAllAutobuild(room.missileCommandState, playerId, enabled);
-  if (res.error) return { room, error: res.error };
-  room.lastActivityMs = Date.now();
-  return { room, enabled: res.enabled, count: res.count };
 }
 
 export function setKeepFire(code, playerId, action) {
@@ -1783,11 +1819,14 @@ export function tickMissileRoom(room, now = Date.now()) {
 }
 
 export function sweepInactiveRooms(now = Date.now()) {
+  const deleted = [];
   for (const [code, room] of rooms) {
+    const occupants = room.players.map(p => ({ id: p.id, connected: p.connected }));
     const allGone = room.players.every(p => !p.connected);
     const idle = now - (room.lastActivityMs || room.createdAt || now);
     if (idle > ROOM_TTL_MS) {
       rooms.delete(code);
+      deleted.push({ code, occupants, reason: 'idle-timeout' });
       continue;
     }
     // Fully-abandoned rooms get a grace window (set when the last player
@@ -1795,8 +1834,10 @@ export function sweepInactiveRooms(now = Date.now()) {
     // deleteAt predate this and fall back to immediate cleanup.
     if (allGone && (!room.deleteAt || now >= room.deleteAt)) {
       rooms.delete(code);
+      deleted.push({ code, occupants, reason: 'abandoned' });
     }
   }
+  return deleted;
 }
 
 export const SIGNAL_TIME_SEC = SIGNAL_TIME;

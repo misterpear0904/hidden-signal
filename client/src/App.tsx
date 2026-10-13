@@ -90,9 +90,8 @@ export default function App() {
     upgradeMissileBuilding,
     sellMissileBuilding,
     cancelMissileSell,
+    rebuildRubble,
     loadMissile,
-    toggleAutobuild,
-    toggleAllAutobuild,
     launchMissile,
     launchMissileType,
     setKeepFire,
@@ -149,11 +148,10 @@ export default function App() {
   const handleUpgradeMissile = useCallback((buildingId: string) => { if (roomCode) upgradeMissileBuilding(roomCode, { buildingId }); }, [roomCode, upgradeMissileBuilding]);
   const handleSellMissile = useCallback((buildingId: string) => { if (roomCode) sellMissileBuilding(roomCode, { buildingId }); }, [roomCode, sellMissileBuilding]);
   const handleCancelMissileSell = useCallback((buildingId: string) => { if (roomCode) cancelMissileSell(roomCode, { buildingId }); }, [roomCode, cancelMissileSell]);
+  const handleRebuildRubble = useCallback((rubbleId: string) => { if (roomCode) rebuildRubble(roomCode, rubbleId); }, [roomCode, rebuildRubble]);
   const handleLaunchMissile = useCallback((action: MissileLaunchAction) => { if (roomCode) launchMissile(roomCode, action); }, [roomCode, launchMissile]);
   const handleLaunchMissileType = useCallback((action: MissileTypeLaunchAction) => { if (roomCode) launchMissileType(roomCode, action); }, [roomCode, launchMissileType]);
   const handleLoadMissile = useCallback((action: MissileLoadAction) => { if (roomCode) loadMissile(roomCode, action); }, [roomCode, loadMissile]);
-  const handleToggleAutobuild = useCallback((launcherId: string) => { if (roomCode) toggleAutobuild(roomCode, { launcherId }); }, [roomCode, toggleAutobuild]);
-  const handleToggleAllAutobuild = useCallback((enabled: boolean) => { if (roomCode) toggleAllAutobuild(roomCode, enabled); }, [roomCode, toggleAllAutobuild]);
   const handleSetKeepFire = useCallback((action: MissileKeepFireAction) => { if (roomCode) setKeepFire(roomCode, action); }, [roomCode, setKeepFire]);
   const handleFireDesperation = useCallback((action: MissileDesperationAction) => { if (roomCode) fireDesperation(roomCode, action); }, [roomCode, fireDesperation]);
   const handleClaimSupplyShip = useCallback(() => { if (roomCode) claimSupplyShip(roomCode); }, [roomCode, claimSupplyShip]);
@@ -319,9 +317,8 @@ export default function App() {
             onUpgrade={handleUpgradeMissile}
             onSell={handleSellMissile}
             onCancelSell={handleCancelMissileSell}
+            onRebuild={handleRebuildRubble}
             onLoad={handleLoadMissile}
-            onToggleAutobuild={handleToggleAutobuild}
-            onToggleAllAutobuild={handleToggleAllAutobuild}
             onLaunch={handleLaunchMissile}
             onLaunchType={handleLaunchMissileType}
             onSetKeepFire={handleSetKeepFire}
@@ -380,7 +377,7 @@ export default function App() {
             roomState={roomState}
             myId={myId}
             isHost={isHost}
-            onRequestEndVote={handleRequestEndVote}
+            onPlayAgain={handlePlayAgain}
           />
         );
 
@@ -420,6 +417,40 @@ export default function App() {
       <ErrorBoundary>
         {renderPhase()}
       </ErrorBoundary>
+      {/* Offline banner: in-room screens otherwise look identical live or
+          dead, which is how rooms "die silently" from the host's view. */}
+      {inRoom && !connected && (
+        <div
+          role="alert"
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1900,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
+            padding: '10px 16px',
+            background: connectionStatus === 'failed' ? 'rgba(127,29,29,0.97)' : 'rgba(124,45,18,0.97)',
+            borderBottom: `2px solid ${connectionStatus === 'failed' ? 'rgba(248,113,113,0.7)' : 'rgba(251,191,36,0.7)'}`,
+            color: '#fff', fontWeight: 800, fontSize: '0.9rem', textAlign: 'center',
+          }}
+        >
+          <span>
+            {connectionStatus === 'failed'
+              ? '📡 Disconnected — actions won’t work until you reconnect.'
+              : '📡 Reconnecting — actions won’t work until you’re back.'}
+          </span>
+          {connectionStatus === 'failed' && (
+            <button
+              type="button"
+              onClick={retryConnection}
+              style={{
+                padding: '8px 18px', borderRadius: 999, fontWeight: 800, fontSize: '0.85rem',
+                color: '#000', background: '#fca5a5', border: 'none', cursor: 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Retry now
+            </button>
+          )}
+        </div>
+      )}
       {inRoom && roomState && roomState.phase !== 'lobby' && roomState.phase !== 'end' && !roomState.phase.startsWith('missile-command') && (
         <EndGameVote
           roomState={roomState}

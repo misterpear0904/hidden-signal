@@ -99,6 +99,15 @@ export function sellRefundFor(b: { type: MissileBuildingType; level: number; lau
   return Math.floor(total * SELL_REFUND_RATE);
 }
 
+export function rebuildCostFor(r: { type: MissileBuildingType; launcherType?: MissileLauncherType }): number {
+  // Instant same-type rebuild on rubble: half the level-1 build cost,
+  // rounded down. Mirrors the server's missileRebuildRubble exactly.
+  const base = r.type === 'launcher'
+    ? (BUILD_OPTIONS.find(o => o.launcherType === r.launcherType)?.cost ?? 150)
+    : (BUILD_OPTIONS.find(o => o.buildingType === r.type)?.cost ?? (r.type === 'shield_heavy' ? 40 : 50));
+  return Math.floor(base / 2);
+}
+
 export const BUILDING_META: Record<string, { emoji: string; name: string; color: string }> = {
   economy: { emoji: '💰', name: 'Generator', color: '#fbbf24' },
   shield: { emoji: '🛡️', name: 'Shield Gen', color: '#38bdf8' },

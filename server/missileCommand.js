@@ -225,6 +225,10 @@ export function createMissileCommandState(playerIds, options = {}) {
     coreIncomePerSec: MISSILE_CONFIG.coreIncomePerSec,
     buildings,
     pending: {}, // construction sites & in-progress upgrades, keyed by id
+    // Rubble left by destroyed buildings, keyed by id. { id, side, gx, gy,
+    // ownerId, type, launcherType?, createdAt }. Sell-demolished and cores
+    // leave none — only enemy-fire destruction.
+    rubble: {},
     missiles: [],
     // Keep-firing locks, keyed by playerId. `null`/absent = off. Otherwise
     // { targetGx, targetGy, launcherType, since } — see missileSetKeepFire.
@@ -248,6 +252,10 @@ export function createMissileCommandState(playerIds, options = {}) {
     winnerId: null,
     winReason: null,
     stats: { [p1]: freshMissileStats(), [p2]: freshMissileStats() },
+    // Income-rate history for the post-game chart: samples are
+    // [secondsSinceStart, topIncomePerSec, bottomIncomePerSec], taken every
+    // ~2s in the tick and capped so long games can't grow it unbounded.
+    incomeHistory: { samples: [], lastSampleAt: 0 },
     fogOfWar,
     fogHistory,
     // exploredTiles[playerId]["gx,gy"] = 0 permanent, -1 remembered, else expiry ms
@@ -351,10 +359,9 @@ function materializeBuilding(state, p) {
     b.stock = 0;
     b.maxStock = MISSILE_CONFIG.maxStock;
     b.loadingUntil = 0;
-    // Autobuild defaults OFF: a new launcher must not silently drain income
-    // into missiles before the player even opens its panel. One tap on AUTO
-    // (or LOAD) starts the pipeline.
-    b.autobuild = false;
+    // Autobuild is always ON: every launcher auto-loads whenever stock isn't
+    // full and the owner can afford it. No toggle — one less thing to manage.
+    b.autobuild = true;
   }
   state.buildings[p.id] = b;
   try { ensureStats(state, p.ownerId).buildingsBuilt += 1; } catch { /* stats optional */ }
@@ -401,8 +408,15 @@ export function missileBuildBuilding(state, playerId, action) {
   if ((state.resources[playerId] ?? 0) < cost) return { error: `Need ${cost} credits` };
 
   // Pay upfront; the site finishes after the Lv1 build time. Runs in parallel
-  // with everything else.
+  // with everything else. Building over your own rubble clears it (the ♻️
+  // rebuild button is the discounted instant path; this is the flexible one).
   state.resources[playerId] -= cost;
+  for (const [rid, rb] of Object.entries(state.rubble ?? {})) {
+    if (rb.side === side && rb.gx === gx && rb.gy === gy && rb.ownerId === playerId) {
+      delete state.rubble[rid];
+      break;
+    }
+  }
   const now = Date.now();
   const site = {
     id: uid('c'), kind: 'build', type: buildingType, launcherType: buildingType === 'launcher' ? launcherType : undefined,
@@ -491,6 +505,30 @@ export function missileCancelSell(state, playerId, buildingId) {
   return { cancelled: buildingId };
 }
 
+// Rebuild on your own rubble: SAME type as the destroyed building comes
+// back instantly at level 1 for half the build cost. Anything else goes
+// through the normal build pipeline (full cost + build time), which also
+// clears the rubble — use the ♻️ button for the discount, the build menu
+// for flexibility.
+export function missileRebuildRubble(state, playerId, rubbleId) {
+  if (state.winnerId) return { error: 'Game is over' };
+  const side = missileSideForPlayer(state, playerId);
+  if (!side) return { error: 'You are not in this match' };
+  const r = state.rubble?.[rubbleId];
+  if (!r) return { error: 'Rubble not found' };
+  if (r.ownerId !== playerId || r.side !== side) return { error: 'Not your rubble' };
+  if (occupiedCell(state, side, r.gx, r.gy)) return { error: 'Square occupied' };
+  const cost = Math.floor(buildCostFor(r.type, r.launcherType) / 2);
+  if ((state.resources[playerId] ?? 0) < cost) return { error: `Need ${cost} credits` };
+  state.resources[playerId] -= cost;
+  const b = materializeBuilding(state, {
+    id: uid('b'), type: r.type, launcherType: r.launcherType,
+    side: r.side, gx: r.gx, gy: r.gy, ownerId: playerId,
+  });
+  delete state.rubble[rubbleId];
+  return { building: b };
+}
+
 // Build one full shot pattern (single missile / scatter pellets).
 // Does NOT push to state or stagger — used per banked shot when firing.
 function buildShotPattern(state, launcher, side, enemySide, targetGx, targetGy, now) {
@@ -549,35 +587,6 @@ export function missileLoadMissile(state, playerId, launcherId) {
   state.resources[playerId] -= launcher.missileCost;
   launcher.loadingUntil = now + (MISSILE_CONFIG.loadMs ?? 5000) / surgeRate(state, playerId, now);
   return { building: launcher };
-}
-
-// Flip a launcher's autobuild flag (auto-loads whenever stock isn't full
-// and the owner can afford it).
-export function missileToggleAutobuild(state, playerId, launcherId) {
-  if (state.winnerId) return { error: 'Game is over' };
-  if (!missileSideForPlayer(state, playerId)) return { error: 'You are not in this match' };
-  const launcher = state.buildings[launcherId];
-  if (!launcher || launcher.type !== 'launcher') return { error: 'Launcher not found' };
-  if (launcher.ownerId !== playerId) return { error: 'Not your launcher' };
-  launcher.autobuild = !launcher.autobuild;
-  return { building: launcher };
-}
-
-// Set EVERY own launcher's autobuild flag at once (the dock's AUTO ALL
-// button). Explicit boolean — no fuzzy toggling, so retries are idempotent.
-export function missileToggleAllAutobuild(state, playerId, enabled) {
-  if (state.winnerId) return { error: 'Game is over' };
-  if (!missileSideForPlayer(state, playerId)) return { error: 'You are not in this match' };
-  if (typeof enabled !== 'boolean') return { error: 'Pass true or false' };
-  let count = 0;
-  for (const b of Object.values(state.buildings)) {
-    if (b.type !== 'launcher' || b.ownerId !== playerId) continue;
-    if (!!b.autobuild !== enabled) {
-      b.autobuild = enabled;
-      count++;
-    }
-  }
-  return { enabled, count };
 }
 
 // Fire one launcher's entire stockpile at a cell — everything launches at
@@ -920,8 +929,19 @@ function applyExplosion(state, ownerId, enemySide, gx, gy, blast, damage, pierce
     }
   }
   // Delete destroyed non-core buildings; cores persist at 0 HP (see win check).
+  // Destroyed buildings leave rubble the owner can instantly rebuild
+  // (same type, level 1, half cost) or build over with something else.
+  if (!state.rubble) state.rubble = {};
   for (const id of destroyed) {
-    if (state.buildings[id]?.type !== 'core') delete state.buildings[id];
+    const victim = state.buildings[id];
+    if (!victim || victim.type === 'core') continue;
+    delete state.buildings[id];
+    const rid = uid('r');
+    state.rubble[rid] = {
+      id: rid, side: victim.side, gx: victim.gx, gy: victim.gy,
+      ownerId: victim.ownerId, type: victim.type, launcherType: victim.launcherType,
+      createdAt: Date.now(),
+    };
   }
   // Empty covered tile: the shield still intercepts the blast. Same rule as a
   // real hit — fullest pool first, overflow spilling into the next-fullest.
@@ -1017,9 +1037,19 @@ export function filterMissileStateForPlayer(state, forPlayerId, now = Date.now()
   for (const [id, p] of Object.entries(state.pending || {})) {
     if (p.ownerId === forPlayerId || live(p.gx, p.gy)) pending[id] = p;
   }
+  // Rubble follows the pending rule: always yours, enemy's only on live
+  // tiles (a marker would otherwise scout enemy losses through the fog).
+  const rubble = {};
+  for (const [id, r] of Object.entries(state.rubble || {})) {
+    if (r.ownerId === forPlayerId || live(r.gx, r.gy)) rubble[id] = r;
+  }
   const stats = (state.winnerId || state.winReason)
     ? state.stats
     : { [forPlayerId]: state.stats?.[forPlayerId] };
+  const over = !!(state.winnerId || state.winReason);
+  // Income history would leak the enemy economy through fog mid-game —
+  // the score screen gets it, live play does not.
+  const incomeHistory = over ? state.incomeHistory : undefined;
   const keepFire = state.keepFire
     ? { [forPlayerId]: state.keepFire[forPlayerId] ?? null }
     : state.keepFire;
@@ -1027,8 +1057,10 @@ export function filterMissileStateForPlayer(state, forPlayerId, now = Date.now()
     ...state,
     buildings,
     pending,
+    rubble,
     stats,
     keepFire,
+    incomeHistory,
     exploredTiles: { [forPlayerId]: mine },
   };
 }
@@ -1149,7 +1181,8 @@ export function tickMissileCommand(state, now = Date.now()) {
   }
 
   // 0b. Missile builds finishing now (one at a time per launcher), then
-  // autobuild kicks off the next one where enabled and affordable.
+  // auto-load kicks off the next one wherever stock isn't full and the
+  // owner can afford it. Always on — no toggle.
   for (const b of Object.values(state.buildings)) {
     if (b.type !== 'launcher') continue;
     if ((b.loadingUntil ?? 0) > 0 && (b.loadingUntil ?? 0) <= now) {
@@ -1162,7 +1195,7 @@ export function tickMissileCommand(state, now = Date.now()) {
     }
   }
   for (const b of Object.values(state.buildings)) {
-    if (b.type !== 'launcher' || !b.autobuild) continue;
+    if (b.type !== 'launcher') continue;
     if ((b.loadingUntil ?? 0) > now) continue;
     if ((b.stock ?? 0) >= (b.maxStock ?? MISSILE_CONFIG.maxStock)) continue;
     if ((state.resources[b.ownerId] ?? 0) < (b.missileCost || 0)) continue;
@@ -1204,6 +1237,21 @@ export function tickMissileCommand(state, now = Date.now()) {
     const gain = coreIncome * dt;
     state.resources[b.ownerId] = (state.resources[b.ownerId] ?? 0) + gain;
     try { ensureStats(state, b.ownerId).incomeCore += gain; } catch { /* stats optional */ }
+  }
+  // 1b. Income-rate samples for the post-game chart (~2s cadence, capped).
+  // Rates (not totals) so the chart shows economic momentum over time.
+  if (!state.incomeHistory) state.incomeHistory = { samples: [], lastSampleAt: 0 };
+  if (now - (state.incomeHistory.lastSampleAt ?? 0) >= 2000) {
+    state.incomeHistory.lastSampleAt = now;
+    const r1 = (n) => Math.round(n * 10) / 10;
+    state.incomeHistory.samples.push([
+      Math.max(0, Math.round(((now - (state.gameStartTime ?? now)) / 1000) * 10) / 10),
+      r1(missileIncomePerSec(state, state.sides?.top)),
+      r1(missileIncomePerSec(state, state.sides?.bottom)),
+    ]);
+    if (state.incomeHistory.samples.length > 900) {
+      state.incomeHistory.samples.splice(0, state.incomeHistory.samples.length - 900);
+    }
   }
   // 2. Core regen (dead cores stay dead)
   for (const b of Object.values(state.buildings)) {

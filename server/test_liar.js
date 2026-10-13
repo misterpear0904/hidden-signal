@@ -140,3 +140,36 @@ test('bid timeout awards the round to the opponent', () => {
     rooms.delete(room.code);
   }
 });
+
+test('4 players rotate through table order instead of ping-ponging two', () => {
+  const ids = ['liar-1', 'liar-2', 'liar-3', 'liar-4'];
+  const room = {
+    code: 'LIARTEST4',
+    selectedGameId: 'liar-dice',
+    players: ids.map((id, i) => ({ id, name: `P${i + 1}`, score: 0, isHost: i === 0, connected: true })),
+    round: 1,
+    liarOptions: { extremeMode: false },
+    liarState: null,
+    phase: 'lobby',
+    timerEnd: null,
+    endVote: null,
+    lastActivityMs: Date.now(),
+  };
+  rooms.set(room.code, room);
+  try {
+    startGame(room.code);
+    assert.equal(room.phase, 'liar-bid');
+    const seen = [];
+    for (let i = 0; i < 4; i++) {
+      const toAct = room.liarState.toActId;
+      seen.push(toAct);
+      assert.ok(submitLiarBid(room.code, toAct, i + 1, 3), `bid ${i + 1} by ${toAct} accepted`);
+    }
+    assert.deepEqual(seen, ids, 'bidding walks the full table in order');
+    // Timeout with a standing bid awards the last bidder (2p-identical).
+    const res = expireLiarBid(room.code);
+    assert.equal(res.liarState.winnerId, ids[3], 'last bidder takes the timed-out round');
+  } finally {
+    rooms.delete(room.code);
+  }
+});

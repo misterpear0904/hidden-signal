@@ -10,14 +10,13 @@ import {
   missileBuildBuilding,
   missileUpgradeBuilding,
   missileLoadMissile,
-  missileToggleAutobuild,
-  missileToggleAllAutobuild,
   missileLaunch,
   missileLaunchType,
   missileSetKeepFire,
   missileFireDesperation,
   missileSellBuilding,
   missileCancelSell,
+  missileRebuildRubble,
   totalInvestedFor,
   sellRefundForBuilding,
   tickMissileCommand,
@@ -193,7 +192,8 @@ test('scatter volley: one pattern per banked missile', () => {
   assert.equal(v.missiles.length, 10, '2 banked × 5 pellets');
 });
 
-test('autobuild fills stockpile unattended, pauses when broke', () => {  const s = fresh(35); // exactly one single missile + change
+test('autobuild is always on: fills stockpile unattended, pauses when broke', () => {
+  const s = fresh(35); // exactly one single missile + change
   missileBuildBuilding(s, P1, { buildingType: 'economy', gx: 0, gy: 0 });
   advance(3100, s);
   // NOTE: starting 35cr won't cover a launcher; fund directly for this unit test
@@ -201,16 +201,12 @@ test('autobuild fills stockpile unattended, pauses when broke', () => {  const s
   missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'single', gx: 1, gy: 0 });
   advance(3100, s);
   const L = Object.values(s.buildings).find(b => b.type === 'launcher');
-  assert.equal(L.autobuild, false, 'launchers do NOT auto-build by default (opt-in per launcher)');
-  missileToggleAutobuild(s, P1, L.id); // opt in
-  assert.equal(L.autobuild, true, 'toggle enables autobuild');
+  assert.equal(L.autobuild, true, 'new launchers auto-load out of the box — no toggle');
   for (let i = 0; i < 120 && L.stock < 2; i++) advance(500, s);
-  assert.ok((L.stock ?? 0) >= 2, `autobuild stocks without clicks (stock=${L.stock})`);
-  missileToggleAutobuild(s, P1, L.id);
-  assert.equal(L.autobuild, false);
+  assert.ok((L.stock ?? 0) >= 2, `stockpiles without clicks (stock=${L.stock})`);
 });
 
-test('bulk autobuild toggle flips every own launcher (explicit boolean)', () => {
+test('every launcher auto-loads from birth (no opt-in step)', () => {
   const s = fresh();
   missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'single', gx: 0, gy: 0 });
   missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'scatter', gx: 1, gy: 0 });
@@ -220,14 +216,10 @@ test('bulk autobuild toggle flips every own launcher (explicit boolean)', () => 
   const theirs = Object.values(s.buildings).find(b => b.type === 'launcher' && b.ownerId === P2);
   assert.ok(theirs, 'enemy launcher materialized');
   assert.equal(mine.length, 2);
-  assert.ok(mine.every(b => b.autobuild === false), 'new launchers default off');
-  assert.equal(missileToggleAllAutobuild(s, P1, true).count, 2, 'both flipped on');
-  assert.ok(mine.every(b => b.autobuild === true));
-  assert.equal(theirs.autobuild, false, 'enemy launcher untouched');
-  assert.equal(missileToggleAllAutobuild(s, P1, true).count, 0, 'idempotent retry flips nothing');
-  assert.equal(missileToggleAllAutobuild(s, P1, false).count, 2, 'both flipped off');
-  assert.equal(missileToggleAllAutobuild(s, P1, 'yes').error, 'Pass true or false', 'non-boolean rejected');
-  assert.equal(missileToggleAllAutobuild(s, 'stranger', true).error, 'You are not in this match');
+  assert.ok(mine.every(b => b.autobuild === true), 'all new launchers default on');
+  assert.equal(theirs.autobuild, true, 'enemy launcher on too');
+  for (let i = 0; i < 120 && mine.some(b => (b.stock ?? 0) < 1); i++) advance(500, s);
+  assert.ok(mine.every(b => (b.stock ?? 0) >= 1), 'both stock without any toggle');
 });
 
 test('destroying the core wins the game; dead cores do not regen', () => {
@@ -312,7 +304,7 @@ test('keep-fire: a load completing later fires on its own', () => {
   missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'single', gx: 0, gy: 0 });
   advance(3100, s);
   const L = Object.values(s.buildings).find(b => b.type === 'launcher');
-  L.autobuild = true; // keep the launcher producing so we see a load→fire cycle
+  // auto-load is always on: the launcher keeps producing for the load→fire cycle
   missileSetKeepFire(s, P1, { armed: true, targetGx: 5, targetGy: 5, launcherType: 'single' });
   advance(5100, s); // autobuild starts a missile, then it completes
   advance(5100, s); // ...and completes again
@@ -689,14 +681,9 @@ function gmBuildDone(room, playerId, type, gx, gy, launcherType) {
 }
 
 function gmLoadFull(room, playerId, launcher, n = 3) {
-  // Deterministic manual loads: pause auto-production first (in case the
-  // launcher opted in), then top up to exactly n.
-  if (launcher.autobuild) missileToggleAutobuild(room.missileCommandState, playerId, launcher.id);
+  // Auto-load is always on: tick until the stockpile fills to exactly n.
   let guard = 0;
-  while (launcher.stock < n && guard++ < 10) {
-    launcher.loadingUntil = 0;
-    const r = gmLoad(room.code, playerId, launcher.id);
-    assert.ok(!r.error, `top-up load: ${r.error}`);
+  while (launcher.stock < n && guard++ < 20) {
     advance(5100, room.missileCommandState);
   }
   assert.equal(launcher.stock, n);
@@ -922,6 +909,111 @@ test('sell flow: 20s timer, building works meanwhile, then removed + refunded', 
   assert.ok(!s.buildings[Sh.id], 'demolished after the timer');
   assert.ok(Math.abs(s.resources[P1] - (before + 25 + 28)) < 0.01, `70% refunded (got ${s.resources[P1]})`);
   assert.ok(res.events.some(e => e.type === 'sold'), 'sold event emitted');
+});
+
+test('income history samples rates every ~2s and stays hidden until game over', () => {
+  const s = fresh();
+  assert.deepEqual(s.incomeHistory.samples, [], 'starts empty');
+  missileBuildBuilding(s, P1, { buildingType: 'economy', gx: 0, gy: 0 });
+  advance(3100, s);
+  missileBuildBuilding(s, P1, { buildingType: 'economy', gx: 1, gy: 0 });
+  advance(5000, s);
+  const samples = s.incomeHistory.samples;
+  assert.ok(samples.length >= 2, `samples accumulate (got ${samples.length})`);
+  for (let i = 1; i < samples.length; i++) {
+    assert.ok(samples[i][0] > samples[i - 1][0], 'timestamps increase');
+  }
+  const latest = samples[samples.length - 1];
+  assert.ok(latest[1] > latest[2], `builder leads on rate (${latest[1]} vs ${latest[2]})`);
+  // Fog discipline: live play sees no history (would leak enemy economy).
+  assert.equal(filterMissileStateForPlayer(s, P1, fakeNow).incomeHistory, undefined, 'withheld mid-game');
+  s.winnerId = P1;
+  s.winReason = 'core_destroyed';
+  const pub = filterMissileStateForPlayer(s, P1, fakeNow);
+  assert.ok((pub.incomeHistory?.samples?.length ?? 0) >= 2, 'score screen gets the series');
+});
+
+test('sell job carries the map-badge contract (kind/side/cell/refund/timer, visible to owner)', () => {
+  const s = fresh();
+  missileBuildBuilding(s, P1, { buildingType: 'economy', gx: 2, gy: 1 });
+  advance(3100, s);
+  const E = Object.values(s.buildings).find(b => b.type === 'economy');
+  const r = missileSellBuilding(s, P1, E.id);
+  assert.ok(!r.error, r.error);
+  const job = Object.values(s.pending).find(p => p.kind === 'sell');
+  assert.ok(job, 'sell job pending');
+  assert.equal(job.side, 'top');
+  assert.equal(job.gx, 2);
+  assert.equal(job.gy, 1);
+  assert.ok(typeof job.refund === 'number' && job.refund > 0, 'refund for the badge');
+  assert.equal(job.completeAt - fakeNow, 20000, 'countdown anchored to a 20s timer');
+  const pub = filterMissileStateForPlayer(s, P1, fakeNow);
+  assert.ok(Object.values(pub.pending).some(p => p.kind === 'sell'), 'owner still sees it through fog filtering');
+});
+
+test('destroyed buildings leave rubble (type/cell/owner, no rubble for cores)', () => {
+  const s = fresh();
+  missileBuildBuilding(s, P2, { buildingType: 'shield', gx: 6, gy: 5 });
+  missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'single', gx: 0, gy: 0 });
+  advance(3100, s);
+  const L = Object.values(s.buildings).find(b => b.type === 'launcher');
+  L.missileDamage = 5000; // punch through the pool
+  for (let i = 0; i < 60 && ((L.stock ?? 0) < 1); i++) advance(500, s);
+  assert.ok((L.stock ?? 0) >= 1, 'auto-loaded a warhead');
+  missileLaunch(s, P1, { launcherId: L.id, targetGx: 6, targetGy: 5 });
+  for (let i = 0; i < 120 && !Object.keys(s.rubble ?? {}).length; i++) advance(250, s);
+  const rubble = Object.values(s.rubble ?? {});
+  assert.equal(rubble.length, 1, 'one rubble marker');
+  assert.equal(rubble[0].type, 'shield');
+  assert.equal(rubble[0].ownerId, P2);
+  assert.equal(rubble[0].side, 'bottom');
+  assert.deepEqual([rubble[0].gx, rubble[0].gy], [6, 5]);
+  assert.ok(!Object.values(s.buildings).some(b => b.type === 'shield' && b.ownerId === P2), 'shield gone');
+});
+
+test('rubble rebuilds instantly at half cost, same type level 1', () => {
+  const s = fresh();
+  s.rubble = { r1: { id: 'r1', side: 'top', gx: 2, gy: 1, ownerId: P1, type: 'economy', createdAt: fakeNow } };
+  const before = s.resources[P1];
+  const r = missileRebuildRubble(s, P1, 'r1');
+  assert.ok(!r.error, r.error);
+  assert.equal(r.building.type, 'economy');
+  assert.equal(r.building.level, 1);
+  assert.deepEqual([r.building.gx, r.building.gy], [2, 1]);
+  assert.ok(!s.rubble.r1, 'rubble consumed');
+  assert.equal(s.resources[P1], before - 25, 'half of the 50cr build cost');
+  assert.ok(s.buildings[r.building.id], 'building live immediately (no site)');
+});
+
+test('rubble rebuild validation: foreign, broke, missing, game over', () => {
+  const s = fresh();
+  s.rubble = { r1: { id: 'r1', side: 'top', gx: 2, gy: 1, ownerId: P1, type: 'economy', createdAt: fakeNow } };
+  assert.equal(missileRebuildRubble(s, P2, 'r1').error, 'Not your rubble');
+  assert.equal(missileRebuildRubble(s, P1, 'nope').error, 'Rubble not found');
+  s.resources[P1] = 0;
+  assert.match(missileRebuildRubble(s, P1, 'r1').error, /Need 25 credits/);
+  s.winnerId = P1;
+  assert.equal(missileRebuildRubble(s, P1, 'r1').error, 'Game is over');
+});
+
+test('building over rubble clears it (flexible path, normal cost/time)', () => {
+  const s = fresh();
+  s.rubble = { r1: { id: 'r1', side: 'top', gx: 2, gy: 1, ownerId: P1, type: 'economy', createdAt: fakeNow } };
+  const before = s.resources[P1];
+  const r = missileBuildBuilding(s, P1, { buildingType: 'shield', gx: 2, gy: 1 });
+  assert.ok(!r.error, r.error);
+  assert.ok(!s.rubble.r1, 'rubble cleared by the new construction');
+  assert.equal(s.resources[P1], before - 40, 'full shield price, no discount');
+  assert.ok(Object.values(s.pending).some(p => p.kind === 'build'), 'normal timed site, not instant');
+});
+
+test('rubble follows fog rules: owner always, enemy only on live tiles', () => {
+  const s = fresh();
+  s.rubble = { r1: { id: 'r1', side: 'bottom', gx: 6, gy: 5, ownerId: P2, type: 'shield', createdAt: fakeNow } };
+  assert.deepEqual(Object.keys(filterMissileStateForPlayer(s, P1, fakeNow).rubble ?? {}), [], 'enemy rubble hidden without vision');
+  assert.deepEqual(Object.keys(filterMissileStateForPlayer(s, P2, fakeNow).rubble ?? {}), ['r1'], 'owner always sees it');
+  s.exploredTiles[P1]['6,5'] = 0;
+  assert.deepEqual(Object.keys(filterMissileStateForPlayer(s, P1, fakeNow).rubble ?? {}), ['r1'], 'visible on live tiles');
 });
 
 test('sell flow: refund includes upgrades', () => {

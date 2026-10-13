@@ -114,6 +114,7 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
 
   const isReveal = roomState.phase === 'chroma-reveal';
   const [wrongFlash, setWrongFlash] = useState(false);
+  const [correctFlash, setCorrectFlash] = useState(false);
   const [raceNow, setRaceNow] = useState(() => Date.now());
   const raceEndAt = chromaState?.raceEndAt ?? null;
   const isRace = !isReveal && raceEndAt !== null && raceEndAt !== undefined;
@@ -121,6 +122,7 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
   const iSolved = solvers.some(s => s.playerId === myId);
   const mySolverEntry = solvers.find(s => s.playerId === myId);
   const wrongFlashTimer = useRef<number | null>(null);
+  const correctFlashTimer = useRef<number | null>(null);
   const physicsRef = useRef<TilePhysics[]>([]);
   const buttonEls = useRef<Array<HTMLButtonElement | null>>([]);
   const overlayEls = useRef<Array<HTMLDivElement | null>>([]);
@@ -169,8 +171,15 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
   useEffect(() => {
     return () => {
       if (wrongFlashTimer.current) window.clearTimeout(wrongFlashTimer.current);
+      if (correctFlashTimer.current) window.clearTimeout(correctFlashTimer.current);
     };
   }, []);
+
+  // Server confirmed (race banner / solved / reveal takes over) — drop the
+  // optimistic "confirming..." toast so it never lingers or stacks.
+  useEffect(() => {
+    if (isRace || iSolved || isReveal) setCorrectFlash(false);
+  }, [isRace, iSolved, isReveal]);
 
   // Race countdown ticker (only while 10s race is active)
   useEffect(() => {
@@ -265,7 +274,15 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
   // Click handler (server is source of truth for penalty)
   const handleTileClick = (index: number) => {
     if (isReveal || iSolved) return;
-    if (chromaState && index !== chromaState.targetTileIndex) {
+    if (chromaState && index === chromaState.targetTileIndex) {
+      // Optimistic success feedback: correct clicks otherwise wait a full
+      // server round-trip in silence while wrong clicks flash instantly.
+      setCorrectFlash(true);
+      setWrongFlash(false);
+      if (correctFlashTimer.current) window.clearTimeout(correctFlashTimer.current);
+      correctFlashTimer.current = window.setTimeout(() => setCorrectFlash(false), 2000);
+    } else if (chromaState) {
+      setCorrectFlash(false);
       setWrongFlash(true);
       if (wrongFlashTimer.current) window.clearTimeout(wrongFlashTimer.current);
       wrongFlashTimer.current = window.setTimeout(() => setWrongFlash(false), 600);
@@ -305,7 +322,7 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
               </span>
               {isExtreme && (
                 <span className="badge" style={{ fontSize: '0.7rem', background: 'rgba(239,68,68,0.15)', color: 'var(--rose-400)', border: '1px solid rgba(239,68,68,0.3)', whiteSpace: 'nowrap' }}>
-                  🔥 8x8 (64 Tiles)
+                  🔥 10x10 (100 Tiles)
                 </span>
               )}
               {chromaOptions.fairPoints && (
@@ -344,6 +361,26 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
             })}
           </div>
         </div>
+
+        {correctFlash && !isRace && (
+          <div
+            className="toast animate-fade-up"
+            role="status"
+            style={{
+              position: 'fixed',
+              top: 20,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              background: 'rgba(22, 163, 74, 0.95)',
+              color: '#fff',
+              fontWeight: 700,
+              boxShadow: '0 0 20px rgba(22, 163, 74, 0.6)',
+              zIndex: 9999,
+            }}
+          >
+            🎯 That&apos;s the tile! Confirming...
+          </div>
+        )}
 
         {wrongFlash && (
           <div
@@ -432,7 +469,9 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
                 index={i}
                 isTarget={chromaState?.targetTileIndex === i}
                 isReveal={isReveal}
-                isWinner={isReveal && chromaState?.targetTileIndex === i}
+                // Highlight the target during the 10s race too: without it the
+                // "find it too for half points" window gives no visual cue.
+                isWinner={(isReveal || isRace) && chromaState?.targetTileIndex === i}
                 disabled={isReveal || iSolved}
                 baseGradient={chromaState?.baseGradient ?? ['#1e1b4b', '#312e81']}
                 targetGradient={chromaState?.targetGradient ?? ['#2e1065', '#4c1d95']}

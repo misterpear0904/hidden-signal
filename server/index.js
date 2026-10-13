@@ -33,8 +33,7 @@ import {
   sellMissileBuilding,
   cancelMissileSell,
   loadMissile,
-  toggleAutobuild,
-  toggleAllAutobuild,
+  rebuildRubble,
   launchMissile,
   launchMissileType,
   setKeepFire,
@@ -149,7 +148,14 @@ app.use(express.json());
 
 app.get('/health', (req, res) => {
   logger.health.check('ok', { rooms: rooms.size, timestamp: Date.now() });
-  res.json({ status: 'ok', timestamp: Date.now(), rooms: rooms.size, protocolVersion: PROTOCOL_VERSION });
+  res.json({
+    status: 'ok',
+    timestamp: Date.now(),
+    rooms: rooms.size,
+    protocolVersion: PROTOCOL_VERSION,
+    bootId: BOOT_ID,
+    uptimeSec: Math.floor((Date.now() - BOOT_TIME_MS) / 1000),
+  });
 });
 
 const httpServer = createServer(app);
@@ -164,6 +170,12 @@ const io = new Server(httpServer, {
   // Allow reconnection with longer delays for mobile network changes
   maxHttpBufferSize: 1e8,
 });
+
+// Unique per process boot. Clients compare it on (re)connect: a changed
+// bootId means the server restarted and all in-memory rooms are gone, so a
+// stale room screen must never look healthy.
+const BOOT_ID = `${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`;
+const BOOT_TIME_MS = Date.now();
 
 const PORT = process.env.PORT || 3001;
 
@@ -183,21 +195,119 @@ function setRoomTimer(code, ms, cb) {
   roomTimers.set(code, id);
 }
 
-// Periodic sweep of abandoned rooms (every 10 min)
+// Periodic sweep of abandoned rooms (every 10 min). Occupants of deleted
+// rooms are told why (instead of staring at a frozen room), then logged.
 setInterval(() => {
   try {
     const before = rooms.size;
-    const beforeCodes = Array.from(rooms.keys());
-    sweepInactiveRooms(Date.now());
+    const deleted = sweepInactiveRooms(Date.now());
     const after = rooms.size;
+    for (const { code, occupants, reason } of deleted) {
+      const detail = reason === 'idle-timeout'
+        ? 'Room expired after 2h without any player action'
+        : 'Room deleted after all players left';
+      for (const p of occupants) {
+        if (!p.connected) continue;
+        const sock = io.sockets.sockets.get(p.id);
+        if (sock) sock.emit('room-expired', { roomCode: code, reason: detail });
+      }
+      logger.info('room_sweep_deleted', { roomCode: code, reason, occupants: occupants.length });
+    }
     if (before !== after) {
-      const removedCodes = beforeCodes.filter(c => !rooms.has(c));
-      logger.info('room_sweep_completed', { removed: before - after, remaining: after, removedCodes });
+      logger.info('room_sweep_completed', { removed: before - after, remaining: after });
     }
   } catch (e) {
     logger.error('room_sweep_failed', { error: e?.message ?? e });
   }
 }, 10 * 60 * 1000);
+
+// ─── Stuck-phase watchdog ───────────────────────────────────────────────────
+// Safety net: every timed phase arms exactly one roomTimers entry when it is
+// entered. If a room sits past timerEnd with no timer armed (cleared timer,
+// exception between resolve and arm, stalled loop), run that phase's normal
+// timeout path. 5s grace + armed-timer check so we never race a live timer.
+// Reveal/end/lobby phases are deliberately unhandled — no timeout applies.
+setInterval(() => {
+  try {
+    const now = Date.now();
+    for (const room of rooms.values()) {
+      if (!room.timerEnd || now < room.timerEnd + 5000) continue;
+      if (roomTimers.has(room.code)) continue;
+      healStuckRoom(room.code, room.phase);
+    }
+  } catch (e) {
+    console.error('[watchdog] failed', e);
+  }
+}, 5000);
+
+function healStuckRoom(code, phase) {
+  try {
+    // Mirror each phase's normal timeout path (same functions the timers call).
+    if (phase === 'signal') {
+      logger.warn('watchdog_heal', { roomCode: code, phase });
+      startDiscussPhase(code);
+      return;
+    }
+    if (phase === 'discuss') {
+      logger.warn('watchdog_heal', { roomCode: code, phase });
+      const r2 = advanceToGuess(code);
+      if (!r2) return;
+      broadcastRoomState(r2);
+      setRoomTimer(code, GUESS_TIME_SEC * 1000, () => {
+        try {
+          autoResolveRound(code);
+        } catch (e) {
+          console.error('[timer] autoResolveRound failed', e);
+        }
+      });
+      return;
+    }
+    if (phase === 'guess') {
+      logger.warn('watchdog_heal', { roomCode: code, phase });
+      autoResolveRound(code);
+      return;
+    }
+    if (phase === 'blend-word') {
+      logger.warn('watchdog_heal', { roomCode: code, phase });
+      const r1 = advanceToBlendVote(code);
+      if (!r1) return;
+      broadcastRoomState(r1);
+      setRoomTimer(code, BLEND_VOTE_SEC_VALUE * 1000, () => {
+        try {
+          autoResolveBlendVotes(code);
+        } catch (e) {
+          console.error('[timer] autoResolveBlendVotes failed', e);
+        }
+      });
+      return;
+    }
+    if (phase === 'blend-vote') {
+      logger.warn('watchdog_heal', { roomCode: code, phase });
+      autoResolveBlendVotes(code);
+      return;
+    }
+    if (phase === 'blend-guess') {
+      logger.warn('watchdog_heal', { roomCode: code, phase });
+      const r = expireBlendGuess(code);
+      if (r) broadcastRoomState(r);
+      return;
+    }
+    if (phase === 'liar-bid') {
+      logger.warn('watchdog_heal', { roomCode: code, phase });
+      const r = expireLiarBid(code);
+      if (r) broadcastRoomState(r);
+      return;
+    }
+    if (phase === 'bluff-bet') {
+      logger.warn('watchdog_heal', { roomCode: code, phase });
+      const r = expireBluffBet(code);
+      if (r) broadcastRoomState(r);
+      return;
+    }
+  } catch (e) {
+    console.error('[watchdog] heal failed', { roomCode: code, phase, error: e?.message ?? e });
+  }
+}
 
 // Sanitize room data for broadcast (strip secrets by player)
 function roomPublicState(room, forPlayerId = null) {
@@ -580,6 +690,9 @@ function autoResolveRound(code) {
 
 io.on('connection', (socket) => {
   logger.socket.connect(socket.id, { transport: socket.conn.transport.name });
+  // Boot handshake: lets the client detect a server restart (new process =
+  // new bootId = all in-memory rooms gone) instead of trusting stale state.
+  socket.emit('server-hello', { bootId: BOOT_ID, now: Date.now() });
 
   socket.on('create-room', ({ playerName } = {}) => {
     if (!checkRateLimit(socket.id)) {
@@ -711,6 +824,17 @@ io.on('connection', (socket) => {
     broadcastRoomState(result.room);
   });
 
+  socket.on('rebuild-rubble', ({ roomCode, rubbleId } = {}) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+    const room = getRoomOrExpire(socket, roomCode);
+    if (!room) return;
+    const id = typeof rubbleId === 'string' ? rubbleId : rubbleId?.rubbleId;
+    const result = rebuildRubble(roomCode, socket.id, id);
+    if (!result) return socket.emit('error', 'Cannot rebuild now');
+    if (result.error) return socket.emit('error', result.error);
+    broadcastRoomState(result.room);
+  });
+
   socket.on('launch-missile', ({ roomCode, action } = {}) => {
     if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const room = getRoomOrExpire(socket, roomCode);
@@ -728,27 +852,6 @@ io.on('connection', (socket) => {
     const id = typeof launcherId === 'string' ? launcherId : launcherId?.launcherId;
     const result = loadMissile(roomCode, socket.id, id);
     if (!result) return socket.emit('error', 'Cannot load now');
-    if (result.error) return socket.emit('error', result.error);
-    broadcastRoomState(result.room);
-  });
-
-  socket.on('toggle-autobuild', ({ roomCode, launcherId } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
-    const room = getRoomOrExpire(socket, roomCode);
-    if (!room) return;
-    const id = typeof launcherId === 'string' ? launcherId : launcherId?.launcherId;
-    const result = toggleAutobuild(roomCode, socket.id, id);
-    if (!result) return socket.emit('error', 'Cannot toggle now');
-    if (result.error) return socket.emit('error', result.error);
-    broadcastRoomState(result.room);
-  });
-
-  socket.on('toggle-all-autobuild', ({ roomCode, enabled } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
-    const room = getRoomOrExpire(socket, roomCode);
-    if (!room) return;
-    const result = toggleAllAutobuild(roomCode, socket.id, enabled);
-    if (!result) return socket.emit('error', 'Cannot toggle now');
     if (result.error) return socket.emit('error', result.error);
     broadcastRoomState(result.room);
   });
@@ -797,13 +900,16 @@ io.on('connection', (socket) => {
     broadcastRoomState(result.room);
   });
 
-  // Heartbeat: client pings to keep room alive and detect server restarts
+  // Heartbeat: client pings to keep room alive and detect server restarts.
+  // A flowing heartbeat proves someone is home, so it refreshes activity —
+  // an attended room must never age out from under its players.
   socket.on('heartbeat', ({ roomCode, timestamp }) => {
     const room = getRoom(roomCode);
     if (!room) {
       socket.emit('room-expired', { roomCode, reason: 'Room no longer exists (server restart or expired)' });
       return;
     }
+    room.lastActivityMs = Date.now();
     // Acknowledge heartbeat with server time
     socket.emit('heartbeat-ack', { serverTime: Date.now(), clientTimestamp: timestamp });
   });
@@ -900,7 +1006,9 @@ io.on('connection', (socket) => {
   socket.on('submit-chroma-guess', ({ roomCode, tileIndex } = {}) => {
     if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     const result = submitChromaGuess(roomCode, socket.id, tileIndex);
-    if (!result) return;
+    // Rejected guesses (stale phase, out-of-range tile, expired race) used to
+    // vanish silently while wrong guesses flashed instantly — say so instead.
+    if (!result) return socket.emit('error', 'Tile not accepted — the round may have just ended');
 
     if (!result.correct) {
       socket.emit('chroma-wrong-click');
@@ -926,10 +1034,14 @@ io.on('connection', (socket) => {
     socket.emit('blend-clue-accepted');
     if (blendAllCluesIn(room)) {
       clearRoomTimer(roomCode);
-      const next = advanceToBlendVote(roomCode);
-      if (next) {
-        broadcastRoomState(next);
-        setRoomTimer(roomCode, BLEND_VOTE_SEC_VALUE * 1000, () => autoResolveBlendVotes(roomCode));
+      try {
+        const next = advanceToBlendVote(roomCode);
+        if (next) {
+          broadcastRoomState(next);
+          setRoomTimer(roomCode, BLEND_VOTE_SEC_VALUE * 1000, () => autoResolveBlendVotes(roomCode));
+        }
+      } catch (e) {
+        console.error('[submit-blend-clue] advanceToBlendVote failed', e);
       }
     } else {
       broadcastRoomState(room);
@@ -943,7 +1055,11 @@ io.on('connection', (socket) => {
     socket.emit('blend-vote-accepted');
     if (blendAllVotesIn(room)) {
       clearRoomTimer(roomCode);
-      autoResolveBlendVotes(roomCode);
+      try {
+        autoResolveBlendVotes(roomCode);
+      } catch (e) {
+        console.error('[submit-blend-vote] autoResolveBlendVotes failed', e);
+      }
     } else {
       broadcastRoomState(room);
     }
@@ -1207,7 +1323,20 @@ setInterval(() => {
   }
 }, 150);
 
+// Crash evidence: an uncaught exception today kills the process (wiping all
+// in-memory rooms) with nothing in the logs. Record it, then exit so the
+// host restarts clean — clients detect the new bootId and say so plainly.
+process.on('uncaughtException', (err) => {
+  logger.error('fatal_uncaught_exception', { error: err?.message ?? String(err), stack: err?.stack });
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  logger.error('fatal_unhandled_rejection', { error: err.message, stack: err.stack });
+  process.exit(1);
+});
+
 httpServer.listen(PORT, () => {
-  logger.info('Server started', { port: PORT, rooms: rooms.size });
+  logger.info('Server started', { port: PORT, rooms: rooms.size, bootId: BOOT_ID });
   console.log(`🎮 Hidden Signal server running on port ${PORT}`);
 });

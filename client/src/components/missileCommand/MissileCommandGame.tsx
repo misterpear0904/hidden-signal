@@ -4,13 +4,15 @@
 // Interaction model:
 // - Tap an empty square on YOUR island → build popup with all options.
 // - Tap any building → dialog with its stats + upgrade (own) / load / fire.
+// - Tap your rubble (🧱) → build popup + instant same-type rebuild at half cost.
 // - FIRE (volley) or ALL-type → targeting banner → tap an enemy square.
 
-import { memo, useEffect, useRef, useState, useMemo } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import type {
   RoomState,
   MissileBuilding,
   MissileInFlight,
+  MissileRubble,
   MissileLauncherType,
   MissileBuildAction,
   MissileLaunchAction,
@@ -19,7 +21,7 @@ import type {
   MissileKeepFireAction,
   MissileDesperationAction,
 } from '../../types/game';
-import { WORLD, TOP_RECT, BOTTOM_RECT, cellRect, BUILD_OPTIONS, BUILD_CATEGORIES, STATS, BUILDING_META, upgradeCostFor, sellRefundFor, SELL_SECONDS, SHIELD_COVER_CELLS, SHIELD_HEAVY_COVER_CELLS, HEALER_COVER_CELLS, CORE_INCOME_FALLBACK, MAX_STOCK, BUILD_SECONDS, LOAD_SECONDS } from './config';
+import { WORLD, TOP_RECT, BOTTOM_RECT, cellRect, BUILD_OPTIONS, BUILD_CATEGORIES, STATS, BUILDING_META, upgradeCostFor, sellRefundFor, rebuildCostFor, SELL_SECONDS, SHIELD_COVER_CELLS, SHIELD_HEAVY_COVER_CELLS, HEALER_COVER_CELLS, CORE_INCOME_FALLBACK, MAX_STOCK, BUILD_SECONDS, LOAD_SECONDS } from './config';
 import { visionOfTile, canSeeEnemyAtTile } from './fog';
 import MissileCommandStats from './MissileCommandStats';
 import { BUILD_ID } from '../../buildInfo';
@@ -32,9 +34,8 @@ interface Props {
   onUpgrade: (buildingId: string) => void;
   onSell: (buildingId: string) => void;
   onCancelSell: (buildingId: string) => void;
+  onRebuild: (rubbleId: string) => void;
   onLoad: (action: MissileLoadAction) => void;
-  onToggleAutobuild: (launcherId: string) => void;
-  onToggleAllAutobuild: (enabled: boolean) => void;
   onLaunch: (action: MissileLaunchAction) => void;
   onLaunchType: (action: MissileTypeLaunchAction) => void;
   onSetKeepFire: (action: MissileKeepFireAction) => void;
@@ -51,6 +52,14 @@ interface Flash { id: number; x: number; y: number; kind: string; expires: numbe
 type CoverCell = { gx: number; gy: number };
 
 let flashId = 0;
+
+// Normalized-x of the supply freighter at time `t` (mirrors the server's
+// shipXAt so both agree where the ship is). Module scope: used by both the
+// main board (tap hit-testing) and <MotionLayer/> (rendering).
+function shipPosAt(ship: { fromX: number; toX: number; y: number; startAt: number; endAt: number }, t: number) {
+  const f = Math.max(0, Math.min(1, (t - ship.startAt) / Math.max(1, ship.endAt - ship.startAt)));
+  return { x: (ship.fromX + (ship.toX - ship.fromX) * f) * WORLD, y: ship.y * WORLD };
+}
 
 function worldToCell(wx: number, wy: number, cols: number, rows: number): Cell | null {
   for (const [side, r] of [['top', TOP_RECT], ['bottom', BOTTOM_RECT]] as const) {
@@ -136,7 +145,170 @@ function coveredCells(gx: number, gy: number, range: number, cols: number, rows:
   return out;
 }
 
-export default function MissileCommandGame({ roomState, myId, isHost, onBuild, onUpgrade, onSell, onCancelSell, onLoad, onToggleAutobuild, onToggleAllAutobuild, onLaunch, onLaunchType, onSetKeepFire, onFireDesperation, onClaimSupplyShip, onPlayAgain }: Props) {
+// Motion-only layer: missiles in flight + supply freighter + impact
+// flashes. Owns the throttled (~30fps) rAF loop internally so the rest of
+// the board (island grids, buildings, fog, beams, side panels) renders only
+// on state broadcasts / slow ticks instead of every animation frame.
+// Late-game trees are big, and re-diffing all of them per frame is what
+// made long games lag.
+// Exported for render-cost benchmarks (motionPerf scratch suite).
+export const MotionLayer = memo(function MotionLayer({ missiles, supplyShip, topOwnerId, cols, rows, onFps }: {
+  missiles: MissileInFlight[];
+  supplyShip: { id: string; dir: number; fromX: number; toX: number; y: number; startAt: number; endAt: number } | null | undefined;
+  topOwnerId: string;
+  cols: number;
+  rows: number;
+  onFps?: (fps: number) => void;
+}) {
+  const [, setFrame] = useState(0);
+  const [flashes, setFlashes] = useState<Flash[]>([]);
+  const flashesLenRef = useRef(0);
+  const prevMissilesRef = useRef<Map<string, MissileInFlight>>(new Map());
+  const snapRef = useRef<{ missiles: MissileInFlight[]; at: number }>({ missiles: [], at: Date.now() });
+  const shipSailingRef = useRef(false);
+  flashesLenRef.current = flashes.length;
+
+  // ── Missile impact flash detection ──
+  useEffect(() => {
+    const prev = prevMissilesRef.current;
+    const nowMap = new Map<string, MissileInFlight>();
+    for (const m of missiles) nowMap.set(m.id, m);
+    const fresh: Flash[] = [];
+    for (const [id, m] of prev) {
+      if (!nowMap.has(id)) {
+        const ownerSide = topOwnerId === m.ownerId ? 'top' : 'bottom';
+        const enemySide = ownerSide === 'top' ? 'bottom' : 'top';
+        const c = cellRect(enemySide, m.targetGx, m.targetGy, cols, rows);
+        fresh.push({ id: ++flashId, x: c.cx, y: c.cy, kind: m.launcherType, expires: Date.now() + 700 });
+      }
+    }
+    prevMissilesRef.current = nowMap;
+    if (fresh.length) setFlashes(f => [...f.slice(-14), ...fresh]);
+  }, [missiles, cols, rows, topOwnerId]);
+
+  // ── Snapshot missiles for smooth client-side interpolation ──
+  useEffect(() => {
+    snapRef.current = { missiles: missiles.map(m => ({ ...m })), at: Date.now() };
+    shipSailingRef.current = !!supplyShip;
+  }, [missiles, supplyShip]);
+
+  // ── Frame loop: drives missile interpolation + flash expiry ──
+  // Idle-aware: when nothing on screen moves we stop rendering entirely (no
+  // idle CPU/GPU burn). While something IS moving, frames are capped at ~30fps:
+  // missiles cruise slowly (~80px/s), so 33ms steps are visually smooth at
+  // half the React reconciliation cost of 60fps.
+  // setFrame below re-renders ONLY this layer, not the whole board.
+  const lastFrameRef = useRef(0);
+  // FPS sampling: counts raw rAF ticks (not throttled renders) per second
+  // and reports up for the HUD readout.
+  const fpsFramesRef = useRef(0);
+  const fpsTimeRef = useRef(0);
+  useEffect(() => {
+    let raf = 0;
+    const loop = (t: number) => {
+      raf = requestAnimationFrame(loop);
+      const busy = snapRef.current.missiles.length > 0 || flashesLenRef.current > 0 || shipSailingRef.current;
+      if (!busy) return;
+      if (!fpsTimeRef.current) { fpsTimeRef.current = t; fpsFramesRef.current = 0; }
+      fpsFramesRef.current++;
+      if (t - fpsTimeRef.current >= 1000) {
+        onFps?.(Math.round((fpsFramesRef.current * 1000) / Math.max(1, t - fpsTimeRef.current)));
+        fpsFramesRef.current = 0;
+        fpsTimeRef.current = t;
+      }
+      if (t - lastFrameRef.current < 33) return;
+      lastFrameRef.current = t;
+      setFrame(f => f + 1);
+      if (flashesLenRef.current > 0) {
+        // No-op guard: filter() always returns a new array, which would
+        // re-render every frame even when nothing expired.
+        setFlashes(f => {
+          if (!f.length) return f;
+          const n = f.filter(fl => fl.expires > Date.now());
+          return n.length === f.length ? f : n;
+        });
+      }
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  // Frame-fresh clock for motion. This render runs every rAF while anything
+  // moves, so Date.now() here is current-frame accurate (a 500ms-quantized
+  // slow clock would step every sprite twice per second).
+  const renderNow = Date.now();
+
+  return (
+    <>
+      {/* Missiles in flight (interpolated, fanned by lane).
+          Kept to 3 lean nodes each (trail, head, target) with no CSS
+          animations so big scatter volleys stay smooth. */}
+      {snapRef.current.missiles.map(m => {
+        const elapsed = Math.min(12, (renderNow - snapRef.current.at) / 1000);
+        const sx = m.currentX * WORLD, sy = m.currentY * WORLD;
+        const tx = m.targetX * WORLD, ty = m.targetY * WORLD;
+        const dx = tx - sx, dy = ty - sy;
+        const d = Math.hypot(dx, dy) || 1;
+        const step = (m.speed || 0.1) * WORLD * elapsed;
+        const t = Math.min(1, step / d);
+        // Lane offset perpendicular to travel: volleys fan out instead of
+        // stacking pixel-perfect (which looked like glitching).
+        const lane = m.lane ?? 0;
+        const ox = (-dy / d) * lane * 14;
+        const oy = (dx / d) * lane * 14;
+        const px = sx + dx * t + ox, py = sy + dy * t + oy;
+        const col = m.desperation ? '#f43f5e' : m.launcherType === 'single' ? '#fbbf24' : '#fb7185';
+        // NOTE: deployAt is stamped with the SERVER clock but `renderNow`
+        // is the CLIENT clock — skew can briefly misplace banked volleys,
+        // and "launch all" ripples launchers 300ms apart, so fresh
+        // missiles legitimately sit at their launcher until their wave
+        // deploys.
+        // Fade out over the last 15% of the flight. Without this the
+        // client reaches the target before the server's next 150ms tick
+        // removes it, so the missile freezes on the tile for one tick and
+        // then blinks out.
+        const arrival = t > 0.85 ? Math.max(0, 1 - (t - 0.85) / 0.15) : 1;
+        const tc = cellRect(m.ownerId === topOwnerId ? 'bottom' : 'top', m.targetGx, m.targetGy, cols, rows);
+        return (
+          <g key={m.id} pointerEvents="none" opacity={arrival}>
+            <line x1={sx + ox} y1={sy + oy} x2={px} y2={py} stroke={col} strokeWidth={m.desperation ? 5 : 3} opacity={0.5} />
+            <text x={px} y={py} textAnchor="middle" dominantBaseline="central" fontSize={m.desperation ? 30 : 22}>{m.desperation ? '☢️' : '🚀'}</text>
+            <rect x={tc.x + 2} y={tc.y + 2} width={tc.w - 4} height={tc.h - 4} rx={8}
+              fill="none" stroke={col} strokeWidth={m.desperation ? 3.5 : 2} strokeDasharray="6 5" opacity={0.8} />
+          </g>
+        );
+      })}
+
+      {/* Neutral supply freighter crossing the channel. First tap claims
+          it — position interpolated from the server's sailing schedule. */}
+      {supplyShip && (() => {
+        const sp = shipPosAt(supplyShip, renderNow);
+        return (
+          <g key={`freighter-${supplyShip.id}`} pointerEvents="none">
+            <line
+              x1={sp.x - (supplyShip.dir > 0 ? 70 : -70)} y1={sp.y}
+              x2={sp.x} y2={sp.y}
+              stroke="rgba(255,255,255,0.35)" strokeWidth={4} strokeLinecap="round"
+            />
+            <circle cx={sp.x} cy={sp.y} r={30} fill="rgba(251,191,36,0.12)" stroke="#fbbf24" strokeWidth={2} strokeDasharray="8 6" />
+            <text x={sp.x} y={sp.y} textAnchor="middle" dominantBaseline="central" fontSize={32}>🚢</text>
+          </g>
+        );
+      })()}
+
+      {/* Impact flashes */}
+      {flashes.map(f => (
+        <g key={f.id} opacity={Math.max(0, (f.expires - renderNow) / 700)} pointerEvents="none">
+          <circle cx={f.x} cy={f.y} r={44} fill={f.kind === 'single' ? '#fbbf24' : '#fb7185'} opacity={0.5} />
+          <circle cx={f.x} cy={f.y} r={20} fill="#fff" opacity={0.8} />
+          <text x={f.x} y={f.y} textAnchor="middle" dominantBaseline="central" fontSize={30}>💥</text>
+        </g>
+      ))}
+    </>
+  );
+});
+
+export default function MissileCommandGame({ roomState, myId, isHost, onBuild, onUpgrade, onSell, onCancelSell, onRebuild, onLoad, onLaunch, onLaunchType, onSetKeepFire, onFireDesperation, onClaimSupplyShip, onPlayAgain }: Props) {
   const mc = roomState.missileCommandState;
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -153,29 +325,69 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   const [keepFireArmed, setKeepFireArmed] = useState(false);
   // Desperation targeting: true while picking the one-time strike's tile.
   const [targetDesperation, setTargetDesperation] = useState(false);
+  // One-time "desperation ready" tooltip (see effect + popup below).
+  const [despTip, setDespTip] = useState(false);
+  const despTipSeenRef = useRef(false);
+  // Pop the tooltip the moment desperation unlocks (once per mount):
+  // it points at the dock button and tapping it jumps straight into
+  // aiming. Auto-hides after 9s; the dock button keeps pulsing anyway.
+  useEffect(() => {
+    const d = mc?.desperation?.[myId];
+    if (d?.unlocked && !d?.used && !despTipSeenRef.current) {
+      despTipSeenRef.current = true;
+      setDespTip(true);
+      const t = setTimeout(() => setDespTip(false), 9000);
+      return () => clearTimeout(t);
+    }
+  });
+  // Aiming started (or strike spent) — tooltip has served its purpose.
+  useEffect(() => {
+    if (targetDesperation) setDespTip(false);
+  }, [targetDesperation]);
   const [dockVertical, setDockVertical] = useState(true);
-  // Shield grid effects toggle (visual hex overlay on shield coverage)
-  const [showShieldGrid, setShowShieldGrid] = useState(true);
+  // Low-FX mode: strips decorative rendering game-wide (coverage hex
+  // overlays, glow filters, beam particles, pulse SMIL) for smoothness on
+  // weak hardware. Off by default — full effects. Auto lite-FX (fxLite
+  // below) still kicks in on busy boards regardless of this toggle.
+  const [lowFx, setLowFx] = useState(false);
   // Long-press for mobile build menu (tap selects, long-press opens build)
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const LONG_PRESS_MS = 350; // ms to hold for build menu
+  const LONG_PRESS_MS = 262; // ms to hold for build menu (25% under the old 350ms so it opens faster)
   const fullscreenSupported = typeof document !== 'undefined' &&
     (document.fullscreenEnabled || (document as unknown as { webkitFullscreenEnabled?: boolean }).webkitFullscreenEnabled);
-  const [, setFrame] = useState(0);
-  const [flashes, setFlashes] = useState<Flash[]>([]);
   // Motion sensitivity: kills CSS marching/beam flow (via media query below)
   // and gates the decorative SMIL nodes (particles, ripples, pulses).
   const reducedMotion = useMemo(
     () => typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches,
     []
   );
-  // Slow clock for transient UI (fog expiry, countdowns, freighter): the rAF
-  // frame loop below only ticks while missiles/flashes move, so without this
+  // Slow clock for transient UI (fog expiry, countdowns): the motion layer
+  // below ticks itself while missiles/flashes/ship move, so without this
   // every countdown freezes whenever the sky is empty.
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNowTick(Date.now()), 500);
     return () => clearInterval(id);
+  }, []);
+  // ── Perf readout: render FPS (from the motion layer, ~1/sec while busy)
+  // + server updates/sec (state broadcasts received). Decays to idle text
+  // when motion stops so it never shows a stale number.
+  const [fps, setFps] = useState<number | null>(null);
+  const [ups, setUps] = useState(0);
+  const fpsAtRef = useRef(0);
+  const upsCountRef = useRef(0);
+  useEffect(() => { upsCountRef.current++; }, [mc]);
+  useEffect(() => {
+    const id = setInterval(() => {
+      setUps(upsCountRef.current);
+      upsCountRef.current = 0;
+      if (Date.now() - fpsAtRef.current > 2000) setFps(null);
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+  const handleFps = useCallback((f: number) => {
+    fpsAtRef.current = Date.now();
+    setFps(f);
   }, []);
   // Long-press timer must not fire after unmount (stale setState on a dead
   // component when the game screen unmounts mid-press).
@@ -198,9 +410,6 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     // once instead. Cleared when the last pointer lifts.
     rect: null as DOMRect | null,
   });
-  // Mirrors flashes.length for the frame loop, so that loop can subscribe once
-  // (a flashes.length dep would re-create the rAF chain on every flash).
-  const flashesLenRef = useRef(0);
   // Set when a long-press has already handled a gesture, so the pointer-up
   // that follows must NOT also run tap logic (it would immediately close the
   // build menu the long-press just opened — the "flash then vanish" bug).
@@ -212,8 +421,6 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   // renders — the early return for missing state sits below ALL hooks.
   const cols = mc?.gridCols || 13;
   const rows = mc?.gridRows || 7;
-  const prevMissilesRef = useRef<Map<string, MissileInFlight>>(new Map());
-  const snapRef = useRef<{ missiles: MissileInFlight[]; at: number }>({ missiles: [], at: Date.now() });
   // Coverage is a pure function of (gx, gy, range, cols, rows) — but it's
   // recomputed 10x/sec in render before this existed. Cache keyed on the
   // inputs so only a moved/upgraded shield pays for it again.
@@ -229,34 +436,6 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     }
     return v;
   };
-
-  // Keep the frame loop's liveness mirror current without re-subscribing it.
-  flashesLenRef.current = flashes.length;
-
-  // ── Missile impact flash detection ──
-  useEffect(() => {
-    if (!mc) return;
-    const prev = prevMissilesRef.current;
-    const now = new Map<string, MissileInFlight>();
-    for (const m of mc.missiles) now.set(m.id, m);
-    const cols = mc.gridCols, rows = mc.gridRows;
-    const fresh: Flash[] = [];
-    for (const [id, m] of prev) {
-      if (!now.has(id)) {
-        const ownerSide = mc.sides.top === m.ownerId ? 'top' : 'bottom';
-        const enemySide = ownerSide === 'top' ? 'bottom' : 'top';
-        const c = cellRect(enemySide, m.targetGx, m.targetGy, cols, rows);
-        fresh.push({ id: ++flashId, x: c.cx, y: c.cy, kind: m.launcherType, expires: Date.now() + 700 });
-      }
-    }
-    prevMissilesRef.current = now;
-    if (fresh.length) setFlashes(f => [...f.slice(-14), ...fresh]);
-  }, [mc]);
-
-  // ── Snapshot missiles for smooth client-side interpolation ──
-  useEffect(() => {
-    if (mc) snapRef.current = { missiles: mc.missiles.map(m => ({ ...m })), at: Date.now() };
-  }, [mc]);
 
   // ── Supply-claim toast: announce new claims once, then fade ──
   useEffect(() => {
@@ -283,34 +462,6 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     if (!selected || selected.ownerId === myId) return;
     if (fogOfWar && visionOf(selected.gx, selected.gy) !== 'live') setSelectedId(null);
   });
-
-  // ── Frame loop: drives missile interpolation + flash expiry ──
-  // Idle-aware: when nothing on screen moves we stop rendering entirely (no
-  // idle CPU/GPU burn). While something IS moving, every frame is rendered —
-  // missiles interpolate over ~10s and any throttle (this used to be 10fps)
-  // reads as visible stepping.
-  // Reads liveness through refs so the loop is subscribed exactly once
-  // (a flashes.length dep would re-create the rAF chain on every flash).
-  useEffect(() => {
-    let raf = 0;
-    const loop = () => {
-      raf = requestAnimationFrame(loop);
-      const busy = snapRef.current.missiles.length > 0 || flashesLenRef.current > 0;
-      if (!busy) return;
-      setFrame(f => f + 1);
-      if (flashesLenRef.current > 0) {
-        // No-op guard: filter() always returns a new array, which would
-        // re-render every frame even when nothing expired.
-        setFlashes(f => {
-          if (!f.length) return f;
-          const n = f.filter(fl => fl.expires > Date.now());
-          return n.length === f.length ? f : n;
-        });
-      }
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-  }, []);
 
   // ── Fullscreen state tracking ──
   useEffect(() => {
@@ -343,6 +494,12 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     for (const b of buildings) m.set(`${b.side}:${b.gx}:${b.gy}`, b);
     return m;
   }, [buildings]);
+  const rubbleList = useMemo(() => Object.values(mc?.rubble ?? {}), [mc?.rubble]);
+  const rubbleByCell = useMemo(() => {
+    const m = new Map<string, MissileRubble>();
+    for (const r of rubbleList) m.set(`${r.side}:${r.gx}:${r.gy}`, r);
+    return m;
+  }, [rubbleList]);
   // Cheap string signatures so the memoized grids skip re-renders on ticks.
   const occSigTop = useMemo(() => buildings.filter(b => b.side === 'top').map(b => `${b.gx},${b.gy}`).join('|'), [buildings]);
   const occSigBottom = useMemo(() => buildings.filter(b => b.side === 'bottom').map(b => `${b.gx},${b.gy}`).join('|'), [buildings]);
@@ -368,6 +525,18 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     return { shields, healers };
   }, [selected, buildings, myId, shieldTiles, healerTiles]);
   const myBuildings = useMemo(() => buildings.filter(b => b.ownerId === myId), [buildings, myId]);
+  // Active heal beams (healer with a live target). Past a handful, the
+  // per-beam glow filters + SMIL particles/ripples scale into real GPU cost
+  // late-game — fxLite sheds the decor (beams stay readable) automatically.
+  const activeBeamCount = useMemo(
+    () => buildings.reduce((n, b) => n + (b.type === 'healer' && b.healTargetId ? 1 : 0), 0),
+    [buildings]
+  );
+  const shieldCount = useMemo(
+    () => buildings.reduce((n, b) => n + (b.type === 'shield' || b.type === 'shield_heavy' ? 1 : 0), 0),
+    [buildings]
+  );
+  const fxLite = lowFx || activeBeamCount > 4 || shieldCount > 6;
   const myCore = useMemo(() => buildings.find(b => b.type === 'core' && b.side === mySide), [buildings, mySide]);
   const enemyCore = useMemo(() => buildings.find(b => b.type === 'core' && b.side !== mySide), [buildings, mySide]);
   const myLaunchers = useMemo(() => myBuildings.filter(b => b.type === 'launcher'), [myBuildings]);
@@ -380,8 +549,6 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   // Once the dock gets crowded, shrink everything so every launcher stays
   // on screen (or at worst one short scroll) instead of eating the map.
   const dockCompact = myLaunchers.length > 5;
-  // AUTO ALL aggregate: on only when every launcher auto-loads.
-  const allAutobuild = myLaunchers.length > 0 && myLaunchers.every(l => l.autobuild);
   // Server-owned keep-firing lock for me, if any.
   const myKeepFire = mc?.keepFire?.[myId] ?? null;
   // Server-owned desperation flag for me. Unlocks at 50% core HP, one shot.
@@ -481,13 +648,6 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     setTargetLauncherId(null);
     setTargetType(null);
     setTargetDesperation(false);
-  }
-
-  // Normalized-x of the supply freighter at time `t` (mirrors the server's
-  // shipXAt so both agree where the ship is).
-  function shipPosAt(ship: { fromX: number; toX: number; y: number; startAt: number; endAt: number }, t: number) {
-    const f = Math.max(0, Math.min(1, (t - ship.startAt) / Math.max(1, ship.endAt - ship.startAt)));
-    return { x: (ship.fromX + (ship.toX - ship.fromX) * f) * WORLD, y: ship.y * WORLD };
   }
 
   function handleTap(wx: number, wy: number, isTouch: boolean) {
@@ -591,7 +751,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     if (e.pointerType === 'touch' && g.pointers.size === 1) {
       if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
       // Capture coordinates NOW — the React synthetic event may be recycled
-      // by the time the timer fires 350ms later.
+      // by the time the timer fires.
       const cx = e.clientX, cy = e.clientY;
       longPressTimerRef.current = setTimeout(() => {
         longPressTimerRef.current = null;
@@ -704,6 +864,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
 
   const upgradeCost = selected ? upgradeCostFor(selected) : null;
   const buildCellBuilding = buildCell ? byCell.get(`${buildCell.side}:${buildCell.gx}:${buildCell.gy}`) : undefined;
+  const buildCellRubble = buildCell && !buildCellBuilding ? rubbleByCell.get(`${buildCell.side}:${buildCell.gx}:${buildCell.gy}`) : undefined;
   const myCorePct = myCore ? Math.max(0, (myCore.coreHp! / myCore.maxCoreHp!) * 100) : 0;
   const enemyCorePct = enemyCore ? Math.max(0, (enemyCore.coreHp! / enemyCore.maxCoreHp!) * 100) : 0;
 
@@ -766,46 +927,46 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             </linearGradient>
             {/* Shield visuals — gradients, hex patterns, glow filters */}
             <linearGradient id="shieldGrad-Regular" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.35" />
-              <stop offset="50%" stop-color="#0ea5e9" stop-opacity="0.2" />
-              <stop offset="100%" stop-color="#0369a1" stop-opacity="0.15" />
+              <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.35" />
+              <stop offset="50%" stopColor="#0ea5e9" stopOpacity="0.2" />
+              <stop offset="100%" stopColor="#0369a1" stopOpacity="0.15" />
             </linearGradient>
             <linearGradient id="shieldGrad-Heavy" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#60a5fa" stop-opacity="0.4" />
-              <stop offset="50%" stop-color="#2563eb" stop-opacity="0.25" />
-              <stop offset="100%" stop-color="#1e3a8a" stop-opacity="0.2" />
+              <stop offset="0%" stopColor="#60a5fa" stopOpacity="0.4" />
+              <stop offset="50%" stopColor="#2563eb" stopOpacity="0.25" />
+              <stop offset="100%" stopColor="#1e3a8a" stopOpacity="0.2" />
             </linearGradient>
             <linearGradient id="shieldGrad-Regular-Low" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#fbbf24" stop-opacity="0.3" />
-              <stop offset="100%" stop-color="#f59e0b" stop-opacity="0.15" />
+              <stop offset="0%" stopColor="#fbbf24" stopOpacity="0.3" />
+              <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.15" />
             </linearGradient>
             <linearGradient id="shieldGrad-Heavy-Low" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#f43f5e" stop-opacity="0.35" />
-              <stop offset="100%" stop-color="#991b1b" stop-opacity="0.2" />
+              <stop offset="0%" stopColor="#f43f5e" stopOpacity="0.35" />
+              <stop offset="100%" stopColor="#991b1b" stopOpacity="0.2" />
             </linearGradient>
             <linearGradient id="coreGrad-Regular" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#7dd3fc" />
-              <stop offset="50%" stop-color="#0ea5e9" />
-              <stop offset="100%" stop-color="#0369a1" />
+              <stop offset="0%" stopColor="#7dd3fc" />
+              <stop offset="50%" stopColor="#0ea5e9" />
+              <stop offset="100%" stopColor="#0369a1" />
             </linearGradient>
             <linearGradient id="coreGrad-Heavy" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#93c5fd" />
-              <stop offset="50%" stop-color="#3b82f6" />
-              <stop offset="100%" stop-color="#1e40af" />
+              <stop offset="0%" stopColor="#93c5fd" />
+              <stop offset="50%" stopColor="#3b82f6" />
+              <stop offset="100%" stopColor="#1e40af" />
             </linearGradient>
             <radialGradient id="pulseGrad-Regular" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stop-color="#7dd3fc" stop-opacity="0.6" />
-              <stop offset="70%" stop-color="#38bdf8" stop-opacity="0.2" />
-              <stop offset="100%" stop-color="#0ea5e9" stop-opacity="0" />
+              <stop offset="0%" stopColor="#7dd3fc" stopOpacity="0.6" />
+              <stop offset="70%" stopColor="#38bdf8" stopOpacity="0.2" />
+              <stop offset="100%" stopColor="#0ea5e9" stopOpacity="0" />
             </radialGradient>
             <radialGradient id="pulseGrad-Heavy" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stop-color="#93c5fd" stop-opacity="0.6" />
-              <stop offset="70%" stop-color="#60a5fa" stop-opacity="0.2" />
-              <stop offset="100%" stop-color="#2563eb" stop-opacity="0" />
+              <stop offset="0%" stopColor="#93c5fd" stopOpacity="0.6" />
+              <stop offset="70%" stopColor="#60a5fa" stopOpacity="0.2" />
+              <stop offset="100%" stopColor="#2563eb" stopOpacity="0" />
             </radialGradient>
             <linearGradient id="healerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#4ade80" stop-opacity="0.45" />
-              <stop offset="100%" stop-color="#16a34a" stop-opacity="0.25" />
+              <stop offset="0%" stopColor="#4ade80" stopOpacity="0.45" />
+              <stop offset="100%" stopColor="#16a34a" stopOpacity="0.25" />
             </linearGradient>
             <pattern id="hexPattern" patternUnits="userSpaceOnUse" width="24" height="21">
               <path d="M12,0 L24,5.25 L24,15.75 L12,21 L0,15.75 L0,5.25 Z" fill="none" stroke="rgba(56,189,248,0.35)" strokeWidth="1" />
@@ -867,9 +1028,9 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             const pct = (b.shieldHp ?? 0) / (b.maxShieldHp ?? 1);
             const isSel = selected?.id === b.id;
             const isHeavy = b.type === 'shield_heavy';
-            // Skip the coverage math entirely when the grid is off or the
+            // Skip the coverage math entirely when low-FX is on or the
             // shield is drained — coverCache is pure but not free.
-            const cells = (showShieldGrid && pct > 0) ? coverCache(b.gx, b.gy, b.shieldTiles ?? shieldTiles) : [];
+            const cells = (!lowFx && pct > 0) ? coverCache(b.gx, b.gy, b.shieldTiles ?? shieldTiles) : [];
             const gradId = pct <= 0.15 ? (isHeavy ? 'shieldGrad-Heavy-Low' : 'shieldGrad-Regular-Low')
                             : (isHeavy ? 'shieldGrad-Heavy' : 'shieldGrad-Regular');
             const hexPatternId = isHeavy ? 'hexPattern-Heavy' : 'hexPattern';
@@ -878,9 +1039,9 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             const edgeColorEnemy = isHeavy ? '#f43f5e' : '#fb7185';
             return (
               <g key={`sh-${b.id}`} pointerEvents="none"
-                filter={stale ? 'saturate(0.4)' : (showShieldGrid && pct > 0 && isSel ? `url(#${glowFilter})` : undefined)}
+                filter={stale ? 'saturate(0.4)' : (!lowFx && pct > 0 && isSel ? `url(#${glowFilter})` : undefined)}
                 opacity={stale ? 0.5 : 1}>
-                {showShieldGrid && cells.map(c => {
+                {!lowFx && cells.map(c => {
                   const r = cellRect(b.side, c.gx, c.gy, cols, rows);
                   return (
                     <g key={`${c.gx}-${c.gy}`}>
@@ -897,7 +1058,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                     </g>
                   );
                 })}
-                {showShieldGrid && isSel && pct > 0 && (
+                {!lowFx && isSel && pct > 0 && (
                   <path d={coverageOutlinePath(b.side, cells, cols, rows)}
                     fill="none" stroke={edgeColor} strokeWidth={3.5} strokeDasharray="14 5" className="mc-march" strokeLinejoin="round" />
                 )}
@@ -916,7 +1077,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                     <g key={`${c.gx}-${c.gy}`}>
                       <rect x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={7}
                         fill="url(#healerGrad)" />
-                      {showShieldGrid && (
+                      {!lowFx && (
                         <rect x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={7}
                           fill="url(#hexPattern)" opacity={0.7} />
                       )}
@@ -961,15 +1122,15 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             const path = `M ${hr.cx} ${hr.cy} L ${tr.cx} ${tr.cy}`;
             return (
               <g key={`beam-${h.id}`} pointerEvents="none">
-                {/* Base glow beam */}
+                {/* Base glow beam (filter dropped in lite mode — same line, no offscreen pass) */}
                 <line x1={hr.cx} y1={hr.cy} x2={tr.cx} y2={tr.cy}
-                  stroke="#4ade80" strokeWidth={14} strokeLinecap="round" opacity={0.15} filter="url(#glow-Regular)" />
+                  stroke="#4ade80" strokeWidth={14} strokeLinecap="round" opacity={0.15} filter={fxLite ? undefined : 'url(#glow-Regular)'} />
                 {/* Animated dashed beam */}
                 <line x1={hr.cx} y1={hr.cy} x2={tr.cx} y2={tr.cy}
                   stroke="#86efac" strokeWidth={5} strokeLinecap="round"
                   strokeDasharray="12 10" className="mc-beam" opacity={0.95} />
-                {/* Energy particles traveling along beam */}
-                {!reducedMotion && (
+                {/* Energy particles traveling along beam (lite mode: off) */}
+                {!reducedMotion && !fxLite && (
                   <>
                     <circle r={5} fill="#bbf7d0" opacity={0.95}>
                       <animateMotion dur="1s" repeatCount="indefinite" path={path} />
@@ -982,9 +1143,9 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                     </circle>
                   </>
                 )}
-                {/* Target ripple rings */}
-                <circle cx={tr.cx} cy={tr.cy} r={8} fill="none" stroke="#4ade80" strokeWidth={3} filter="url(#glow-Regular)">
-                  {!reducedMotion && (
+                {/* Target ripple rings (lite mode: static rings, no SMIL/filter) */}
+                <circle cx={tr.cx} cy={tr.cy} r={8} fill="none" stroke="#4ade80" strokeWidth={3} filter={fxLite ? undefined : 'url(#glow-Regular)'}>
+                  {!reducedMotion && !fxLite && (
                     <>
                       <animate attributeName="r" values="8;28" dur="1.2s" repeatCount="indefinite" />
                       <animate attributeName="opacity" values="0.9;0" dur="1.2s" repeatCount="indefinite" />
@@ -992,16 +1153,16 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                   )}
                 </circle>
                 <circle cx={tr.cx} cy={tr.cy} r={8} fill="none" stroke="#86efac" strokeWidth={2}>
-                  {!reducedMotion && (
+                  {!reducedMotion && !fxLite && (
                     <>
                       <animate attributeName="r" values="8;28" dur="1.2s" begin="-0.6s" repeatCount="indefinite" />
                       <animate attributeName="opacity" values="0.7;0" dur="1.2s" begin="-0.6s" repeatCount="indefinite" />
                     </>
                   )}
                 </circle>
-                {/* Midpoint energy burst */}
-                <circle cx={mx} cy={my} r={16} fill="rgba(6,40,20,0.85)" stroke="#4ade80" strokeWidth={2} filter="url(#glow-Regular)">
-                  {!reducedMotion && (
+                {/* Midpoint energy burst (lite mode: static marker) */}
+                <circle cx={mx} cy={my} r={16} fill="rgba(6,40,20,0.85)" stroke="#4ade80" strokeWidth={2} filter={fxLite ? undefined : 'url(#glow-Regular)'}>
+                  {!reducedMotion && !fxLite && (
                     <>
                       <animate attributeName="r" values="16;22" dur="0.8s" repeatCount="indefinite" />
                       <animate attributeName="opacity" values="0.85;0.5" dur="0.8s" repeatCount="indefinite" />
@@ -1053,60 +1214,17 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             );
           })()}
 
-          {/* Missiles in flight (interpolated, fanned by lane).
-              Kept to 3 lean nodes each (trail, head, target) with no CSS
-              animations so big scatter volleys stay smooth. */}
-          {snapRef.current.missiles.map(m => {
-            const elapsed = Math.min(12, (now - snapRef.current.at) / 1000);
-            const sx = m.currentX * WORLD, sy = m.currentY * WORLD;
-            const tx = m.targetX * WORLD, ty = m.targetY * WORLD;
-            const dx = tx - sx, dy = ty - sy;
-            const d = Math.hypot(dx, dy) || 1;
-            const step = (m.speed || 0.1) * WORLD * elapsed;
-            const t = Math.min(1, step / d);
-            // Lane offset perpendicular to travel: volleys fan out instead of
-            // stacking pixel-perfect (which looked like glitching).
-            const lane = m.lane ?? 0;
-            const ox = (-dy / d) * lane * 14;
-            const oy = (dx / d) * lane * 14;
-            const px = sx + dx * t + ox, py = sy + dy * t + oy;
-            const col = m.desperation ? '#f43f5e' : m.launcherType === 'single' ? '#fbbf24' : '#fb7185';
-            // NOTE: deployAt is stamped with the SERVER clock but `now` is the
-            // CLIENT clock — skew can briefly misplace banked volleys, and
-            // "launch all" ripples launchers 300ms apart, so fresh missiles
-            // legitimately sit at their launcher until their wave deploys.
-            // Fade out over the last 15% of the flight. Without this the
-            // client reaches the target before the server's next 250ms tick
-            // removes it, so the missile freezes on the tile for one tick and
-            // then blinks out.
-            const arrival = t > 0.85 ? Math.max(0, 1 - (t - 0.85) / 0.15) : 1;
-            const tc = cellRect(m.ownerId === mc.sides.top ? 'bottom' : 'top', m.targetGx, m.targetGy, cols, rows);
-            return (
-              <g key={m.id} pointerEvents="none" opacity={arrival}>
-                <line x1={sx + ox} y1={sy + oy} x2={px} y2={py} stroke={col} strokeWidth={m.desperation ? 5 : 3} opacity={0.5} />
-                <text x={px} y={py} textAnchor="middle" dominantBaseline="central" fontSize={m.desperation ? 30 : 22}>{m.desperation ? '☢️' : '🚀'}</text>
-                <rect x={tc.x + 2} y={tc.y + 2} width={tc.w - 4} height={tc.h - 4} rx={8}
-                  fill="none" stroke={col} strokeWidth={m.desperation ? 3.5 : 2} strokeDasharray="6 5" opacity={0.8} />
-              </g>
-            );
-          })}
-
-          {/* Neutral supply freighter crossing the channel. First tap claims
-              it — position interpolated from the server's sailing schedule. */}
-          {mc.supplyShip && (() => {
-            const sp = shipPosAt(mc.supplyShip, now);
-            return (
-              <g key={`freighter-${mc.supplyShip.id}`} pointerEvents="none">
-                <line
-                  x1={sp.x - (mc.supplyShip.dir > 0 ? 70 : -70)} y1={sp.y}
-                  x2={sp.x} y2={sp.y}
-                  stroke="rgba(255,255,255,0.35)" strokeWidth={4} strokeLinecap="round"
-                />
-                <circle cx={sp.x} cy={sp.y} r={30} fill="rgba(251,191,36,0.12)" stroke="#fbbf24" strokeWidth={2} strokeDasharray="8 6" />
-                <text x={sp.x} y={sp.y} textAnchor="middle" dominantBaseline="central" fontSize={32}>🚢</text>
-              </g>
-            );
-          })()}
+          {/* Motion layer: missiles in flight, freighter, impact flashes.
+              Self-contained 60fps subtree — the rest of this board only
+              re-renders on state broadcasts / slow ticks. */}
+          <MotionLayer
+            missiles={mc.missiles}
+            supplyShip={mc.supplyShip}
+            topOwnerId={mc.sides.top}
+            cols={cols}
+            rows={rows}
+            onFps={handleFps}
+          />
 
           {/* Keep-firing lock: where my missiles will keep landing. Both
               players can see it — it's an automated, self-firing gun. */}
@@ -1122,15 +1240,6 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
               </g>
             );
           })()}
-
-          {/* Impact flashes */}
-          {flashes.map(f => (
-            <g key={f.id} opacity={Math.max(0, (f.expires - now) / 700)} pointerEvents="none">
-              <circle cx={f.x} cy={f.y} r={44} fill={f.kind === 'single' ? '#fbbf24' : '#fb7185'} opacity={0.5} />
-              <circle cx={f.x} cy={f.y} r={20} fill="#fff" opacity={0.8} />
-              <text x={f.x} y={f.y} textAnchor="middle" dominantBaseline="central" fontSize={30}>💥</text>
-            </g>
-          ))}
 
           {/* Buildings */}
           {buildings.map(b => {
@@ -1184,7 +1293,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                       <>
                         <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.38} fill="none"
                           stroke={b.type === 'shield_heavy' ? '#60a5fa' : '#38bdf8'} strokeWidth={1.5} opacity={0.6}>
-                          {!reducedMotion && (
+                          {!reducedMotion && !fxLite && (
                             <>
                               <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.38};${Math.min(r.w, r.h) * 0.52}`} dur="2s" repeatCount="indefinite" />
                               <animate attributeName="opacity" values="0.6;0" dur="2s" repeatCount="indefinite" />
@@ -1193,7 +1302,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                         </circle>
                         <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.38} fill="none"
                           stroke={b.type === 'shield_heavy' ? '#93c5fd' : '#7dd3fc'} strokeWidth={1} opacity={0.4}>
-                          {!reducedMotion && (
+                          {!reducedMotion && !fxLite && (
                             <>
                               <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.38};${Math.min(r.w, r.h) * 0.52}`} dur="2s" begin="-1s" repeatCount="indefinite" />
                               <animate attributeName="opacity" values="0.4;0" dur="2s" begin="-1s" repeatCount="indefinite" />
@@ -1209,7 +1318,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                     {/* Inner glow pulse */}
                     <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.28} fill="none"
                       stroke={b.type === 'shield_heavy' ? '#93c5fd' : '#7dd3fc'} strokeWidth={1.5} opacity={0.7}>
-                      {!reducedMotion && (
+                      {!reducedMotion && !fxLite && (
                         <>
                           <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.28};${Math.min(r.w, r.h) * 0.35}`} dur="1.5s" repeatCount="indefinite" />
                           <animate attributeName="opacity" values="0.7;0.2" dur="1.5s" repeatCount="indefinite" />
@@ -1262,8 +1371,8 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                                 : (segPct <= 0.3 ? '#38bdf8' : segPct <= 0.6 ? '#0ea5e9' : '#0369a1'))
                             : 'rgba(255,255,255,0.08)'}
                           opacity={active ? 1 : 0.3}
-                          filter={!reducedMotion && active && shieldPct > segPct - 0.05 && shieldPct < segPct + 0.05 && shieldPct < 0.99 ? 'url(#glow-Regular)' : undefined}>
-                          {active && !reducedMotion && shieldPct > segPct - 0.05 && shieldPct < segPct + 0.05 && shieldPct < 0.99 && (
+                          filter={!reducedMotion && !fxLite && active && shieldPct > segPct - 0.05 && shieldPct < segPct + 0.05 && shieldPct < 0.99 ? 'url(#glow-Regular)' : undefined}>
+                          {active && !reducedMotion && !fxLite && shieldPct > segPct - 0.05 && shieldPct < segPct + 0.05 && shieldPct < 0.99 && (
                             <animate attributeName="opacity" values="1;0.6" dur="0.8s" repeatCount="indefinite" />
                           )}
                         </rect>
@@ -1320,12 +1429,23 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
               );
             }
             if (p.kind === 'sell') {
+              // Demolition countdown: floating pill ABOVE the tile (not
+              // crammed inside it over the building emoji) with big seconds
+              // + depleting progress bar, so the 20s timer is unmissable.
+              const totalMs = SELL_SECONDS * 1000;
+              const remainPct = Math.min(1, Math.max(0, (secsLeft * 1000) / totalMs));
+              const bw = Math.min(150, r.w + 44);
+              const bx = r.cx - bw / 2;
+              const by = Math.max(2, r.y - 32);
               return (
                 <g key={p.id} pointerEvents="none">
-                  <rect x={r.x + 4} y={r.y + 4} width={Math.min(150, r.w - 8)} height={22} rx={11}
-                    fill="rgba(0,0,0,0.7)" stroke="#fbbf24" strokeWidth={1.5} />
-                  <text x={r.x + 12} y={r.y + 15} fontSize={13} fontWeight={800} fill="#fcd34d">
-                    💰 +{p.refund ?? 0}cr {secsLeft.toFixed(0)}s
+                  <rect x={bx} y={by} width={bw} height={26} rx={13}
+                    fill="rgba(0,0,0,0.8)" stroke="#fbbf24" strokeWidth={2} />
+                  <rect x={bx + 4} y={by + 20} width={Math.max(0, (bw - 8) * remainPct)} height={3} rx={1.5}
+                    fill="#fbbf24" />
+                  <text x={r.cx} y={by + 14} textAnchor="middle" dominantBaseline="central" fontSize={13} fontWeight={900} fill="#fcd34d"
+                    stroke="rgba(0,0,0,0.85)" strokeWidth={3} paintOrder="stroke">
+                    💰 +{p.refund ?? 0}cr · {secsLeft.toFixed(0)}s
                   </text>
                 </g>
               );
@@ -1340,13 +1460,35 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
               </g>
             );
           })}
+
+          {/* Rubble from destroyed buildings. Own rubble is a tap target for
+              instant half-price rebuild (see build popup); enemy rubble only
+              arrives on live-vision tiles, same as pending jobs. */}
+          {rubbleList.map(rb => {
+            const isMine = rb.ownerId === myId;
+            const r = cellRect(rb.side, rb.gx, rb.gy, cols, rows);
+            return (
+              <g key={rb.id} pointerEvents="none" opacity={isMine ? 1 : 0.75}>
+                <rect x={r.x + 2} y={r.y + 2} width={r.w - 4} height={r.h - 4} rx={10}
+                  fill="rgba(0,0,0,0.45)"
+                  stroke={isMine ? '#fbbf24' : '#fb7185'} strokeWidth={2} strokeDasharray="7 5" />
+                <text x={r.cx} y={r.cy - 2} textAnchor="middle" dominantBaseline="central" fontSize={22}>🧱</text>
+                {isMine && (
+                  <text x={r.cx} y={r.y + r.h - 9} textAnchor="middle" fontSize={12} fontWeight={900} fill="#fcd34d"
+                    stroke="rgba(0,0,0,0.85)" strokeWidth={3} paintOrder="stroke">
+                    ♻️ rebuild
+                  </text>
+                )}
+              </g>
+            );
+          })}
         </svg>
 
         {/* ── Top HUD overlay ── */}
         <div style={{ position: 'absolute', top: 8, left: 8, right: 8, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'stretch', pointerEvents: 'none' }}>
           <div style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 12px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
             <div className="text-xs" style={{ fontWeight: 800, color: 'var(--amber-400)', fontSize: '1.05rem', lineHeight: 1.1 }}>💰 {myResources}</div>
-            <div className="text-xs text-muted" style={{ fontSize: '0.65rem' }}>+{myIncome}/s • {roomState.code}{((mc.buildSurge?.[myId] ?? 0) > now) && <span style={{ color: '#4ade80', fontWeight: 800 }}> • ⚡2x {Math.ceil(((mc.buildSurge?.[myId] ?? 0) - now) / 1000)}s</span>}</div>
+            <div className="text-xs text-muted" style={{ fontSize: '0.65rem' }}>+{myIncome}/s • {roomState.code}{((mc.buildSurge?.[myId] ?? 0) > now) && <span style={{ color: '#4ade80', fontWeight: 800 }}> • ⚡2x {Math.ceil(((mc.buildSurge?.[myId] ?? 0) - now) / 1000)}s</span>} • <span title="Render FPS · server updates/sec" style={{ color: fps == null ? undefined : fps >= 25 ? '#4ade80' : fps >= 15 ? '#fbbf24' : '#fb7185', fontWeight: 700 }}>{fps == null ? 'idle' : `${fps}fps`} · {ups}/s</span></div>
           </div>
           <div style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 10px', flex: 1, minWidth: 120 }}>
             <div className="text-xs" style={{ fontWeight: 800, fontSize: '0.65rem' }}>⭐ YOU {mySide === 'top' ? '🔼' : '🔽'} {myCore ? `${Math.ceil(myCore.coreHp!)}/${myCore.maxCoreHp}` : ''}</div>
@@ -1361,9 +1503,9 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             </div>
           </div>
           <div style={{ display: 'flex', gap: 6, pointerEvents: 'auto' }}>
-            <button type="button" onClick={() => setShowShieldGrid(v => !v)} title={showShieldGrid ? 'Hide shield grid effects' : 'Show shield grid effects'}
-              style={{ ...overlayBox, width: 40, height: 40, color: '#fff', fontSize: '1.1rem', fontWeight: 800, background: showShieldGrid ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.05)', border: showShieldGrid ? '1px solid rgba(74,222,128,0.4)' : 'var(--border)' }}>
-              🔷
+            <button type="button" onClick={() => setLowFx(v => !v)} title={lowFx ? 'Low FX mode ON — tap for full effects' : 'Full effects — tap for Low FX mode (smoother on weak hardware)'}
+              style={{ ...overlayBox, width: 40, height: 40, color: '#fff', fontSize: '1.1rem', fontWeight: 800, background: lowFx ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.05)', border: lowFx ? '1px solid rgba(74,222,128,0.4)' : 'var(--border)' }}>
+              {lowFx ? '⚡' : '✨'}
             </button>
             <button type="button" onClick={() => setHelpOpen(true)} title="How to play"
               style={{ ...overlayBox, width: 40, height: 40, color: '#fff', fontSize: '1.2rem', fontWeight: 800 }}>?</button>
@@ -1396,6 +1538,26 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             <button type="button" onClick={cancelTargeting}
               style={{ background: 'rgba(255,255,255,0.1)', border: '1px solid var(--border)', borderRadius: 8, color: '#fff', fontWeight: 800, padding: '4px 10px' }}>✖</button>
           </div>
+        )}
+        {/* Desperation-ready tooltip: tappable shortcut into aiming, with an
+            arrow pointing down toward the dock's ☢️ DESPERATION button. */}
+        {despTip && !isTargeting && !myDesperation.used && (
+          <button
+            type="button"
+            onClick={() => { setDespTip(false); startDesperationTargeting(); }}
+            title="Start aiming the desperation strike"
+            style={{
+              position: 'absolute', top: 118, left: '50%', transform: 'translateX(-50%)',
+              display: 'flex', alignItems: 'center', gap: 8,
+              background: 'rgba(40,8,14,0.92)', border: '2px solid rgba(244,63,94,0.8)',
+              borderRadius: 12, padding: '9px 14px', cursor: 'pointer',
+              color: '#fff', fontWeight: 800, fontSize: '0.85rem', whiteSpace: 'nowrap',
+              boxShadow: '0 0 24px rgba(244,63,94,0.55)', animation: 'mc-pulse 1.2s infinite',
+              zIndex: 60,
+            }}
+          >
+            <span>☢️ Desperation ready — tap to aim, then tap an enemy square 👆</span>
+          </button>
         )}
 
         {/* ── Launcher dock (toggleable horizontal/vertical) ── */}
@@ -1478,24 +1640,6 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                 <span>{myDesperation.unlocked ? (targetDesperation ? '☢️ AIMING…' : '☢️ DESPERATION') : '🔒 DESPERATION'}</span>
               </button>
             )}
-            {/* ── AUTO ALL: one tap flips every launcher's auto-load ── */}
-            {myLaunchers.length > 0 && (
-              <button
-                type="button"
-                onClick={() => onToggleAllAutobuild(!allAutobuild)}
-                title={allAutobuild ? 'AUTO ALL ON — tap to stop auto-loading everywhere' : 'AUTO ALL OFF — tap to auto-load on every launcher'}
-                style={{
-                  padding: dockCompact ? '5px 9px' : '7px 13px', borderRadius: 999, fontWeight: 800,
-                  fontSize: dockCompact ? '0.68rem' : '0.74rem', color: '#fff',
-                  display: 'flex', alignItems: 'center', gap: 5,
-                  background: allAutobuild ? 'rgba(74,222,128,0.24)' : 'rgba(255,255,255,0.05)',
-                  border: `1px solid ${allAutobuild ? 'rgba(74,222,128,0.75)' : 'var(--border)'}`,
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                <span>{allAutobuild ? '🤖 AUTO ALL' : '🤖 auto all'}</span>
-              </button>
-            )}
           </div>
           <div style={{ display: 'flex', gap: 6, pointerEvents: 'auto', justifyContent: dockVertical ? 'center' : 'flex-end', flexWrap: 'wrap', flexDirection: dockVertical ? 'column' : 'row' }}>
             {(['single', 'scatter'] as const).map(t => {
@@ -1563,15 +1707,6 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                   >
                     <span style={{ fontSize: dockCompact ? '0.95rem' : '1.1rem' }}>{l.launcherType === 'single' ? '🎯' : '💥'}</span>
                     <span style={{ flex: 1, textAlign: 'left', whiteSpace: 'nowrap' }}>Lv{l.level}•{'●'.repeat(stock)}{'○'.repeat(Math.max(0, maxStock - stock))}</span>
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); onToggleAutobuild(l.id); }}
-                      title={l.autobuild ? 'AUTO ON — tap to stop' : 'AUTO OFF — tap to auto-load'}
-                      aria-label={l.autobuild ? 'Disable auto-load' : 'Enable auto-load'}
-                      style={{ padding: dockCompact ? '1px 5px' : '2px 7px', borderRadius: 6, fontSize: dockCompact ? '0.6rem' : '0.66rem', fontWeight: 800, color: '#fff', background: l.autobuild ? 'rgba(74,222,128,0.25)' : 'rgba(255,255,255,0.06)', border: `1px solid ${l.autobuild ? 'rgba(74,222,128,0.6)' : 'var(--border)'}` }}
-                    >
-                      {l.autobuild ? 'A' : 'a'}
-                    </button>
                   </div>
                   <button
                     type="button"
@@ -1600,8 +1735,31 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
 
       {/* ── Build popup ── */}
       {buildCell && !buildCellBuilding && (
-        <Modal onClose={() => setBuildCell(null)} title={`🔨 Build (${buildCell.gx + 1}, ${buildCell.gy + 1})`}>
+        <Modal onClose={() => setBuildCell(null)} title={buildCellRubble?.ownerId === myId ? `🧱 Rubble (${buildCell.gx + 1}, ${buildCell.gy + 1})` : `🔨 Build (${buildCell.gx + 1}, ${buildCell.gy + 1})`}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {buildCellRubble?.ownerId === myId && (() => {
+              const cost = rebuildCostFor(buildCellRubble);
+              const afford = myResources >= cost;
+              const meta = BUILDING_META[buildCellRubble.type];
+              return (
+                <button
+                  type="button"
+                  onClick={() => { onRebuild(buildCellRubble.id); setBuildCell(null); }}
+                  disabled={!afford}
+                  title="Restore the destroyed building instantly at level 1 for half price — or pick anything below at normal cost/time"
+                  style={{
+                    padding: '12px', borderRadius: 'var(--radius-lg)', textAlign: 'center',
+                    background: afford ? 'rgba(251,191,36,0.12)' : 'rgba(255,255,255,0.03)',
+                    border: `2px solid ${afford ? 'rgba(251,191,36,0.6)' : 'var(--border)'}`,
+                    color: '#fff', opacity: afford ? 1 : 0.55, fontWeight: 800,
+                  }}
+                >
+                  <div style={{ fontSize: '1.6rem' }}>♻️ {meta.emoji}</div>
+                  <div style={{ fontSize: '0.9rem', margin: '4px 0' }}>Rebuild {meta.name} instantly (Lv1)</div>
+                  <div style={{ fontSize: '0.8rem', color: afford ? 'var(--amber-400)' : 'var(--rose-400)' }}>{cost} credits (half price){afford ? '' : ' — need more credits'}</div>
+                </button>
+              );
+            })()}
             {BUILD_CATEGORIES.map(cat => {
               const options = BUILD_OPTIONS.filter(o => o.category === cat.key);
               return (
@@ -1658,7 +1816,6 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             onSell={() => onSell(selected.id)}
             onCancelSell={() => onCancelSell(selected.id)}
             onLoad={() => onLoad({ launcherId: selected.id })}
-            onToggleAutobuild={() => onToggleAutobuild(selected.id)}
             onFire={() => startTargeting(selected.id)}
           />
         </Modal>
@@ -1669,12 +1826,13 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
         <Modal onClose={() => setHelpOpen(false)} title="❓ How to play">
           <div className="text-sm text-muted" style={{ lineHeight: 1.7, display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div>👆 <b>Tap an empty square</b> on your island to build (Generator +2/s, Shield 300 HP, Shield Healer 8/s). On touch screens, <b>long-press</b> instead — a quick tap only closes panels.</div>
+            <div>🧱 Destroyed buildings leave <b>rubble</b> — tap it to <b>rebuild instantly at half cost</b>, or build something else over it.</div>
             <div>🏠 <b>Tap any building</b> for stats, upgrades &amp; fire control. Gold ★ show its level.</div>
             <div>⭐ Your <b>Core pays +{coreIncome}/s</b> — destroy the enemy Core (4000 HP) to win!</div>
             <div>🛡️ Shields <b>fully block</b> blasts while charged (≈ 25 covered squares). Empty covered squares still drain the shield. Hide Generators inside!</div>
             <div>💚 Shield Healers fix <b>one shield at a time</b> (weakest first — green beam shows it).</div>
             <div>🚢 If supply ships are on, a freighter crosses the channel — <b>tap it first</b> for credits, a missile rain, or 2x build speed. Rewards scale up when behind!</div>
-            <div>🚀 <b>Load up to {MAX_STOCK} missiles</b> per launcher ({LOAD_SECONDS}s each, ＋ or AUTO), then <b>FIRE the volley</b> — or <b>🔥 ALL</b> of one type at once! 🤖 AUTO ALL flips every launcher at once.</div>
+            <div>🚀 <b>Launchers auto-load up to {MAX_STOCK} missiles</b> ({LOAD_SECONDS}s each) — just <b>FIRE the volley</b>, or <b>🔥 ALL</b> of one type at once!</div>
             <div>💥 <b>Scatter does the most total damage</b> — best shield-breaker. Single is precise.</div>
             <div>⏱ Buildings take time: <b>3s → 5s → 10s → 20s → 30s</b> by level. Build many in parallel!</div>
             <div>🖱 <b>Drag</b> to pan, <b>wheel/pinch</b> to zoom.</div>
@@ -1782,7 +1940,7 @@ function Modal({ title, onClose, children, compact }: { title: string; onClose: 
   );
 }
 
-function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendingUp, pendingSell, coverCount, healerCount, onUpgrade, onSell, onCancelSell, onLoad, onToggleAutobuild, onFire }: {
+function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendingUp, pendingSell, coverCount, healerCount, onUpgrade, onSell, onCancelSell, onLoad, onFire }: {
   b: MissileBuilding;
   isMine: boolean;
   myResources: number;
@@ -1796,7 +1954,6 @@ function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendin
   onSell: () => void;
   onCancelSell: () => void;
   onLoad: () => void;
-  onToggleAutobuild: () => void;
   onFire: () => void;
 }) {
   const rows: Array<[string, string]> = [];
@@ -1838,6 +1995,7 @@ function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendin
     rows.push(['🚀 Missile', `${b.launcherType} — ${b.missileDamage} dmg / ${b.missileCost}cr each`]);
     rows.push(['💥 Blast', blastTxt]);
     rows.push(['🔨 Build time', `${LOAD_SECONDS}s per missile (one at a time)`]);
+    rows.push(['🤖 Auto-load', 'Always on — reloads whenever affordable']);
     if (b.level < 5) rows.push(['⬆ Next level', `dmg ${tbl.dmg[b.level + 1]} • ${tbl.cost[b.level + 1]}cr/missile`]);
   } else if (b.type === 'core') {
     rows.push(['⭐ Core HP', `${Math.ceil(b.coreHp ?? 0)} / ${b.maxCoreHp}`]);
@@ -1924,21 +2082,6 @@ function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendin
             {stockFull ? `📦 Stockpile full (${maxStock}/${maxStock})` : broke ? `🔨 Build missile — need ${b.missileCost}cr` : `🔨 Build missile (${b.missileCost}cr)`}
           </button>
         )
-      )}
-      {isMine && b.type === 'launcher' && (
-        <button
-          type="button"
-          onClick={onToggleAutobuild}
-          title={b.autobuild ? 'AUTO ON — tap to stop auto-loading missiles' : 'AUTO OFF — tap to auto-load whenever affordable'}
-          style={{
-            width: '100%', marginBottom: 8, padding: '10px 12px', borderRadius: 'var(--radius-md)',
-            fontWeight: 800, fontSize: '0.9rem', color: '#fff',
-            background: b.autobuild ? 'rgba(74,222,128,0.18)' : 'rgba(255,255,255,0.04)',
-            border: `2px solid ${b.autobuild ? 'rgba(74,222,128,0.6)' : 'var(--border)'}`,
-          }}
-        >
-          {b.autobuild ? 'AUTO: ON (tap to stop)' : 'AUTO: OFF (tap to auto-load)'}
-        </button>
       )}
       {isMine && b.type === 'launcher' && (
         <button type="button" className="btn btn-full btn-rose" onClick={onFire} disabled={stock <= 0} style={{ padding: '10px', opacity: stock <= 0 ? 0.5 : 1 }}>

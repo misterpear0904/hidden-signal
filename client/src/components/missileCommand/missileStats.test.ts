@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { emptyStats, statsOf, totalIncome, formatDuration, matchDurationSec } from './MissileCommandStats';
+import { emptyStats, statsOf, totalIncome, formatDuration, matchDurationSec, incomeSeries } from './MissileCommandStats';
 import type { MissileCommandState } from '../../types/game';
 
 function mcWithStats(): MissileCommandState {
@@ -43,5 +43,26 @@ describe('missile post-game stats helpers', () => {
     const mc = mcWithStats();
     expect(matchDurationSec(mc)).toBe(60);
     expect(formatDuration(65)).toBe('1:05');
+  });
+
+  it('normalizes the income-rate series for the chart', () => {
+    const mc = mcWithStats();
+    expect(incomeSeries(mc)).toEqual([]);
+    expect(incomeSeries(null)).toEqual([]);
+    mc.incomeHistory = { samples: [[0, 5, 5], [60, 12.5, 7], [120, 20, 7]] };
+    expect(incomeSeries(mc)).toEqual([
+      { t: 0, top: 5, bottom: 5 },
+      { t: 60, top: 12.5, bottom: 7 },
+      { t: 120, top: 20, bottom: 7 },
+    ]);
+  });
+
+  it('drops malformed samples and clamps negatives', () => {
+    const mc = mcWithStats();
+    mc.incomeHistory = { samples: [[10, 8, 6], ['x', 1, 2] as unknown as [number, number, number], [20, -4, 6], [30]] as unknown as Array<[number, number, number]> };
+    expect(incomeSeries(mc)).toEqual([
+      { t: 10, top: 8, bottom: 6 },
+      { t: 20, top: 0, bottom: 6 },
+    ]);
   });
 });

@@ -69,9 +69,8 @@ export interface SocketHookReturn {
   upgradeMissileBuilding: (roomCode: string, action: MissileUpgradeAction) => void;
   sellMissileBuilding: (roomCode: string, action: MissileUpgradeAction) => void;
   cancelMissileSell: (roomCode: string, action: MissileUpgradeAction) => void;
+  rebuildRubble: (roomCode: string, rubbleId: string) => void;
   loadMissile: (roomCode: string, action: MissileLoadAction) => void;
-  toggleAutobuild: (roomCode: string, action: MissileLoadAction) => void;
-  toggleAllAutobuild: (roomCode: string, enabled: boolean) => void;
   launchMissile: (roomCode: string, action: MissileLaunchAction) => void;
   launchMissileType: (roomCode: string, action: MissileTypeLaunchAction) => void;
   setKeepFire: (roomCode: string, action: MissileKeepFireAction) => void;
@@ -103,6 +102,9 @@ export function useSocket(): SocketHookReturn {
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const serverSleepingRef = useRef(false);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Last server bootId seen. A changed bootId means the process restarted and
+  // every in-memory room is gone — stale room screens must never look alive.
+  const bootIdRef = useRef<string | null>(null);
 
   // Restore a session after an accidental refresh — helpers in
   // utils/roomSession (unit-tested). sessionStorage survives reloads but is
@@ -336,9 +338,31 @@ export function useSocket(): SocketHookReturn {
       setRoundReveal(null);
       setRoomCode(code ?? '');
       clearSession();
+      // Landing on the landing page must say why — otherwise an expiry
+      // looks identical to never having joined.
+      setError(`Room ${code} no longer exists (${reason}). Create a new room.`);
+    };
+    const onServerHello = ({ bootId }: { bootId: string }) => {
+      if (!bootId) return;
+      if (bootIdRef.current && bootIdRef.current !== bootId) {
+        console.log('[socket] server restarted (bootId changed), dropping stale room');
+        if (roomCodeRef.current) {
+          setError('Server restarted — your room was lost. Create a new room.');
+        }
+        setInRoom(false);
+        setRoomState(null);
+        setMyRole(null);
+        setRoundReveal(null);
+        setRoomCode('');
+        roomCodeRef.current = '';
+        setRoomExpired(null);
+        clearSession();
+      }
+      bootIdRef.current = bootId;
     };
 
     s.on('connect', onConnect);
+    s.on('server-hello', onServerHello);
     s.on('disconnect', onDisconnect);
     s.on('connect_error', onConnectError);
     s.on('room-joined', onRoomJoined);
@@ -358,6 +382,7 @@ export function useSocket(): SocketHookReturn {
       }
       document.removeEventListener('visibilitychange', onVisibilityChange);
       s.off('connect', onConnect);
+      s.off('server-hello', onServerHello);
       s.off('disconnect', onDisconnect);
       s.off('connect_error', onConnectError);
       s.off('room-joined', onRoomJoined);
@@ -514,6 +539,10 @@ export function useSocket(): SocketHookReturn {
     socketRef.current?.emit('cancel-missile-sell', { roomCode: code, buildingId: action.buildingId });
   }, []);
 
+  const rebuildRubble = useCallback((code: string, rubbleId: string) => {
+    socketRef.current?.emit('rebuild-rubble', { roomCode: code, rubbleId });
+  }, []);
+
   const launchMissile = useCallback((code: string, action: MissileLaunchAction) => {
     socketRef.current?.emit('launch-missile', { roomCode: code, action });
   }, []);
@@ -528,14 +557,6 @@ export function useSocket(): SocketHookReturn {
 
   const loadMissile = useCallback((code: string, action: MissileLoadAction) => {
     socketRef.current?.emit('load-missile', { roomCode: code, launcherId: action.launcherId });
-  }, []);
-
-  const toggleAutobuild = useCallback((code: string, action: MissileLoadAction) => {
-    socketRef.current?.emit('toggle-autobuild', { roomCode: code, launcherId: action.launcherId });
-  }, []);
-
-  const toggleAllAutobuild = useCallback((code: string, enabled: boolean) => {
-    socketRef.current?.emit('toggle-all-autobuild', { roomCode: code, enabled });
   }, []);
 
   const setKeepFire = useCallback((code: string, action: MissileKeepFireAction) => {
@@ -606,9 +627,8 @@ export function useSocket(): SocketHookReturn {
     upgradeMissileBuilding,
     sellMissileBuilding,
     cancelMissileSell,
+    rebuildRubble,
     loadMissile,
-    toggleAutobuild,
-    toggleAllAutobuild,
     launchMissile,
     launchMissileType,
     setKeepFire,

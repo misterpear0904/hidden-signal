@@ -168,7 +168,7 @@ export interface MissileBuilding {
   stock?: number;
   maxStock?: number;
   loadingUntil?: number; // timestamp — a missile finishes building at this time
-  autobuild?: boolean; // auto-load whenever stock isn't full and affordable
+  autobuild?: boolean; // legacy flag — always true now (auto-load has no toggle)
   cooldownMs?: number;
   lastFiredAt?: number;
   
@@ -219,6 +219,17 @@ export interface ConstructionSite {
   refund?: number; // credits paid out when kind === 'sell' completes
 }
 
+export interface MissileRubble {
+  id: string;
+  side: PlayerSide;
+  gx: number;
+  gy: number;
+  ownerId: string;
+  type: MissileBuildingType; // what stood here — rebuild restores this instantly
+  launcherType?: MissileLauncherType;
+  createdAt: number;
+}
+
 export interface MissilePlayerStats {
   damageDealt: number;
   shieldAbsorbedByEnemy: number;
@@ -247,6 +258,9 @@ export interface MissileCommandState {
   coreIncomePerSec?: number;
   buildings: Record<string, MissileBuilding>;
   pending: Record<string, ConstructionSite>;
+  // Rubble from destroyed buildings. Tap your own to rebuild instantly
+  // (same type, level 1, half cost) or build something else over it.
+  rubble?: Record<string, MissileRubble>;
   missiles: MissileInFlight[];
   keepFire?: Record<string, KeepFireLock | null>;
   desperation?: Record<string, { unlocked: boolean; used: boolean }>;
@@ -254,6 +268,10 @@ export interface MissileCommandState {
   gameStartTime: number;
   gameEndTime?: number | null;
   stats?: Record<string, MissilePlayerStats>;
+  // Income-rate history for the post-game chart (score screen only — the
+  // server withholds it during live play so it can't leak through fog).
+  // samples: [secondsSinceStart, topIncomePerSec, bottomIncomePerSec].
+  incomeHistory?: { samples: Array<[number, number, number]>; lastSampleAt?: number } | null;
   lastEconomyTick: number;
   winnerId: string | null;
   winReason: 'core_destroyed' | 'draw' | 'timeout' | null;

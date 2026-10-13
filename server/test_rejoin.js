@@ -72,6 +72,21 @@ test('rejoin clears pending deletion', () => {
   assert.ok(rooms.has(room.code), 'room survives because someone came back');
 });
 
+test('sweep reports deletions with occupants and reason', () => {
+  const room = twoPlayerLobby();
+  playerDisconnected('sock-alpha');
+  playerDisconnected('sock-bravo');
+  const deleted = sweepInactiveRooms(Date.now() + REJOIN_GRACE_MS + 1000);
+  assert.equal(deleted.length, 1, 'one deletion reported');
+  assert.equal(deleted[0].code, room.code);
+  assert.equal(deleted[0].reason, 'abandoned');
+  assert.deepEqual(
+    deleted[0].occupants.map(o => o.id).sort(),
+    ['sock-alpha', 'sock-bravo'].sort(),
+  );
+  assert.ok(!rooms.has(room.code), 'room actually deleted');
+});
+
 test('missile mid-game rejoin remaps sides, resources, and buildings', () => {
   const room = twoPlayerLobby();
   selectGame(room.code, 'missile-command');

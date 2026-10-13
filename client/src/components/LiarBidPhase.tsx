@@ -30,7 +30,9 @@ export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) 
 
   if (!liar) return null;
   const myDice = sortDiceAsc(liar.dice[myId] ?? []);
-  const opponent = roomState.players.find(p => p.id !== myId);
+  const toActPlayer = roomState.players.find(p => p.id === liar.toActId);
+  const isTwoPlayer = roomState.players.length === 2;
+  const opponent = isTwoPlayer ? roomState.players.find(p => p.id !== myId) : undefined;
   const myTurn = liar.toActId === myId;
   const minQty = lastBid ? lastBid.qty : 1;
   const validBid = qty >= minQty && qty <= totalDice && face >= 1 && face <= 6 &&
@@ -53,7 +55,7 @@ export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) 
             Liar's <span className="gradient-purple">Dice</span>
           </h1>
           <p className="text-muted text-sm mt-8">
-            {myTurn ? 'Your move — raise the bid or call it!' : `Waiting for ${opponent?.name ?? 'opponent'}…`}
+            {myTurn ? 'Your move — raise the bid or call it!' : `Waiting for ${toActPlayer?.name ?? 'the next player'}…`}
           </p>
           {roomState.timerEnd && (
             <div style={{ maxWidth: 400, margin: '16px auto 0' }}>
@@ -71,7 +73,9 @@ export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) 
             {myDice.map((d, i) => <PipDice key={i} value={d} size={myDice.length > 5 ? 44 : 56} />)}
           </div>
           <div className="text-xs text-muted mt-12">
-            {opponent?.name} holds <strong>{liar.diceEach} hidden dice</strong> · {totalDice} total in play
+            {isTwoPlayer && opponent
+              ? <>{opponent.name} holds <strong>{liar.diceEach} hidden dice</strong> · {totalDice} total in play</>
+              : <>{roomState.players.length - 1} opponents hold <strong>{liar.diceEach} hidden dice each</strong> · {totalDice} total in play</>}
           </div>
         </div>
 
@@ -95,7 +99,7 @@ export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) 
         {/* Actions */}
         <div className="glass p-20" style={{ borderRadius: 'var(--radius-xl)' }}>
           {!myTurn ? (
-            <p className="text-muted text-sm text-center" style={{ fontStyle: 'italic' }}>Opponent is thinking…</p>
+            <p className="text-muted text-sm text-center" style={{ fontStyle: 'italic' }}>{toActPlayer ? `${toActPlayer.name} is thinking…` : 'Opponent is thinking…'}</p>
           ) : (
             <>
               <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', marginBottom: 14 }}>
