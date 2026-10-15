@@ -1,11 +1,13 @@
 // missileCommand/MissileCommandGame.tsx — SILO'D UI for Missile Command.
 // Full-screen grid map with pan/zoom + touch support. Remove this folder to remove the game.
 //
-// Interaction model:
+// Interaction model (mouse, pen, AND touch — one tap does it):
 // - Tap an empty square on YOUR island → build popup with all options.
 // - Tap any building → dialog with its stats + upgrade (own) / load / fire.
 // - Tap your rubble (🧱) → build popup + instant same-type rebuild at half cost.
 // - FIRE (volley) or ALL-type → targeting banner → tap an enemy square.
+// Taps resolve at the touchdown point and never fire from pinches; a
+// 262ms hold opens the same targets for fingers that linger.
 
 import { memo, useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import type {
@@ -308,6 +310,181 @@ export const MotionLayer = memo(function MotionLayer({ missiles, supplyShip, top
   );
 });
 
+// Per-building memoized node. Broadcasts arrive up to ~7Hz with fresh
+// object identities, and without this the whole board's VDOM (~5k nodes
+// late-game) rebuilds on every tick. The parent passes a signature covering
+// every rendered field (clocks quantized to whole seconds, so load bars
+// still step at 1Hz); unchanged buildings skip reconciliation entirely.
+const BuildingNode = memo(function BuildingNode({ b, sig, isMine, isSel, vis, cols, rows, reducedMotion, fxLite, nowMs }: {
+  b: MissileBuilding;
+  sig: string;
+  isMine: boolean;
+  isSel: boolean;
+  vis: 'live' | 'stale';
+  cols: number;
+  rows: number;
+  reducedMotion: boolean;
+  fxLite: boolean;
+  nowMs: number;
+}) {
+  void sig; // compare-only (see areEqual below); render reads the props
+  const meta = BUILDING_META[b.type];
+  const r = cellRect(b.side, b.gx, b.gy, cols, rows);
+  const hpPct = b.type === 'core' ? (b.coreHp! / b.maxCoreHp!) : (b.hp! / b.maxHp!);
+  const shieldPct = (b.type === 'shield' || b.type === 'shield_heavy') ? (b.shieldHp! / b.maxShieldHp!) : 1;
+  const emoji = b.type === 'launcher' ? (b.launcherType === 'single' ? '🎯' : '💥') : b.type === 'core' ? '⭐' : meta.emoji;
+  // A remembered (lapsed) tile is drawn dim + desaturated so it
+  // reads as "this is what I last knew", not "this is live".
+  const stale = vis === 'stale';
+  return (
+    <g key={b.id} pointerEvents="none" opacity={stale ? 0.55 : 1}
+      filter={stale ? 'saturate(0.35)' : undefined}>
+      {isSel && (
+        <rect x={r.x - 2} y={r.y - 2} width={r.w + 4} height={r.h + 4} rx={12}
+          fill="none" stroke="#fff" strokeWidth={3.5} strokeDasharray="10 7" />
+      )}
+      {isSel && ((b.type === 'shield' || b.type === 'shield_heavy') || b.type === 'healer') && (
+        <g pointerEvents="none">
+          <circle cx={r.cx} cy={r.cy} r={Math.min(r.w, r.h) * 0.42} fill="none"
+            stroke={(b.type === 'shield' || b.type === 'shield_heavy') ? '#7dd3fc' : '#86efac'} strokeWidth={3}>
+            {!reducedMotion && (
+              <>
+                <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.42};${Math.min(r.w, r.h) * 0.62}`} dur="1.2s" repeatCount="indefinite" />
+                <animate attributeName="opacity" values="0.9;0" dur="1.2s" repeatCount="indefinite" />
+              </>
+            )}
+          </circle>
+          <circle cx={r.cx} cy={r.cy} r={Math.min(r.w, r.h) * 0.42} fill="none"
+            stroke="#ffffff" strokeWidth={1.5}>
+            {!reducedMotion && (
+              <>
+                <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.42};${Math.min(r.w, r.h) * 0.62}`} dur="1.2s" begin="-0.6s" repeatCount="indefinite" />
+                <animate attributeName="opacity" values="0.7;0" dur="1.2s" begin="-0.6s" repeatCount="indefinite" />
+              </>
+            )}
+          </circle>
+        </g>
+      )}
+      {/* Shield generator: animated energy core + pulsing rings */}
+      {(b.type === 'shield' || b.type === 'shield_heavy') && (
+        <g pointerEvents="none">
+          {/* Outer pulse rings (only when charged) */}
+          {shieldPct > 0 && (
+            <>
+              <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.38} fill="none"
+                stroke={b.type === 'shield_heavy' ? '#60a5fa' : '#38bdf8'} strokeWidth={1.5} opacity={0.6}>
+                {!reducedMotion && !fxLite && (
+                  <>
+                    <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.38};${Math.min(r.w, r.h) * 0.52}`} dur="2s" repeatCount="indefinite" />
+                    <animate attributeName="opacity" values="0.6;0" dur="2s" repeatCount="indefinite" />
+                  </>
+                )}
+              </circle>
+              <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.38} fill="none"
+                stroke={b.type === 'shield_heavy' ? '#93c5fd' : '#7dd3fc'} strokeWidth={1} opacity={0.4}>
+                {!reducedMotion && !fxLite && (
+                  <>
+                    <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.38};${Math.min(r.w, r.h) * 0.52}`} dur="2s" begin="-1s" repeatCount="indefinite" />
+                    <animate attributeName="opacity" values="0.4;0" dur="2s" begin="-1s" repeatCount="indefinite" />
+                  </>
+                )}
+              </circle>
+            </>
+          )}
+          {/* Energy core with radial gradient */}
+          <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.32}
+            fill={`url(#${b.type === 'shield_heavy' ? 'coreGrad-Heavy' : 'coreGrad-Regular'})`}
+            stroke={shieldPct <= 0.15 ? '#f43f5e' : (isMine ? meta.color : '#fb7185')} strokeWidth={2.5} />
+          {/* Inner glow pulse */}
+          <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.28} fill="none"
+            stroke={b.type === 'shield_heavy' ? '#93c5fd' : '#7dd3fc'} strokeWidth={1.5} opacity={0.7}>
+            {!reducedMotion && !fxLite && (
+              <>
+                <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.28};${Math.min(r.w, r.h) * 0.35}`} dur="1.5s" repeatCount="indefinite" />
+                <animate attributeName="opacity" values="0.7;0.2" dur="1.5s" repeatCount="indefinite" />
+              </>
+            )}
+          </circle>
+          {/* Emoji overlay */}
+          <text x={r.cx} y={r.cy + 2} textAnchor="middle" dominantBaseline="central" fontSize={26}>{emoji}</text>
+        </g>
+      )}
+      {!(b.type === 'shield' || b.type === 'shield_heavy') && (
+        <g pointerEvents="none">
+          <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.32} fill={isMine ? 'rgba(0,0,0,0.55)' : 'rgba(120,0,0,0.55)'} stroke={isMine ? meta.color : '#fb7185'} strokeWidth={2.5} />
+          <text x={r.cx} y={r.cy + 2} textAnchor="middle" dominantBaseline="central" fontSize={26}>{emoji}</text>
+        </g>
+      )}
+      {(b.type === 'shield' || b.type === 'shield_heavy') && shieldPct <= 0.1 && (
+        <text x={r.cx} y={r.cy - 14} textAnchor="middle" dominantBaseline="central"
+          fontSize={18} fontWeight={800} fill="#f43f5e"
+          stroke="rgba(0,0,0,0.9)" strokeWidth={3.5} paintOrder="stroke">
+          ⚠️
+        </text>
+      )}
+      {b.type !== 'core' && (
+        <text x={r.cx} y={r.y + r.h - 7} textAnchor="middle" fontSize={16} fontWeight={900}
+          stroke="rgba(0,0,0,0.85)" strokeWidth={3} paintOrder="stroke" letterSpacing={1}>
+          <tspan fill="#fbbf24">{'★'.repeat(b.level)}</tspan>
+          <tspan fill="rgba(255,255,255,0.35)">{'☆'.repeat(5 - b.level)}</tspan>
+        </text>
+      )}
+      {/* HP bar */}
+      <rect x={r.x + 6} y={r.y + 4} width={r.w - 12} height={6} rx={3} fill="rgba(0,0,0,0.65)" />
+      <rect x={r.x + 6} y={r.y + 4} width={(r.w - 12) * Math.max(0, Math.min(1, hpPct))} height={6} rx={3}
+        fill={hpPct > 0.5 ? '#4ade80' : hpPct > 0.25 ? '#fbbf24' : '#f43f5e'} />
+      {/* Shield pool bar — segmented energy bar */}
+      {(b.type === 'shield' || b.type === 'shield_heavy') && (
+        <g>
+          <rect x={r.x + 6} y={r.y + 12} width={r.w - 12} height={8} rx={4} fill="rgba(0,0,0,0.7)" stroke="rgba(255,255,255,0.1)" strokeWidth={0.5} />
+          {/* Segments */}
+          {[1,2,3,4,5,6,7,8].map((seg, i) => {
+            const segPct = (i + 1) / 8;
+            const active = shieldPct >= segPct - 0.05;
+            const isHeavy = b.type === 'shield_heavy';
+            return (
+              <rect key={seg} x={r.x + 7 + i * ((r.w - 14) / 8)} y={r.y + 13}
+                width={(r.w - 14) / 8 - 1.5} height={6} rx={2}
+                fill={active
+                  ? (isHeavy
+                      ? (segPct <= 0.3 ? '#60a5fa' : segPct <= 0.6 ? '#3b82f6' : '#2563eb')
+                      : (segPct <= 0.3 ? '#38bdf8' : segPct <= 0.6 ? '#0ea5e9' : '#0369a1'))
+                  : 'rgba(255,255,255,0.08)'}
+                opacity={active ? 1 : 0.3}
+                filter={!reducedMotion && !fxLite && active && shieldPct > segPct - 0.05 && shieldPct < segPct + 0.05 && shieldPct < 0.99 ? 'url(#glow-Regular)' : undefined}>
+                {active && !reducedMotion && !fxLite && shieldPct > segPct - 0.05 && shieldPct < segPct + 0.05 && shieldPct < 0.99 && (
+                  <animate attributeName="opacity" values="1;0.6" dur="0.8s" repeatCount="indefinite" />
+                )}
+              </rect>
+            );
+          })}
+        </g>
+      )}
+      {/* stock badge + missile build progress for own launchers */}
+      {b.type === 'launcher' && isMine && (((b.loadingUntil ?? 0) > nowMs) || (b.stock ?? 0) > 0) && (() => {
+        const loading = (b.loadingUntil ?? 0) > nowMs;
+        const loadPct = loading ? Math.min(1, Math.max(0, 1 - (b.loadingUntil! - nowMs) / (LOAD_SECONDS * 1000))) : 0;
+        return (
+          <g>
+            {!loading && (b.stock ?? 0) > 0 && (
+              <text x={r.x + r.w - 8} y={r.y + 18} textAnchor="end" fontSize={15}>
+                {`🚀${b.stock ?? 0}`}
+              </text>
+            )}
+            {loading && (
+              <g>
+                <rect x={r.x + 6} y={r.y + 12} width={r.w - 12} height={5} rx={2.5} fill="rgba(0,0,0,0.65)" />
+                <rect x={r.x + 6} y={r.y + 12} width={(r.w - 12) * loadPct} height={5} rx={2.5}
+                  fill="#fbbf24" />
+              </g>
+            )}
+          </g>
+        );
+      })()}
+    </g>
+  );
+}, (p, n) => p.sig === n.sig);
+
 export default function MissileCommandGame({ roomState, myId, isHost, onBuild, onUpgrade, onSell, onCancelSell, onRebuild, onLoad, onLaunch, onLaunchType, onSetKeepFire, onFireDesperation, onClaimSupplyShip, onPlayAgain }: Props) {
   const mc = roomState.missileCommandState;
   const svgRef = useRef<SVGSVGElement>(null);
@@ -347,9 +524,20 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   const [dockVertical, setDockVertical] = useState(true);
   // Low-FX mode: strips decorative rendering game-wide (coverage hex
   // overlays, glow filters, beam particles, pulse SMIL) for smoothness on
-  // weak hardware. Off by default — full effects. Auto lite-FX (fxLite
-  // below) still kicks in on busy boards regardless of this toggle.
-  const [lowFx, setLowFx] = useState(false);
+  // weak hardware. Full effects unless a weak device is detected or the
+  // toggle is tapped. Auto lite-FX (fxLite below) still kicks in on busy
+  // boards regardless of this toggle.
+  // Weak-device sniff: coarse pointer + few cores or little RAM. SSR-safe
+  // (unknown environment counts as full-power desktop).
+  const weakDevice = useMemo(() => {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+    const coarse = !!window.matchMedia?.('(pointer: coarse)').matches;
+    const nav = navigator as Navigator & { hardwareConcurrency?: number; deviceMemory?: number };
+    const cores = nav.hardwareConcurrency ?? 8;
+    const ram = nav.deviceMemory ?? 8;
+    return coarse && (cores <= 4 || ram <= 4);
+  }, []);
+  const [lowFx, setLowFx] = useState(weakDevice);
   // Long-press for mobile build menu (tap selects, long-press opens build)
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const LONG_PRESS_MS = 262; // ms to hold for build menu (25% under the old 350ms so it opens faster)
@@ -363,12 +551,13 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   );
   // Slow clock for transient UI (fog expiry, countdowns): the motion layer
   // below ticks itself while missiles/flashes/ship move, so without this
-  // every countdown freezes whenever the sky is empty.
+  // every countdown freezes whenever the sky is empty. Low-FX halves the
+  // cadence — countdowns go 1Hz instead of 2Hz, worth it on weak GPUs.
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => setNowTick(Date.now()), 500);
+    const id = setInterval(() => setNowTick(Date.now()), lowFx ? 1000 : 500);
     return () => clearInterval(id);
-  }, []);
+  }, [lowFx]);
   // ── Perf readout: render FPS (from the motion layer, ~1/sec while busy)
   // + server updates/sec (state broadcasts received). Decays to idle text
   // when motion stops so it never shows a stale number.
@@ -405,6 +594,10 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     pointers: new Map<number, { x: number; y: number; downX: number; downY: number; downT: number; moved: boolean; tol: number }>(),
     pinchDist: 0,
     pinchZoom: 1,
+    // True once a second finger joins: the gesture is a pinch, never a tap.
+    // Lifts from pinches must not open/close anything. Reset on the next
+    // fresh (zero-pointer) press.
+    hadMulti: false,
     // SVG client rect captured on the first move of a gesture. getBoundingClientRect
     // forces layout and this path runs ~60x/sec while panning, so it's read
     // once instead. Cleared when the last pointer lifts.
@@ -413,8 +606,15 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   // Set when a long-press has already handled a gesture, so the pointer-up
   // that follows must NOT also run tap logic (it would immediately close the
   // build menu the long-press just opened — the "flash then vanish" bug).
+  // Scoped to the pressing pointer: a second finger's lift (or a duplicate
+  // up+cancel pair, which cheap digitizers emit for one lift) must never
+  // consume another pointer's guard — that was the flicker.
   const longPressFiredRef = useRef(false);
-  const TAP_TOL = 12; // px total travel allowed for a touch tap
+  const longPressPidRef = useRef<number | null>(null);
+  // Last pointer whose own lift was swallowed by the guard, with a short
+  // window: swallows the duplicate cancel/up echo of the same lift.
+  const swallowedPidRef = useRef<{ id: number; at: number } | null>(null);
+  const TAP_TOL = 18; // px total travel allowed for a touch tap (tremor-tolerant)
   const TAP_MAX_MS = 600;
   // Grid dims live up here (not after the loading guard below): coverCache
   // and the memo chain need them on every render, including mc==null
@@ -650,8 +850,13 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     setTargetDesperation(false);
   }
 
-  function handleTap(wx: number, wy: number, isTouch: boolean) {
+  // Tap = quick + still, resolved at the TOUCHDOWN point (not liftoff):
+  // drift inside tolerance would otherwise open the neighbouring tile.
+  // Pinches never tap. Long-press opens the same targets for holds.
+  function handleTap(clientX: number, clientY: number) {
     if (!mySide) return;
+    const w = toWorld(clientX, clientY);
+    const wx = w.x, wy = w.y;
     // Neutral supply freighter first: tapping it claims the payout for
     // whoever taps first. Generous radius — it's a small moving target.
     const freighter = mc?.supplyShip;
@@ -689,18 +894,9 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
       return;
     }
 
-    // 2. On touch, opening anything on your own island is LONG-PRESS only.
-    //    A plain tap just closes whatever was open — applied to buildings and
-    //    empty cells alike, so the gesture never depends on what's under the
-    //    finger (previously tap opened buildings while long-press opened empty
-    //    cells, so each gesture was dead for half the island).
-    if (isTouch) {
-      setBuildCell(null);
-      setSelectedId(null);
-      return;
-    }
-
-    // 3. Mouse/pen — tap to open.
+    // 2. Tap to open: building panel, or build menu on own empty/rubble
+    //    cells. Anything else (enemy side, water, fog-hidden) closes.
+    //    Same gesture for mouse, pen, and touch.
     const b = byCell.get(`${cell.side}:${cell.gx}:${cell.gy}`);
     if (b) {
       // Fog: an enemy building without live vision can't be inspected —
@@ -729,8 +925,11 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   function onPointerDown(e: React.PointerEvent) {
     e.preventDefault();
     const g = gestureRef.current;
-    // A new gesture starts clean — any previous long-press has been consumed.
-    longPressFiredRef.current = false;
+    // A new press starts clean for ITS pointer id only — never wipe another
+    // pointer's long-press guard (that was the flicker: finger B landing
+    // disarmed finger A's just-opened menu).
+    if (swallowedPidRef.current?.id === e.pointerId) swallowedPidRef.current = null;
+    if (g.pointers.size === 0) g.hadMulti = false;
     g.pointers.set(e.pointerId, {
       x: e.clientX, y: e.clientY,
       downX: e.clientX, downY: e.clientY,
@@ -739,7 +938,9 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     });
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
     if (g.pointers.size === 2) {
-      // Pinch starting — any pending long-press must not fire.
+      // Second finger: this gesture is a pinch now — never a tap, and any
+      // pending long-press must not fire.
+      g.hadMulti = true;
       if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null; }
       const [a, b] = [...g.pointers.values()];
       g.pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
@@ -752,12 +953,16 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
       if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
       // Capture coordinates NOW — the React synthetic event may be recycled
       // by the time the timer fires.
-      const cx = e.clientX, cy = e.clientY;
+      const cx = e.clientX, cy = e.clientY, pid = e.pointerId;
       longPressTimerRef.current = setTimeout(() => {
         longPressTimerRef.current = null;
+        // Finger already gone (cancel arrived first) — never open for a
+        // dead press, or the next tap just closes a phantom menu (flicker).
+        if (!g.pointers.has(pid)) return;
         // Consume the gesture so the pointer-up that follows can't also
         // fire a tap and close the menu we're about to open.
         longPressFiredRef.current = true;
+        longPressPidRef.current = pid;
         const w = toWorld(cx, cy);
         const cell = worldToCell(w.x, w.y, cols, rows);
         if (!cell || cell.side !== mySide) return;
@@ -819,15 +1024,24 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     // Gesture over — drop the cached rect so the next one re-measures.
     if (g.pointers.size === 0) g.rect = null;
     // A long-press already acted on this gesture (opened the build menu).
-    // Its pointer-up must not also count as a tap, or the menu closes itself.
-    if (longPressFiredRef.current) { longPressFiredRef.current = false; return; }
+    // Only ITS pointer's lift is swallowed — any other pointer (or the
+    // duplicate up/cancel echo of the same lift, within 500ms) falls through
+    // to normal tap evaluation instead of eating the guard.
+    if (longPressFiredRef.current && longPressPidRef.current === e.pointerId) {
+      longPressFiredRef.current = false;
+      longPressPidRef.current = null;
+      swallowedPidRef.current = { id: e.pointerId, at: Date.now() };
+      return;
+    }
+    const sw = swallowedPidRef.current;
+    if (sw && sw.id === e.pointerId && Date.now() - sw.at < 500) return;
+    if (g.hadMulti) return; // pinch lifts never tap (no phantom opens/closes)
     if (!me || me.moved || Date.now() - me.downT >= TAP_MAX_MS) return;
     // Tap only if every REMAINING finger is also still (resting thumbs OK,
     // real pinches involve two moving fingers).
     const othersStill = [...g.pointers.values()].every(p => !p.moved);
     if (!othersStill && g.pointers.size > 0) return;
-    const w = toWorld(e.clientX, e.clientY);
-    handleTap(w.x, w.y, e.pointerType === 'touch');
+    handleTap(me.downX, me.downY);
   }
 
   function startTargeting(launcherId: string) {
@@ -1241,167 +1455,40 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             );
           })()}
 
-          {/* Buildings */}
+          {/* Buildings — per-node memoized (BuildingNode skips unchanged
+              buildings; broadcasts arrive ~7Hz with fresh object
+              identities, so a naive map rebuilds ~5k VDOM nodes/tick). */}
           {buildings.map(b => {
-            const meta = BUILDING_META[b.type];
-            const r = cellRect(b.side, b.gx, b.gy, cols, rows);
             const isMine = b.ownerId === myId;
             const isSel = selectedId === b.id;
-            const hpPct = b.type === 'core' ? (b.coreHp! / b.maxCoreHp!) : (b.hp! / b.maxHp!);
-            const shieldPct = (b.type === 'shield' || b.type === 'shield_heavy') ? (b.shieldHp! / b.maxShieldHp!) : 1;
-            const emoji = b.type === 'launcher' ? (b.launcherType === 'single' ? '🎯' : '💥') : b.type === 'core' ? '⭐' : meta.emoji;
-            // Fog of war: hide enemy buildings I have no vision of (cores always show).
+            // Fog of war: hide enemy buildings I have no vision of (cores are
+            // seeded permanently visible by the server, so this matches).
             const vis = isMine ? 'live' : visionOf(b.gx, b.gy);
             if (vis === 'hidden') return null;
-            // A remembered (lapsed) tile is drawn dim + desaturated so it
-            // reads as "this is what I last knew", not "this is live".
-            const stale = vis === 'stale';
+            // Signature covers every rendered field; clocks quantized to
+            // whole seconds so load bars still step at 1Hz.
+            const sig = JSON.stringify([
+              b.id, b.side, b.gx, b.gy, b.type, b.launcherType ?? '', b.level,
+              Math.ceil(b.hp ?? 0), b.maxHp, Math.ceil(b.coreHp ?? 0), b.maxCoreHp,
+              Math.ceil(b.shieldHp ?? 0), b.maxShieldHp, b.stock ?? 0, b.maxStock ?? 3,
+              Math.floor((b.loadingUntil ?? 0) / 1000), Math.floor(now / 1000),
+              isMine ? 1 : 0, isSel ? 1 : 0, vis,
+              reducedMotion ? 1 : 0, fxLite ? 1 : 0, cols, rows,
+            ]);
             return (
-              <g key={b.id} pointerEvents="none" opacity={stale ? 0.55 : 1}
-                filter={stale ? 'saturate(0.35)' : undefined}>
-                {isSel && (
-                  <rect x={r.x - 2} y={r.y - 2} width={r.w + 4} height={r.h + 4} rx={12}
-                    fill="none" stroke="#fff" strokeWidth={3.5} strokeDasharray="10 7" />
-                )}
-                    {isSel && ((b.type === 'shield' || b.type === 'shield_heavy') || b.type === 'healer') && (
-                      <g pointerEvents="none">
-                        <circle cx={r.cx} cy={r.cy} r={Math.min(r.w, r.h) * 0.42} fill="none"
-                          stroke={(b.type === 'shield' || b.type === 'shield_heavy') ? '#7dd3fc' : '#86efac'} strokeWidth={3}>
-                          {!reducedMotion && (
-                            <>
-                              <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.42};${Math.min(r.w, r.h) * 0.62}`} dur="1.2s" repeatCount="indefinite" />
-                              <animate attributeName="opacity" values="0.9;0" dur="1.2s" repeatCount="indefinite" />
-                            </>
-                          )}
-                        </circle>
-                        <circle cx={r.cx} cy={r.cy} r={Math.min(r.w, r.h) * 0.42} fill="none"
-                          stroke="#ffffff" strokeWidth={1.5}>
-                          {!reducedMotion && (
-                            <>
-                              <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.42};${Math.min(r.w, r.h) * 0.62}`} dur="1.2s" begin="-0.6s" repeatCount="indefinite" />
-                              <animate attributeName="opacity" values="0.7;0" dur="1.2s" begin="-0.6s" repeatCount="indefinite" />
-                            </>
-                          )}
-                        </circle>
-                      </g>
-                    )}
-                {/* Shield generator: animated energy core + pulsing rings */}
-                {(b.type === 'shield' || b.type === 'shield_heavy') && (
-                  <g pointerEvents="none">
-                    {/* Outer pulse rings (only when charged) */}
-                    {shieldPct > 0 && (
-                      <>
-                        <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.38} fill="none"
-                          stroke={b.type === 'shield_heavy' ? '#60a5fa' : '#38bdf8'} strokeWidth={1.5} opacity={0.6}>
-                          {!reducedMotion && !fxLite && (
-                            <>
-                              <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.38};${Math.min(r.w, r.h) * 0.52}`} dur="2s" repeatCount="indefinite" />
-                              <animate attributeName="opacity" values="0.6;0" dur="2s" repeatCount="indefinite" />
-                            </>
-                          )}
-                        </circle>
-                        <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.38} fill="none"
-                          stroke={b.type === 'shield_heavy' ? '#93c5fd' : '#7dd3fc'} strokeWidth={1} opacity={0.4}>
-                          {!reducedMotion && !fxLite && (
-                            <>
-                              <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.38};${Math.min(r.w, r.h) * 0.52}`} dur="2s" begin="-1s" repeatCount="indefinite" />
-                              <animate attributeName="opacity" values="0.4;0" dur="2s" begin="-1s" repeatCount="indefinite" />
-                            </>
-                          )}
-                        </circle>
-                      </>
-                    )}
-                    {/* Energy core with radial gradient */}
-                    <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.32}
-                      fill={`url(#${b.type === 'shield_heavy' ? 'coreGrad-Heavy' : 'coreGrad-Regular'})`}
-                      stroke={shieldPct <= 0.15 ? '#f43f5e' : (isMine ? meta.color : '#fb7185')} strokeWidth={2.5} />
-                    {/* Inner glow pulse */}
-                    <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.28} fill="none"
-                      stroke={b.type === 'shield_heavy' ? '#93c5fd' : '#7dd3fc'} strokeWidth={1.5} opacity={0.7}>
-                      {!reducedMotion && !fxLite && (
-                        <>
-                          <animate attributeName="r" values={`${Math.min(r.w, r.h) * 0.28};${Math.min(r.w, r.h) * 0.35}`} dur="1.5s" repeatCount="indefinite" />
-                          <animate attributeName="opacity" values="0.7;0.2" dur="1.5s" repeatCount="indefinite" />
-                        </>
-                      )}
-                    </circle>
-                    {/* Emoji overlay */}
-                    <text x={r.cx} y={r.cy + 2} textAnchor="middle" dominantBaseline="central" fontSize={26}>{emoji}</text>
-                  </g>
-                )}
-                {!(b.type === 'shield' || b.type === 'shield_heavy') && (
-                  <g pointerEvents="none">
-                    <circle cx={r.cx} cy={r.cy + 2} r={Math.min(r.w, r.h) * 0.32} fill={isMine ? 'rgba(0,0,0,0.55)' : 'rgba(120,0,0,0.55)'} stroke={isMine ? meta.color : '#fb7185'} strokeWidth={2.5} />
-                    <text x={r.cx} y={r.cy + 2} textAnchor="middle" dominantBaseline="central" fontSize={26}>{emoji}</text>
-                  </g>
-                )}
-                {(b.type === 'shield' || b.type === 'shield_heavy') && shieldPct <= 0.1 && (
-                  <text x={r.cx} y={r.cy - 14} textAnchor="middle" dominantBaseline="central"
-                    fontSize={18} fontWeight={800} fill="#f43f5e"
-                    stroke="rgba(0,0,0,0.9)" strokeWidth={3.5} paintOrder="stroke">
-                    ⚠️
-                  </text>
-                )}
-                {b.type !== 'core' && (
-                  <text x={r.cx} y={r.y + r.h - 7} textAnchor="middle" fontSize={16} fontWeight={900}
-                    stroke="rgba(0,0,0,0.85)" strokeWidth={3} paintOrder="stroke" letterSpacing={1}>
-                    <tspan fill="#fbbf24">{'★'.repeat(b.level)}</tspan>
-                    <tspan fill="rgba(255,255,255,0.35)">{'☆'.repeat(5 - b.level)}</tspan>
-                  </text>
-                )}
-                {/* HP bar */}
-                <rect x={r.x + 6} y={r.y + 4} width={r.w - 12} height={6} rx={3} fill="rgba(0,0,0,0.65)" />
-                <rect x={r.x + 6} y={r.y + 4} width={(r.w - 12) * Math.max(0, Math.min(1, hpPct))} height={6} rx={3}
-                  fill={hpPct > 0.5 ? '#4ade80' : hpPct > 0.25 ? '#fbbf24' : '#f43f5e'} />
-                {/* Shield pool bar — segmented energy bar */}
-                {(b.type === 'shield' || b.type === 'shield_heavy') && (
-                  <g>
-                    <rect x={r.x + 6} y={r.y + 12} width={r.w - 12} height={8} rx={4} fill="rgba(0,0,0,0.7)" stroke="rgba(255,255,255,0.1)" strokeWidth={0.5} />
-                    {/* Segments */}
-                    {[1,2,3,4,5,6,7,8].map((seg, i) => {
-                      const segPct = (i + 1) / 8;
-                      const active = shieldPct >= segPct - 0.05;
-                      const isHeavy = b.type === 'shield_heavy';
-                      return (
-                        <rect key={seg} x={r.x + 7 + i * ((r.w - 14) / 8)} y={r.y + 13}
-                          width={(r.w - 14) / 8 - 1.5} height={6} rx={2}
-                          fill={active
-                            ? (isHeavy
-                                ? (segPct <= 0.3 ? '#60a5fa' : segPct <= 0.6 ? '#3b82f6' : '#2563eb')
-                                : (segPct <= 0.3 ? '#38bdf8' : segPct <= 0.6 ? '#0ea5e9' : '#0369a1'))
-                            : 'rgba(255,255,255,0.08)'}
-                          opacity={active ? 1 : 0.3}
-                          filter={!reducedMotion && !fxLite && active && shieldPct > segPct - 0.05 && shieldPct < segPct + 0.05 && shieldPct < 0.99 ? 'url(#glow-Regular)' : undefined}>
-                          {active && !reducedMotion && !fxLite && shieldPct > segPct - 0.05 && shieldPct < segPct + 0.05 && shieldPct < 0.99 && (
-                            <animate attributeName="opacity" values="1;0.6" dur="0.8s" repeatCount="indefinite" />
-                          )}
-                        </rect>
-                      );
-                    })}
-                  </g>
-                )}
-                {/* stock badge + missile build progress for own launchers */}
-                {b.type === 'launcher' && isMine && (((b.loadingUntil ?? 0) > now) || (b.stock ?? 0) > 0) && (() => {
-                  const loading = (b.loadingUntil ?? 0) > now;
-                  const loadPct = loading ? Math.min(1, Math.max(0, 1 - (b.loadingUntil! - now) / (LOAD_SECONDS * 1000))) : 0;
-                  return (
-                    <g>
-                      {!loading && (b.stock ?? 0) > 0 && (
-                        <text x={r.x + r.w - 8} y={r.y + 18} textAnchor="end" fontSize={15}>
-                          {`🚀${b.stock ?? 0}`}
-                        </text>
-                      )}
-                      {loading && (
-                        <g>
-                          <rect x={r.x + 6} y={r.y + 12} width={r.w - 12} height={5} rx={2.5} fill="rgba(0,0,0,0.65)" />
-                          <rect x={r.x + 6} y={r.y + 12} width={(r.w - 12) * loadPct} height={5} rx={2.5}
-                            fill="#fbbf24" />
-                        </g>
-                      )}
-                    </g>
-                  );
-                })()}
-              </g>
+              <BuildingNode
+                key={b.id}
+                b={b}
+                sig={sig}
+                isMine={isMine}
+                isSel={isSel}
+                vis={vis}
+                cols={cols}
+                rows={rows}
+                reducedMotion={reducedMotion}
+                fxLite={fxLite}
+                nowMs={now}
+              />
             );
           })}
 
@@ -1503,7 +1590,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             </div>
           </div>
           <div style={{ display: 'flex', gap: 6, pointerEvents: 'auto' }}>
-            <button type="button" onClick={() => setLowFx(v => !v)} title={lowFx ? 'Low FX mode ON — tap for full effects' : 'Full effects — tap for Low FX mode (smoother on weak hardware)'}
+            <button type="button" onClick={() => setLowFx(v => !v)} title={lowFx ? 'Low FX mode ON — tap for full effects' : `Full effects — tap for Low FX mode (smoother on weak hardware)${weakDevice ? ' · auto-enabled on this device, tap to override' : ''}`}
               style={{ ...overlayBox, width: 40, height: 40, color: '#fff', fontSize: '1.1rem', fontWeight: 800, background: lowFx ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.05)', border: lowFx ? '1px solid rgba(74,222,128,0.4)' : 'var(--border)' }}>
               {lowFx ? '⚡' : '✨'}
             </button>
@@ -1825,7 +1912,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
       {helpOpen && (
         <Modal onClose={() => setHelpOpen(false)} title="❓ How to play">
           <div className="text-sm text-muted" style={{ lineHeight: 1.7, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div>👆 <b>Tap an empty square</b> on your island to build (Generator +2/s, Shield 300 HP, Shield Healer 8/s). On touch screens, <b>long-press</b> instead — a quick tap only closes panels.</div>
+            <div>👆 <b>Tap a square</b> on your island to build, or <b>tap any building</b> for stats, upgrades &amp; fire control. Tapping anywhere else closes panels.</div>
             <div>🧱 Destroyed buildings leave <b>rubble</b> — tap it to <b>rebuild instantly at half cost</b>, or build something else over it.</div>
             <div>🏠 <b>Tap any building</b> for stats, upgrades &amp; fire control. Gold ★ show its level.</div>
             <div>⭐ Your <b>Core pays +{coreIncome}/s</b> — destroy the enemy Core (4000 HP) to win!</div>
@@ -1843,8 +1930,8 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
 
       {/* ── End overlay ── */}
       {roomState.phase === 'missile-command-end' && (
-        <div style={{ position: 'absolute', inset: 0, zIndex: 600, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-          <div className="glass p-24 text-center animate-fade-up" style={{ borderRadius: 'var(--radius-xl)', maxWidth: 560, width: '100%', maxHeight: '88vh', overflowY: 'auto', border: `2px solid ${iWon ? 'rgba(74,222,128,0.5)' : 'rgba(244,63,94,0.5)'}` }}>
+        <div style={{ position: 'absolute', inset: 0, zIndex: 600, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div className="glass p-24 text-center animate-fade-up" style={{ borderRadius: 'var(--radius-xl)', maxWidth: 560, width: '100%', maxHeight: '88vh', overflowY: 'auto', background: 'linear-gradient(180deg, rgba(13,21,38,0.98) 0%, rgba(8,12,24,0.98) 100%)', border: `2px solid ${iWon ? 'rgba(74,222,128,0.5)' : 'rgba(244,63,94,0.5)'}` }}>
             <div style={{ fontSize: '3rem' }}>{mc.winReason === 'draw' ? '🤝' : iWon ? '🏆' : '💥'}</div>
             <h2 className="heading-lg">{mc.winReason === 'draw' ? 'DRAW — both Cores destroyed!' : iWon ? 'VICTORY! Enemy Core destroyed!' : `${winnerName ?? 'Enemy'} wins — your Core was destroyed`}</h2>
             <p className="text-muted text-sm">Your final credits: {myResources}</p>
