@@ -46,7 +46,7 @@ export const MISSILE_CONFIG = {
   },
   economy: {
     // income per sec by level 1..5 — snowballs hard (tuned down slightly)
-    income: [0, 2, 4, 7, 11, 15],
+    income: [0, 2, 3, 6, 9, 12],
     hp: [0, 100, 150, 210, 280, 360],
   },
   shield: {

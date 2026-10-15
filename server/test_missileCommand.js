@@ -105,7 +105,7 @@ test('upgrades queue with level-scaled timers and apply on completion', () => {
   assert.equal(s.buildings[id].level, 1, 'not done at 4.999s into a 5s upgrade');
   advance(2, s);
   assert.equal(s.buildings[id].level, 2);
-  assert.equal(s.buildings[id].incomePerSec, 4);
+  assert.equal(s.buildings[id].incomePerSec, 3);
 });
 
 test('Manhattan distance ignores diagonals', () => {
@@ -802,7 +802,7 @@ test('snowball math: L5 generator + core over 10s', () => {
     assert.equal(mc().buildings[eco.id].level, 5);
     const before = mc().resources[P1];
     for (let i = 0; i < 40; i++) advance(250, mc());
-    assert.ok(Math.abs(mc().resources[P1] - before - 200) < 0.01, '15/s gen + 5/s core × 10s');
+    assert.ok(Math.abs(mc().resources[P1] - before - 170) < 0.01, '12/s gen + 5/s core × 10s');
   } finally {
     rooms.delete(room.code);
   }

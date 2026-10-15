@@ -60,7 +60,7 @@ export const GAME_CATALOGUE: GameDefinition[] = [
     available: true,
     rules: [
       { icon: '🏝️', text: 'Two players on 13×7 grid islands (Top vs Bottom) — every building takes one 1×1 square. Tap a square to build, tap a building to inspect!' },
-      { icon: '💰', text: 'Generators pay continuous income (+2/s at Lv1, up to +20/s). Your ⭐ Core also pays +5/s baseline!' },
+      { icon: '💰', text: 'Generators pay continuous income (+2/s at Lv1, up to +12/s). Your ⭐ Core also pays +5/s baseline!' },
       { icon: '🛡️', text: 'Shield Generators (300 HP, up to 2000) fully block blasts while charged — even on empty squares! Hide Generators inside, add Shield Healers (one shield at a time).' },
       { icon: '🚀', text: 'Launchers auto-load up to 3 slow-cruise missiles (5s each). FIRE a volley, or 🔥 ALL of one type at a single square!' },
       { icon: '🧱', text: 'Destroyed buildings leave rubble — tap it to rebuild instantly at half cost, or build something else over it' },

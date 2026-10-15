@@ -36,7 +36,7 @@ export const BUILD_CATEGORIES: { key: BuildCategory; label: string; icon: string
 ];
 
 export const BUILD_OPTIONS: BuildOption[] = [
-  { key: 'economy', label: 'Generator', emoji: '💰', cost: 50, desc: '+2 credits/s at Lv1 (up to +20/s at Lv5). Upgrades snowball your economy.', buildingType: 'economy', category: 'economy' },
+  { key: 'economy', label: 'Generator', emoji: '💰', cost: 50, desc: '+2 credits/s at Lv1 (up to +12/s at Lv5). Upgrades snowball your economy.', buildingType: 'economy', category: 'economy' },
   { key: 'shield', label: 'Shield Gen', emoji: '🛡️', cost: 40, desc: '300 shield HP at Lv1 (up to 2000). Aura ≈ 25 squares, fully blocks blasts while charged. Slowly self-repairs.', buildingType: 'shield', category: 'defence' },
   { key: 'shield_heavy', label: 'Heavy Shield', emoji: '🛡️', cost: 40, desc: '750 shield HP at Lv1 (up to 5000). Aura ≈ 13 squares (range 2), fully blocks blasts. Same cost, 2.5x HP, smaller aura.', buildingType: 'shield_heavy', category: 'defence' },
   { key: 'healer', label: 'Shield Healer', emoji: '💚', cost: 45, desc: 'Repairs 8 shield HP/s at Lv1 (up to 65/s). Heals ONE shield at a time — the weakest in its ≈ 13-square aura.', buildingType: 'healer', category: 'defence' },
@@ -58,7 +58,7 @@ export const LOAD_SECONDS = 5;
 
 // Level tables for display (mirror server/missileCommand.js)
 export const STATS = {
-  economy: { income: [0, 2, 4, 7, 11, 15], upgrade: [0, 60, 150, 375, 900, 0] },
+  economy: { income: [0, 2, 3, 6, 9, 12], upgrade: [0, 60, 150, 375, 900, 0] },
   shield: { hp: [0, 375, 750, 1250, 1875, 2500], upgrade: [0, 50, 125, 300, 700, 0] },
   shield_heavy: { hp: [0, 750, 1500, 2500, 3750, 5000], upgrade: [0, 50, 125, 300, 700, 0] },
   healer: { heal: [0, 8, 16, 28, 44, 65], upgrade: [0, 55, 140, 330, 750, 0] },

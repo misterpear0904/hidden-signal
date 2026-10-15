@@ -638,17 +638,26 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   };
 
   // ── Supply-claim toast: announce new claims once, then fade ──
+  // Opponent payouts stay generic (no exact figures): precise numbers telegraph
+  // how far ahead/behind they are, since payouts scale with disparity.
+  // Your own claims still show exact numbers — that's your information.
   useEffect(() => {
     const s = mc?.lastSupply;
     if (!s || s.at <= lastSupplySeenRef.current) return;
     lastSupplySeenRef.current = s.at;
-    const who = s.ownerId === myId ? 'You' : (roomState.players.find(p => p.id === s.ownerId)?.name ?? 'Enemy');
-    const what = s.kind === 'credits'
+    const mine = s.ownerId === myId;
+    const who = mine ? 'You' : (roomState.players.find(p => p.id === s.ownerId)?.name ?? 'Enemy');
+    const exact = s.kind === 'credits'
       ? `+${s.detail.amount}cr`
       : s.kind === 'barrage'
         ? `${s.detail.tiles} missiles inbound`
         : `2x build speed for ${s.detail.seconds}s`;
-    setSupplyToast(`🚢 ${who} claimed the freighter: ${what}!`);
+    const vague = s.kind === 'credits'
+      ? 'a cache of credits'
+      : s.kind === 'barrage'
+        ? 'a missile rain'
+        : 'a build-speed surge';
+    setSupplyToast(`🚢 ${who} claimed the freighter: ${mine ? exact : vague}!`);
   }, [mc, myId, roomState.players]);
   useEffect(() => {
     if (!supplyToast) return;
@@ -908,16 +917,26 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
       }
       setBuildCell(null);
       setSelectedId(b.id);
+      markPopupOpened();
       return;
     }
     if (cell.side === mySide) {
       setSelectedId(null);
       setBuildCell(cell);
+      markPopupOpened();
     } else {
       setBuildCell(null);
       setSelectedId(null);
     }
   }
+
+  // ── Tap-through guard: the tap (or bounce, or compatibility click) that
+  // follows a popup open by milliseconds must not land on the freshly
+  // mounted buttons and spend/fire instantly. Buttons arm ~400ms after
+  // the popup opens; deliberate taps never notice, phantom ones die here.
+  const popupOpenedAtRef = useRef(0);
+  const popupArmed = () => Date.now() - popupOpenedAtRef.current >= 400;
+  const markPopupOpened = () => { popupOpenedAtRef.current = Date.now(); };
 
   // ── Pointer gestures: 1-finger tap/drag-pan, 2-finger pinch ──
   // preventDefault() on down kills ghost (emulated mouse) clicks, text
@@ -973,9 +992,11 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
         if (b) {
           setBuildCell(null);
           setSelectedId(b.id);
+          markPopupOpened();
         } else {
           setSelectedId(null);
           setBuildCell(cell);
+          markPopupOpened();
         }
       }, LONG_PRESS_MS);
     }
@@ -1831,7 +1852,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
               return (
                 <button
                   type="button"
-                  onClick={() => { onRebuild(buildCellRubble.id); setBuildCell(null); }}
+                  onClick={() => { if (!popupArmed()) return; onRebuild(buildCellRubble.id); setBuildCell(null); }}
                   disabled={!afford}
                   title="Restore the destroyed building instantly at level 1 for half price — or pick anything below at normal cost/time"
                   style={{
@@ -1862,7 +1883,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                         <button
                           key={o.key}
                           type="button"
-                          onClick={() => { onBuild({ buildingType: o.buildingType, launcherType: o.launcherType, gx: buildCell.gx, gy: buildCell.gy }); setBuildCell(null); }}
+                          onClick={() => { if (!popupArmed()) return; onBuild({ buildingType: o.buildingType, launcherType: o.launcherType, gx: buildCell.gx, gy: buildCell.gy }); setBuildCell(null); }}
                           disabled={!afford}
                           style={{
                             padding: '12px 8px', borderRadius: 'var(--radius-lg)', textAlign: 'center',
@@ -1899,11 +1920,11 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             pendingSell={Object.values(mc.pending ?? {}).find(p => p.kind === 'sell' && p.sellOf === selected.id) ?? null}
             coverCount={selectedInfluence?.shields.length ?? 0}
             healerCount={selectedInfluence?.healers.length ?? 0}
-            onUpgrade={() => { onUpgrade(selected.id); setSelectedId(null); }}
-            onSell={() => onSell(selected.id)}
+            onUpgrade={() => { if (!popupArmed()) return; onUpgrade(selected.id); setSelectedId(null); }}
+            onSell={() => { if (!popupArmed()) return; onSell(selected.id); }}
             onCancelSell={() => onCancelSell(selected.id)}
-            onLoad={() => onLoad({ launcherId: selected.id })}
-            onFire={() => startTargeting(selected.id)}
+            onLoad={() => { if (!popupArmed()) return; onLoad({ launcherId: selected.id }); }}
+            onFire={() => { if (!popupArmed()) return; startTargeting(selected.id); }}
           />
         </Modal>
       )}
