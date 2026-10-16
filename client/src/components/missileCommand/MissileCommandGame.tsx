@@ -594,9 +594,10 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     pointers: new Map<number, { x: number; y: number; downX: number; downY: number; downT: number; moved: boolean; tol: number }>(),
     pinchDist: 0,
     pinchZoom: 1,
-    // True once a second finger joins: the gesture is a pinch, never a tap.
-    // Lifts from pinches must not open/close anything. Reset on the next
-    // fresh (zero-pointer) press.
+    // True once a second finger joins. Lifts from real pinches must not
+    // tap — but a tap while another finger merely RESTS (still) is a
+    // legitimate tap, so the lift handler below qualifies on movement,
+    // not on this flag. Reset on the next fresh (zero-pointer) press.
     hadMulti: false,
     // SVG client rect captured on the first move of a gesture. getBoundingClientRect
     // forces layout and this path runs ~60x/sec while panning, so it's read
@@ -677,6 +678,36 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     const onChange = () => setIsFullscreen(!!document.fullscreenElement);
     document.addEventListener('fullscreenchange', onChange);
     return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+
+  // Safety net: releases landing OFF the board (modal sheet/scrim, HUD,
+  // dock, toasts) never reach the svg handlers above. Without this, a
+  // press that starts on a cell but lifts over the just-opened modal leaks
+  // its map entry forever — long-press then dies and the pinch latch wedges
+  // every tap until reload. Bubble phase (not capture) so the svg handlers
+  // run first for on-board releases; this only cleans up what they missed.
+  useEffect(() => {
+    const release = (e: PointerEvent) => {
+      const g = gestureRef.current;
+      if (!g.pointers.delete(e.pointerId)) return; // svg handler already cleaned up
+      if (g.pointers.size === 0) { g.rect = null; g.hadMulti = false; }
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+      // A stale long-press guard for this exact pointer can never be
+      // consumed now — drop it so it can't shadow a future gesture.
+      if (longPressPidRef.current === e.pointerId) {
+        longPressFiredRef.current = false;
+        longPressPidRef.current = null;
+      }
+    };
+    window.addEventListener('pointerup', release);
+    window.addEventListener('pointercancel', release);
+    return () => {
+      window.removeEventListener('pointerup', release);
+      window.removeEventListener('pointercancel', release);
+    };
   }, []);
 
   function toggleFullscreen() {
@@ -864,6 +895,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   // Pinches never tap. Long-press opens the same targets for holds.
   function handleTap(clientX: number, clientY: number) {
     if (!mySide) return;
+    lastMapTapAtRef.current = Date.now();
     const w = toWorld(clientX, clientY);
     const wx = w.x, wy = w.y;
     // Neutral supply freighter first: tapping it claims the payout for
@@ -932,11 +964,20 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
 
   // ── Tap-through guard: the tap (or bounce, or compatibility click) that
   // follows a popup open by milliseconds must not land on the freshly
-  // mounted buttons and spend/fire instantly. Buttons arm ~400ms after
+  // mounted buttons and spend/fire instantly. Buttons arm shortly after
   // the popup opens; deliberate taps never notice, phantom ones die here.
+  // (Slow devices paint late, so the window covers the open *plus* the
+  // first paint — not just the state change.)
+  const POPUP_ARM_MS = 600;
   const popupOpenedAtRef = useRef(0);
-  const popupArmed = () => Date.now() - popupOpenedAtRef.current >= 400;
+  const popupArmed = () => Date.now() - popupOpenedAtRef.current >= POPUP_ARM_MS;
   const markPopupOpened = () => { popupOpenedAtRef.current = Date.now(); };
+  // Last map tap (any tap on the board): the always-visible dock LOAD button
+  // gets the same treatment — a bounce right after a map tap must not
+  // start a missile build. Shorter window than popups (300ms): dock taps
+  // often legitimately follow map taps (fire, then queue the next load).
+  const lastMapTapAtRef = useRef(0);
+  const dockArmed = () => Date.now() - lastMapTapAtRef.current >= 300;
 
   // ── Pointer gestures: 1-finger tap/drag-pan, 2-finger pinch ──
   // preventDefault() on down kills ghost (emulated mouse) clicks, text
@@ -1042,8 +1083,9 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     const g = gestureRef.current;
     const me = g.pointers.get(e.pointerId);
     g.pointers.delete(e.pointerId);
-    // Gesture over — drop the cached rect so the next one re-measures.
-    if (g.pointers.size === 0) g.rect = null;
+    // Gesture over — drop the cached rect so the next one re-measures, and
+    // release the pinch latch so one multi-touch can't wedge all tapping.
+    if (g.pointers.size === 0) { g.rect = null; g.hadMulti = false; }
     // A long-press already acted on this gesture (opened the build menu).
     // Only ITS pointer's lift is swallowed — any other pointer (or the
     // duplicate up/cancel echo of the same lift, within 500ms) falls through
@@ -1056,12 +1098,15 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     }
     const sw = swallowedPidRef.current;
     if (sw && sw.id === e.pointerId && Date.now() - sw.at < 500) return;
-    if (g.hadMulti) return; // pinch lifts never tap (no phantom opens/closes)
-    if (!me || me.moved || Date.now() - me.downT >= TAP_MAX_MS) return;
-    // Tap only if every REMAINING finger is also still (resting thumbs OK,
-    // real pinches involve two moving fingers).
+    if (!me || Date.now() - me.downT >= TAP_MAX_MS) return;
+    // Tap = this finger was quick + still AND every remaining finger is
+    // also still. Real pinches always move ≥1 finger, so their lifts die
+    // here; a resting thumb doesn't block the tapping finger. (Judged on
+    // movement rather than the hadMulti latch so a parked finger can't
+    // wedge tapping forever.)
+    if (me.moved) return;
     const othersStill = [...g.pointers.values()].every(p => !p.moved);
-    if (!othersStill && g.pointers.size > 0) return;
+    if (!othersStill) return;
     handleTap(me.downX, me.downY);
   }
 
@@ -1818,7 +1863,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
                   </div>
                   <button
                     type="button"
-                    onClick={() => onLoad({ launcherId: l.id })}
+                    onClick={() => { if (!dockArmed()) return; onLoad({ launcherId: l.id }); }}
                     title={stockFull ? 'Stockpile full' : loading ? `Building… ${loadSecsLeft.toFixed(1)}s left` : broke ? `Need ${l.missileCost}cr` : `Build 1 missile (~${LOAD_SECONDS}s)`}
                     style={{ width: '100%', marginTop: 3, padding: dockCompact ? '3px 2px' : '5px 4px', borderRadius: 7, fontWeight: 800, fontSize: dockCompact ? '0.62rem' : '0.68rem', background: 'rgba(74,222,128,0.2)', border: '1px solid rgba(74,222,128,0.5)', color: '#fff' }}
                   >
