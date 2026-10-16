@@ -23,6 +23,11 @@ export interface SocketHookReturn {
   connectionStatus: ConnectionStatus;
   connectError: string | null;
   retryCount: number;
+  // Wall-clock ms when the CURRENT wait began (first entry into
+  // connecting/reconnecting/server_sleeping). Null once connected — drives
+  // the home-screen "waiting Ns" countdown. Survives transitions between
+  // waiting states so it measures the total wait, not the last hop.
+  connectStartedAt: number | null;
   myId: string;
   roomCode: string;
   inRoom: boolean;
@@ -86,6 +91,22 @@ export function useSocket(): SocketHookReturn {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
   const [connectError, setConnectError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
+  const [connectStartedAt, setConnectStartedAt] = useState<number | null>(null);
+
+  // Stamp the wait start on first entry into a waiting state; clear it on
+  // connect. Deliberately keyed off connectionStatus (not each setter) so
+  // every path that flips status is covered.
+  useEffect(() => {
+    if (connectionStatus === 'connected') {
+      setConnectStartedAt(null);
+    } else if (
+      (connectionStatus === 'connecting' ||
+        connectionStatus === 'reconnecting' ||
+        connectionStatus === 'server_sleeping')
+    ) {
+      setConnectStartedAt(prev => prev ?? Date.now());
+    }
+  }, [connectionStatus]);
   const [myId, setMyId] = useState<string>('');
   const [roomCode, setRoomCode] = useState<string>('');
   const roomCodeRef = useRef<string>('');
@@ -581,6 +602,7 @@ export function useSocket(): SocketHookReturn {
     connectionStatus,
     connectError,
     retryCount,
+    connectStartedAt,
     myId,
     roomCode,
     inRoom,

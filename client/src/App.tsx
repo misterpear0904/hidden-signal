@@ -45,6 +45,7 @@ export default function App() {
     connectionStatus,
     connectError,
     retryCount,
+    connectStartedAt,
     retryConnection,
     myId,
     roomCode,
@@ -168,6 +169,7 @@ export default function App() {
           connectionStatus={connectionStatus}
           connectError={connectError}
           retryCount={retryCount}
+          connectStartedAt={connectStartedAt}
           retryConnection={retryConnection}
         />
       );

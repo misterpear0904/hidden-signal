@@ -1641,7 +1641,18 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
         <div style={{ position: 'absolute', top: 8, left: 8, right: 8, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'stretch', pointerEvents: 'none' }}>
           <div style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 12px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
             <div className="text-xs" style={{ fontWeight: 800, color: 'var(--amber-400)', fontSize: '1.05rem', lineHeight: 1.1 }}>💰 {myResources}</div>
-            <div className="text-xs text-muted" style={{ fontSize: '0.65rem' }}>+{myIncome}/s • {roomState.code}{((mc.buildSurge?.[myId] ?? 0) > now) && <span style={{ color: '#4ade80', fontWeight: 800 }}> • ⚡2x {Math.ceil(((mc.buildSurge?.[myId] ?? 0) - now) / 1000)}s</span>} • <span title="Render FPS · server updates/sec" style={{ color: fps == null ? undefined : fps >= 25 ? '#4ade80' : fps >= 15 ? '#fbbf24' : '#fb7185', fontWeight: 700 }}>{fps == null ? 'idle' : `${fps}fps`} · {ups}/s</span></div>
+            <div className="text-xs text-muted" style={{ fontSize: '0.65rem' }}>+{myIncome}/s • {roomState.code}{((mc.buildSurge?.[myId] ?? 0) > now) && <span style={{ color: '#4ade80', fontWeight: 800 }}> • ⚡2x {Math.ceil(((mc.buildSurge?.[myId] ?? 0) - now) / 1000)}s</span>}</div>
+          </div>
+          {/* Perf box: render FPS + server updates/sec, each labeled. */}
+          <div style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 10px', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span title="Frames drawn per second — how smooth motion looks. 'idle' just means nothing is animating right now.">
+              <span className="text-xs text-muted" style={{ fontSize: '0.6rem', fontWeight: 700 }}>FPS </span>
+              <span style={{ fontWeight: 800, fontSize: '0.8rem', color: fps == null ? undefined : fps >= 25 ? '#4ade80' : fps >= 15 ? '#fbbf24' : '#fb7185' }}>{fps == null ? 'idle' : fps}</span>
+            </span>
+            <span title="Game updates received from the server each second — about 7 while missiles are flying, 1 when quiet. If this drops but FPS holds steady, the hitch is network/server, not your device.">
+              <span className="text-xs text-muted" style={{ fontSize: '0.6rem', fontWeight: 700 }}>NET </span>
+              <span style={{ fontWeight: 800, fontSize: '0.8rem' }}>{ups}/s</span>
+            </span>
           </div>
           <div style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 10px', flex: 1, minWidth: 120 }}>
             <div className="text-xs" style={{ fontWeight: 800, fontSize: '0.65rem' }}>⭐ YOU {mySide === 'top' ? '🔼' : '🔽'} {myCore ? `${Math.ceil(myCore.coreHp!)}/${myCore.maxCoreHp}` : ''}</div>

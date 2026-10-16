@@ -1,6 +1,13 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { avatarColor, avatarInitial } from '../constants';
 import { BUILD_ID, BUILD_TIME } from '../buildInfo';
+
+// Render free tier spins down after inactivity — a cold start typically
+// wakes in well under this, so the wait bar aims here and the caption
+// switches to a "longer than usual" note past it.
+const WAKE_ESTIMATE_SEC = 60;
+const LONG_WAIT_SEC = 75;
+const RETRY_OFFER_SEC = 45;
 
 interface Props {
   onCreateRoom: (name: string) => void;
@@ -9,6 +16,7 @@ interface Props {
   connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'server_sleeping' | 'failed';
   connectError: string | null;
   retryCount: number;
+  connectStartedAt: number | null;
   retryConnection: () => void;
 }
 
@@ -19,6 +27,7 @@ export default function LandingPage({
   connectionStatus,
   connectError,
   retryCount,
+  connectStartedAt,
   retryConnection
 }: Props) {
   const [tab, setTab] = useState<'create' | 'join'>('create');
@@ -41,11 +50,12 @@ export default function LandingPage({
   };
 
   const getConnectionStatusText = () => {
+    const waitSuffix = isWaiting ? ` · ${waitedSec}s` : '';
     switch (connectionStatus) {
       case 'connected': return 'Connected';
-      case 'connecting': return 'Connecting...';
-      case 'reconnecting': return `Reconnecting... (attempt ${retryCount})`;
-      case 'server_sleeping': return 'Server is waking up... (free tier spins down after inactivity, may take 60s)';
+      case 'connecting': return `Connecting...${waitSuffix}`;
+      case 'reconnecting': return `Reconnecting... (attempt ${retryCount})${waitSuffix}`;
+      case 'server_sleeping': return `Server is waking up...${waitSuffix} (free tier spins down after inactivity, may take 60s)`;
       case 'failed': return 'Connection failed. Click to retry.';
       case 'disconnected': return 'Disconnected';
       default: return 'Disconnected';
@@ -81,6 +91,23 @@ export default function LandingPage({
     return false;
   };
 
+  // Live wait clock while the socket is still coming up. Ticks locally
+  // every second off connectStartedAt (no server round-trips needed).
+  const isWaiting =
+    connectionStatus === 'connecting' ||
+    connectionStatus === 'reconnecting' ||
+    connectionStatus === 'server_sleeping';
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isWaiting) return;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [isWaiting]);
+  const waitedSec = connectStartedAt != null
+    ? Math.max(0, Math.floor((nowMs - connectStartedAt) / 1000))
+    : 0;
+  const wakePct = Math.min(100, (waitedSec / WAKE_ESTIMATE_SEC) * 100);
+
   return (
     <div className="page">
       <div className="container animate-fade-up">
@@ -115,6 +142,43 @@ export default function LandingPage({
               <span className="text-xs text-muted ml-8">(retry #{retryCount})</span>
             )}
           </div>
+          {/* Wait progress: elapsed vs the ~60s free-tier wake estimate. */}
+          {isWaiting && (
+            <div style={{ maxWidth: 320, margin: '10px auto 0' }}>
+              <div
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={WAKE_ESTIMATE_SEC}
+                aria-valuenow={Math.min(waitedSec, WAKE_ESTIMATE_SEC)}
+                aria-label="Server wake-up wait"
+                style={{
+                  height: 6,
+                  borderRadius: 3,
+                  overflow: 'hidden',
+                  background: 'rgba(255,255,255,0.1)',
+                }}
+              >
+                <div
+                  style={{
+                    width: `${wakePct}%`,
+                    height: '100%',
+                    borderRadius: 3,
+                    background: 'linear-gradient(90deg,#4ade80,#22d3ee)',
+                    transition: 'width 1s linear',
+                  }}
+                />
+              </div>
+              <div className="text-xs text-muted mt-8" style={{ lineHeight: 1.5 }}>
+                {waitedSec >= LONG_WAIT_SEC ? (
+                  <>Taking longer than usual — free-tier cold starts occasionally run a couple of minutes. Hang tight or <button type="button" onClick={retryConnection} style={{ color: 'var(--cyan-400)', fontWeight: 700, background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: 'inherit' }}>retry now</button>.</>
+                ) : (
+                  <>Free-tier servers usually wake in under {WAKE_ESTIMATE_SEC}s{waitedSec >= RETRY_OFFER_SEC && (
+                    <> — still waiting? You can <button type="button" onClick={retryConnection} style={{ color: 'var(--cyan-400)', fontWeight: 700, background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: 'inherit' }}>retry now</button></>
+                  )}.</>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Tab Switcher */}
