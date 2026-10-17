@@ -63,9 +63,12 @@ function shipPosAt(ship: { fromX: number; toX: number; y: number; startAt: numbe
   return { x: (ship.fromX + (ship.toX - ship.fromX) * f) * WORLD, y: ship.y * WORLD };
 }
 
+// Small epsilon so taps landing just outside a tile's rect due to
+// floating-point rounding in toWorld() still resolve to the edge cell.
+const CELL_TAP_EPSILON = 2;
 function worldToCell(wx: number, wy: number, cols: number, rows: number): Cell | null {
   for (const [side, r] of [['top', TOP_RECT], ['bottom', BOTTOM_RECT]] as const) {
-    if (wx >= r.x && wx <= r.x + r.w && wy >= r.y && wy <= r.y + r.h) {
+    if (wx >= r.x - CELL_TAP_EPSILON && wx <= r.x + r.w + CELL_TAP_EPSILON && wy >= r.y - CELL_TAP_EPSILON && wy <= r.y + r.h + CELL_TAP_EPSILON) {
       const gx = Math.max(0, Math.min(cols - 1, Math.floor(((wx - r.x) / r.w) * cols)));
       const gy = Math.max(0, Math.min(rows - 1, Math.floor(((wy - r.y) / r.h) * rows)));
       return { side, gx, gy };
@@ -869,8 +872,8 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
 
   // ── View transform ──
   const vbW = WORLD / zoom, vbH = WORLD / zoom;
-  const vbX = Math.max(-100, Math.min(WORLD + 100 - vbW, center.x - vbW / 2));
-  const vbY = Math.max(-100, Math.min(WORLD + 100 - vbH, center.y - vbH / 2));
+  const vbX = Math.max(WORLD - 10 - vbW, Math.min(10, center.x - vbW / 2));
+  const vbY = Math.max(WORLD - 10 - vbH, Math.min(10, center.y - vbH / 2));
   const clampZoom = (z: number) => Math.max(0.6, Math.min(3, z));
 
   // Letterbox-aware: SVG uses meet-fit, so content may not fill the element.
