@@ -23,6 +23,9 @@ import {
   missileIncomePerSec,
   cellDist,
   filterMissileStateForPlayer,
+  missileAiTick,
+  mcTickPayload,
+  mcDynSnapshot,
 } from './missileCommand.js';
 import {
   rooms,
@@ -37,6 +40,7 @@ import {
   launchMissile as gmFire,
   launchMissileType as gmFireType,
   tickMissileRoom,
+  resetToLobby,
 } from './gameManager.js';
 
 const P1 = 'p1-top';
@@ -1278,6 +1282,401 @@ test('desperation full strike dents a shielded core without one-shotting', () =>
   assert.ok(core.coreHp < 4000 && core.coreHp >= 1500, `core dented but alive (${core.coreHp})`);
   assert.ok(!s.buildings[sh.id], 'shield generator destroyed');
   assert.ok(!s.winnerId, 'not an instant win');
+});
+
+// ─── AI opponent tests ──────────────────────────────────────────────────────
+
+test('AI: missileAiTick is a no-op without aiPlayerId', () => {
+  const s = fresh();
+  s.aiPlayerId = null;
+  s.aiDifficulty = 'hard';
+  s.aiType = 'balanced';
+  const beforePending = Object.keys(s.pending || {}).length;
+  const beforeBuildings = Object.keys(s.buildings).length;
+  missileAiTick(s, fakeNow + 10000);
+  assert.equal(Object.keys(s.pending || {}).length, beforePending, 'no pending sites added');
+  assert.equal(Object.keys(s.buildings).length, beforeBuildings, 'no buildings added');
+});
+
+test('AI: builds economy on first ticks (queues a pending site)', () => {
+  const s = fresh();
+  s.aiPlayerId = P2;
+  s.aiDifficulty = 'hard';
+  s.aiType = 'balanced';
+  s.aiLastDecisionMs = fakeNow - 5000;
+  missileAiTick(s, fakeNow + 2000);
+  const pendingBuilds = Object.values(s.pending || {}).filter(p => p.kind === 'build' && p.ownerId === P2);
+  assert.ok(pendingBuilds.length >= 1, 'AI queues at least one build site');
+  assert.equal(pendingBuilds[0].type, 'economy', 'first build is economy');
+});
+
+test('AI: aggressive type builds more launchers than defensive', () => {
+  function runAI(type) {
+    const s = fresh();
+    s.aiPlayerId = P2;
+    s.aiDifficulty = 'hard';
+    s.aiType = type;
+    s.aiLastDecisionMs = fakeNow - 5000;
+    for (let i = 0; i < 15; i++) {
+      missileAiTick(s, fakeNow + (i + 1) * 2000);
+      advance(3500, s);
+    }
+    return s;
+  }
+
+  const sAgg = runAI('aggressive');
+  const sDef = runAI('defensive');
+
+  const aggLaunchers = Object.values(sAgg.buildings).filter(b => b.ownerId === P2 && b.type === 'launcher').length;
+  const defLaunchers = Object.values(sDef.buildings).filter(b => b.ownerId === P2 && b.type === 'launcher').length;
+  const aggShields = Object.values(sAgg.buildings).filter(b => b.ownerId === P2 && (b.type === 'shield' || b.type === 'shield_heavy')).length;
+  const defShields = Object.values(sDef.buildings).filter(b => b.ownerId === P2 && (b.type === 'shield' || b.type === 'shield_heavy')).length;
+
+  assert.ok(aggLaunchers > defLaunchers, 'aggressive builds more launchers (' + aggLaunchers + ' vs ' + defLaunchers + ')');
+  assert.ok(defShields >= aggShields, 'defensive builds at least as many shields (' + defShields + ' vs ' + aggShields + ')');
+});
+
+test('AI: economic type builds more generators', () => {
+  function runAI(type) {
+    const s = fresh();
+    s.aiPlayerId = P2;
+    s.aiDifficulty = 'hard';
+    s.aiType = type;
+    s.aiLastDecisionMs = fakeNow - 5000;
+    for (let i = 0; i < 15; i++) {
+      missileAiTick(s, fakeNow + (i + 1) * 2000);
+      advance(3500, s);
+    }
+    return s;
+  }
+
+  const sEco = runAI('economic');
+  const sBal = runAI('balanced');
+
+  const ecoEco = Object.values(sEco.buildings).filter(b => b.ownerId === P2 && b.type === 'economy').length;
+  const balEco = Object.values(sBal.buildings).filter(b => b.ownerId === P2 && b.type === 'economy').length;
+  assert.ok(ecoEco >= balEco, 'economic builds at least as many generators (' + ecoEco + ' vs ' + balEco + ')');
+});
+
+test('AI: respects decision interval (easy=3s, hard=1.5s, cheater=0.8s)', () => {
+  const s = fresh();
+  s.aiPlayerId = P2;
+  s.aiDifficulty = 'hard';
+  s.aiType = 'balanced';
+  s.aiLastDecisionMs = fakeNow;
+
+  const beforePending1 = Object.keys(s.pending || {}).length;
+  missileAiTick(s, fakeNow + 1000);
+  assert.equal(Object.keys(s.pending || {}).length, beforePending1, 'no action at 1s (hard interval 1.5s)');
+
+  const beforePending2 = Object.keys(s.pending || {}).length;
+  missileAiTick(s, fakeNow + 2000);
+  assert.ok(Object.keys(s.pending || {}).length > beforePending2, 'action at 2s (hard interval 1.5s)');
+});
+
+test('AI: cheater gets income boost when idle', () => {
+  const s = fresh();
+  s.aiPlayerId = P2;
+  s.aiDifficulty = 'cheater';
+  s.aiType = 'balanced';
+  for (let i = 0; i < 5; i++) missileBuildBuilding(s, P2, { buildingType: 'economy', gx: i, gy: 0 });
+  for (let i = 0; i < 3; i++) missileBuildBuilding(s, P2, { buildingType: 'shield', gx: i, gy: 1 });
+  missileBuildBuilding(s, P2, { buildingType: 'healer', gx: 4, gy: 0 });
+  for (let i = 0; i < 4; i++) missileBuildBuilding(s, P2, { buildingType: 'launcher', launcherType: i % 2 === 0 ? 'single' : 'scatter', gx: 5 + (i % 3), gy: Math.floor(i / 3) });
+  advance(3100, s);
+  for (const b of Object.values(s.buildings).filter(b => b.ownerId === P2 && b.type !== 'core')) {
+    b.level = 5;
+  }
+  s.resources[P2] = 0;
+  const before = s.resources[P2];
+  s.aiLastDecisionMs = fakeNow - 5000;
+  missileAiTick(s, fakeNow + 2000);
+  assert.ok(s.resources[P2] >= before + 5, 'cheater AI gets income boost when idle');
+});
+
+test('AI: fires missiles when stock available and 3 launchers built', () => {
+  const s = fresh();
+  s.aiPlayerId = P2;
+  s.aiDifficulty = 'hard';
+  s.aiType = 'balanced';
+  for (let i = 0; i < 4; i++) missileBuildBuilding(s, P2, { buildingType: 'economy', gx: i, gy: 0 });
+  for (let i = 0; i < 2; i++) missileBuildBuilding(s, P2, { buildingType: 'shield', gx: i, gy: 1 });
+  missileBuildBuilding(s, P2, { buildingType: 'healer', gx: 4, gy: 0 });
+  for (let i = 0; i < 3; i++) missileBuildBuilding(s, P2, { buildingType: 'launcher', launcherType: i % 2 === 0 ? 'single' : 'scatter', gx: 5 + i, gy: 0 });
+  advance(3100, s);
+  const launchers = Object.values(s.buildings).filter(b => b.type === 'launcher' && b.ownerId === P2);
+  assert.equal(launchers.length, 3, '3 launchers built');
+  for (const L of launchers) { L.stock = 3; L.loadingUntil = 0; L.lastFiredAt = 0; }
+  s.resources[P2] = 10000;
+  for (const b of Object.values(s.buildings).filter(b => b.ownerId === P2 && b.type !== 'core')) { b.level = 5; }
+  s.aiLastDecisionMs = fakeNow - 5000;
+  const beforeMissiles = s.missiles.length;
+  missileAiTick(s, fakeNow + 2000);
+  assert.ok(s.missiles.length > beforeMissiles, 'AI fires when stock available');
+});
+
+test('AI: easy mode only fires when stock is full', () => {
+  const s = fresh();
+  s.aiPlayerId = P2;
+  s.aiDifficulty = 'easy';
+  s.aiType = 'balanced';
+  for (let i = 0; i < 3; i++) {
+    missileBuildBuilding(s, P2, { buildingType: 'launcher', launcherType: 'single', gx: i, gy: 0 });
+  }
+  advance(3100, s);
+  const launchers = Object.values(s.buildings).filter(b => b.type === 'launcher' && b.ownerId === P2);
+  assert.equal(launchers.length, 3, '3 launchers built');
+  for (const L of launchers) { L.stock = 1; L.loadingUntil = 0; L.lastFiredAt = 0; L.maxStock = 3; }
+  s.resources[P2] = 10000;
+  s.aiLastDecisionMs = fakeNow - 5000;
+  const beforeMissiles = s.missiles.length;
+  missileAiTick(s, fakeNow + 4000);
+  assert.equal(s.missiles.length, beforeMissiles, 'easy AI does not fire with partial stock');
+});
+
+test('AI: upgrades buildings when affordable', () => {
+  const s = fresh(10000);
+  s.aiPlayerId = P2;
+  s.aiDifficulty = 'hard';
+  s.aiType = 'balanced';
+  missileBuildBuilding(s, P2, { buildingType: 'economy', gx: 0, gy: 0 });
+  advance(3100, s);
+  const E = Object.values(s.buildings).find(b => b.type === 'economy' && b.ownerId === P2);
+  assert.ok(E, 'economy built');
+  assert.equal(E.level, 1, 'starts at level 1');
+  s.resources[P2] = 1000;
+  // pre-build enough so AI reaches upgrade stage
+  for (let i = 1; i < 4; i++) missileBuildBuilding(s, P2, { buildingType: 'economy', gx: i, gy: 0 });
+  for (let i = 0; i < 2; i++) missileBuildBuilding(s, P2, { buildingType: 'shield', gx: i, gy: 1 });
+  missileBuildBuilding(s, P2, { buildingType: 'healer', gx: 4, gy: 0 });
+  for (let i = 0; i < 3; i++) missileBuildBuilding(s, P2, { buildingType: 'launcher', launcherType: i % 2 === 0 ? 'single' : 'scatter', gx: 5 + i, gy: 0 });
+  advance(3100, s);
+  // set levels to max except E so AI upgrades E
+  for (const b of Object.values(s.buildings).filter(b => b.ownerId === P2 && b.type !== 'core' && b.id !== E.id)) {
+    b.level = 5;
+  }
+  s.resources[P2] = 1000;
+  s.aiLastDecisionMs = fakeNow - 5000;
+  missileAiTick(s, fakeNow + 2000);
+  const pendingUp = Object.values(s.pending ?? {}).some(p => p.kind === 'upgrade' && p.upgradeOf === E.id);
+  assert.ok(pendingUp, 'AI queues upgrade when affordable');
+});
+
+test('AI: claims supply ship when available', () => {
+  const s = fresh();
+  s.aiPlayerId = P2;
+  s.aiDifficulty = 'hard';
+  s.aiType = 'balanced';
+  s.supplyShip = { id: 'ship1', dir: 1, fromX: 0, toX: 1, y: 0.5, startAt: fakeNow, endAt: fakeNow + 10000 };
+  s.aiLastDecisionMs = fakeNow - 5000;
+  for (let i = 0; i < 20; i++) {
+    missileAiTick(s, fakeNow + (i + 1) * 2000);
+    advance(3500, s);
+  }
+  assert.ok(true, 'AI processes supply ship without error');
+});
+
+// ─── Game manager AI tests ──────────────────────────────────────────────────
+// ─── Game manager AI tests ──────────────────────────────────────────────────
+
+test('GM: startGame with aiOpponent creates AI player', () => {
+  const room = createRoom('sock-host', 'HOST');
+  selectGame(room.code, 'missile-command');
+  const updated = updateMissileCommandOptions(room.code, { aiOpponent: true });
+  assert.ok(updated, 'options updated');
+  assert.equal(updated.chromaOptions, updated.chromaOptions); // sanity
+  const started = startGame(room.code);
+  assert.ok(started, 'game started with 1 player + AI');
+  assert.equal(started.players.length, 2, 'host + AI player');
+  assert.equal(started.players[1].name, 'AI Opponent');
+  assert.equal(started.players[1].isAI, true);
+  assert.equal(started.missileCommandState.aiPlayerId, 'AI-BOT');
+  assert.equal(started.missileCommandState.aiDifficulty, 'hard');
+  assert.equal(started.missileCommandState.aiType, 'balanced');
+});
+
+test('GM: startGame rejects missile-command with 1 player without AI', () => {
+  const room = createRoom('sock-host', 'HOST');
+  selectGame(room.code, 'missile-command');
+  const started = startGame(room.code);
+  assert.equal(started, null, 'cannot start 1-player missile-command without AI');
+});
+
+test('GM: startGame rejects missile-command with 3 players', () => {
+  const room = createRoom('sock-host', 'HOST');
+  joinRoom(room.code, 'sock-p2', 'P2');
+  joinRoom(room.code, 'sock-p3', 'P3');
+  selectGame(room.code, 'missile-command');
+  const started = startGame(room.code);
+  assert.equal(started, null, 'cannot start 3-player missile-command');
+});
+
+test('GM: updateMissileCommandOptions validates aiDifficulty and aiType', () => {
+  const room = createRoom('sock-host', 'HOST');
+  selectGame(room.code, 'missile-command');
+
+  // valid values accepted
+  let updated = updateMissileCommandOptions(room.code, { aiDifficulty: 'easy', aiType: 'aggressive' });
+  assert.equal(updated.missileCommandOptions.aiDifficulty, 'easy');
+  assert.equal(updated.missileCommandOptions.aiType, 'aggressive');
+
+  // invalid values rejected (not set)
+  updated = updateMissileCommandOptions(room.code, { aiDifficulty: 'superhard', aiType: 'berserker' });
+  assert.equal(updated.missileCommandOptions.aiDifficulty, 'easy', 'invalid difficulty not applied');
+  assert.equal(updated.missileCommandOptions.aiType, 'aggressive', 'invalid type not applied');
+
+  // aiOpponent toggle
+  updated = updateMissileCommandOptions(room.code, { aiOpponent: true });
+  assert.equal(updated.missileCommandOptions.aiOpponent, true);
+  updated = updateMissileCommandOptions(room.code, { aiOpponent: false });
+  assert.equal(updated.missileCommandOptions.aiOpponent, false);
+});
+
+test('GM: resetToLobby removes AI player', () => {
+  const room = createRoom('sock-host', 'HOST');
+  selectGame(room.code, 'missile-command');
+  updateMissileCommandOptions(room.code, { aiOpponent: true });
+  startGame(room.code);
+  assert.equal(room.players.length, 2, 'host + AI before reset');
+  assert.ok(room.players.some(p => p.isAI), 'AI player present');
+  resetToLobby(room);
+  assert.equal(room.players.length, 1, 'AI removed after reset');
+  assert.ok(!room.players.some(p => p.isAI), 'no AI player after reset');
+  assert.equal(room.phase, 'lobby', 'back in lobby');
+});
+
+test('GM: AI difficulty/type passed through to state on start', () => {
+  const room = createRoom('sock-host', 'HOST');
+  selectGame(room.code, 'missile-command');
+  updateMissileCommandOptions(room.code, { aiOpponent: true, aiDifficulty: 'cheater', aiType: 'defensive' });
+  const started = startGame(room.code);
+  assert.equal(started.missileCommandState.aiDifficulty, 'cheater');
+  assert.equal(started.missileCommandState.aiType, 'defensive');
+});
+
+test('GM: tickMissileRoom runs AI and updates state', () => {
+  const room = createRoom('sock-host', 'HOST');
+  selectGame(room.code, 'missile-command');
+  updateMissileCommandOptions(room.code, { aiOpponent: true, fogOfWar: false });
+  startGame(room.code);
+  const beforeBuildings = Object.keys(room.missileCommandState.buildings).length;
+  // tick several times to let AI build
+  let t = Date.now();
+  for (let i = 0; i < 10; i++) { t += 2000; tickMissileRoom(room, t); }
+  const afterBuildings = Object.keys(room.missileCommandState.buildings).length;
+  assert.ok(afterBuildings > beforeBuildings, 'AI builds buildings over ticks');
+});
+
+test('AI: filterMissileStateForPlayer hides AI rubble/enemy data correctly', () => {
+  const s = fresh();
+  s.aiPlayerId = P2;
+  s.aiDifficulty = 'hard';
+  s.aiType = 'balanced';
+  // AI builds a shield on enemy-visible tile
+  missileBuildBuilding(s, P2, { buildingType: 'shield', gx: 6, gy: 5 });
+  advance(3100, s);
+  // fog filter should still work with AI state
+  const pub = filterMissileStateForPlayer(s, P1, fakeNow);
+  assert.ok(pub, 'filter works with AI state');
+  assert.equal(pub.sides.top, P1, 'player side preserved');
+  assert.equal(pub.sides.bottom, P2, 'AI side preserved');
+});
+
+// ─── Slim traffic stream (mc-tick payload) ───────────────────────────────
+test('mcTick: first payload carries changes, repeat is minimal', () => {
+  const s = fresh();
+  // Empty cache = the client never got a full room-state (test-only setup;
+  // in prod the cache is primed after every full broadcast).
+  const dyn = mcDynSnapshot(null);
+  const p1 = mcTickPayload(s, fakeNow, dyn);
+  assert.ok(p1.res && p1.res[P1] === 5000, 'resources included on first frame');
+  assert.equal(p1.t, fakeNow);
+  assert.ok(p1.bd, 'building dyn included on first frame');
+  assert.ok(p1.bd.core_top, 'cores covered');
+  assert.ok(p1.m === undefined, 'no missiles → no m segment');
+  assert.equal(p1.sh, undefined, 'already-known ship presence omitted');
+
+  // No changes: repeated frame is minimal (no res/bd).
+  const p2 = mcTickPayload(s, fakeNow, dyn);
+  assert.equal(p2.res, undefined, 'unchanged resources omitted');
+  assert.equal(p2.bd, undefined, 'unchanged building dyn omitted');
+  assert.equal(p2.sh, undefined, 'unchanged ship presence omitted');
+});
+
+test('mcTick: missiles ride the frame with rounded floats', () => {
+  const s = fresh();
+  missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'single', gx: 3, gy: 2 });
+  advance(3100, s);
+  const launcher = Object.values(s.buildings).find(b => b.type === 'launcher');
+  missileLoadMissile(s, P1, launcher.id);
+  advance(5100, s); // loading completes → stock 1
+  const r = missileLaunch(s, P1, { launcherId: launcher.id, targetGx: 6, targetGy: 6 });
+  assert.ok(r.missiles?.length === 1, 'launch succeeded');
+  const dyn = mcDynSnapshot(null);
+  const p = mcTickPayload(s, fakeNow, dyn);
+  assert.ok(Array.isArray(p.m) && p.m.length === 1, 'missile in frame');
+  const m = p.m[0];
+  for (const k of ['id', 'ownerId', 'launcherType', 'startX', 'targetX', 'currentX', 'speed', 'damage', 'blast']) {
+    assert.ok(Object.hasOwn(m, k), `missile field ${k} present for client render`);
+  }
+  // floats rounded to 4 decimals
+  assert.equal(m.currentX, Math.round(m.currentX * 10000) / 10000);
+  assert.ok(typeof m.lane === 'number');
+});
+
+test('mcTick: changed building dyn fields patch, cache tracks them', () => {
+  const s = fresh();
+  missileBuildBuilding(s, P1, { buildingType: 'launcher', launcherType: 'single', gx: 3, gy: 3 });
+  advance(3100, s); // built; auto-load kicked in immediately
+  const launcher = Object.values(s.buildings).find(b => b.type === 'launcher');
+  const dyn = mcDynSnapshot(s);
+  advance(5100, s); // load completes: stock 0→1, next load starts, resources spent
+  const p = mcTickPayload(s, fakeNow, dyn);
+  assert.ok(p.bd?.[launcher.id], 'changed launcher included');
+  assert.ok(p.bd[launcher.id].st === 1, 'stock present');
+  assert.ok(p.bd[launcher.id].lu > 0, 'loadingUntil present');
+  assert.ok(p.res && p.res[P1] < 5000, 'resources deducted');
+  // second call — should NOT include the same diffs again
+  const p2 = mcTickPayload(s, fakeNow, dyn);
+  assert.ok(!p2.bd || !p2.bd[launcher.id], 'no re-sent diff for unchanged values');
+});
+
+test('mcTick: ship presence flips surface in the frame', () => {
+  const s = fresh(5000);
+  s.supplyShipEnabled = true;
+  s.nextShipAt = fakeNow - 1;
+  advance(10, s);
+  assert.ok(s.supplyShip, 'ship sailing');
+  const dyn = mcDynSnapshot(null);
+  const p = mcTickPayload(s, fakeNow, dyn);
+  assert.ok(p.sh && p.sh.id === s.supplyShip.id, 'ship included when present');
+  assert.equal(p.sh.toX, s.supplyShip.toX, 'ship route fields kept');
+  s.supplyShip = null;
+  const p2 = mcTickPayload(s, fakeNow, dyn);
+  assert.equal(p2.sh, null, 'ship removal flagged');
+});
+
+test('tick: fog expiry triggers a full-state event', () => {
+  const s = fresh();
+  s.fogOfWar = true;
+  s.exploredTiles[P1]['4,4'] = fakeNow + 100;
+  const res = advance(200, s); // expiry passes during this tick
+  assert.ok(res.events.some(e => e.type === 'fog-expired'), 'event pushed');
+});
+
+test('GM: AI-driven structural changes mark the room dirty (ai-act)', () => {
+  const room = createRoom('sock-host', 'HOST');
+  selectGame(room.code, 'missile-command');
+  updateMissileCommandOptions(room.code, { aiOpponent: true, fogOfWar: false });
+  startGame(room.code);
+  let t = Date.now();
+  let saw = false;
+  for (let i = 0; i < 12 && !saw; i++) {
+    t += 2000;
+    const res = tickMissileRoom(room, t);
+    if (res.events.some(e => e.type === 'ai-act')) saw = true;
+  }
+  assert.ok(saw, 'AI builds are flagged as room-state-worthy events');
 });
 
 // restore real clock for any later suites in this process

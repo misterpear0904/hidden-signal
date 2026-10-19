@@ -15,6 +15,7 @@ import {
   missileSetKeepFire,
   missileFireDesperation,
   missileClaimShip,
+  missileAiTick,
   tickMissileCommand,
   missileSideForPlayer,
   missileIncomePerSec,
@@ -84,7 +85,7 @@ export function createRoom(hostId, hostName) {
     chromaOptions: { difficulty: 'easy', playerDifficulties: {}, fairPoints: true, extremeMode: false },
     territoryOptions: { extremeMode: false },
     liarOptions: { extremeMode: false },
-    missileCommandOptions: { startingResources: MISSILE_CONFIG.startingResources, fogOfWar: true, fogHistory: false, supplyShip: false },
+    missileCommandOptions: { startingResources: MISSILE_CONFIG.startingResources, fogOfWar: true, fogHistory: false, supplyShip: false, aiOpponent: false, aiDifficulty: 'hard', aiType: 'balanced' },
     chromaState: null,
     territoryState: null,
     blendState: null,
@@ -229,9 +230,17 @@ export function updateMissileCommandOptions(code, options) {
   if (typeof options.fogHistory === 'boolean') {
     next.fogHistory = options.fogHistory;
   }
-  // Neutral supply freighter in the channel. Off by default.
   if (typeof options.supplyShip === 'boolean') {
     next.supplyShip = options.supplyShip;
+  }
+  if (typeof options.aiOpponent === 'boolean') {
+    next.aiOpponent = options.aiOpponent;
+  }
+  if (typeof options.aiDifficulty === 'string' && ['easy','hard','cheater'].includes(options.aiDifficulty)) {
+    next.aiDifficulty = options.aiDifficulty;
+  }
+  if (typeof options.aiType === 'string' && ['aggressive','defensive','balanced','economic'].includes(options.aiType)) {
+    next.aiType = options.aiType;
   }
   room.missileCommandOptions = next;
   room.lastActivityMs = Date.now();
@@ -376,7 +385,13 @@ export function startGame(code) {
   }
 
   if (room.selectedGameId === 'missile-command') {
-    if (room.players.length !== 2) return null;
+    const aiEnabled = room.missileCommandOptions?.aiOpponent === true;
+    if (aiEnabled) {
+      if (room.players.length !== 1) return null;
+      room.players.push({ id: 'AI-BOT', name: 'AI Opponent', score: 0, isHost: false, connected: true, isAI: true });
+    } else {
+      if (room.players.length !== 2) return null;
+    }
     room.round = 1;
     room.endVote = null;
     for (const p of room.players) p.score = 0;
@@ -387,6 +402,11 @@ export function startGame(code) {
       fogHistory: room.missileCommandOptions?.fogHistory ?? false,
       supplyShip: room.missileCommandOptions?.supplyShip ?? false,
     });
+    if (aiEnabled) room.missileCommandState.aiPlayerId = 'AI-BOT';
+    room.missileCommandState.aiDifficulty = room.missileCommandOptions?.aiDifficulty ?? 'hard';
+    room.missileCommandState.aiType = room.missileCommandOptions?.aiType ?? 'balanced';
+    room.missileCommandState.aiDifficulty = room.missileCommandOptions?.aiDifficulty ?? 'hard';
+    room.missileCommandState.aiType = room.missileCommandOptions?.aiType ?? 'balanced';
     room.phase = 'missile-command-play';
     room.lastActivityMs = Date.now();
     return room;
@@ -1515,6 +1535,8 @@ export function isHost(room, socketId) {
 }
 
 export function resetToLobby(room) {
+  // Drop any AI opponent so it doesn't linger in the lobby between games.
+  room.players = room.players.filter(p => !p.isAI);
   for (const p of room.players) p.score = 0;
   room.phase = 'lobby';
   room.round = 0;
@@ -1808,14 +1830,40 @@ export function tickMissileRoom(room, now = Date.now()) {
   if (!room?.missileCommandState) return null;
   if (room.phase !== 'missile-command-play') return null;
   const { events } = tickMissileCommand(room.missileCommandState, now);
+  // Run AI opponent decisions (if any) on the same tick. The AI mutates the
+  // state directly (builds, launches, rebuilds, claims) without any of the
+  // action endpoints firing — normally the 6.7Hz full-state stream carried
+  // those changes. Now the stream is slim, so detect AI-side mutations and
+  // mark the room dirty when anything structural changed.
+  const st = room.missileCommandState;
+  const aiSig = mcMutSig(st);
+  missileAiTick(st, now);
+  if (events.length === 0 && aiSig !== mcMutSig(st)) {
+    events.push({ type: 'ai-act' });
+  }
   // NOTE: no lastActivityMs bump here — only real player actions keep a room
   // alive, so abandoned games expire via sweepInactiveRooms.
-  if (room.missileCommandState.winReason) {
-    const winner = room.players.find(p => p.id === room.missileCommandState.winnerId);
+  if (st.winReason) {
+    const winner = room.players.find(p => p.id === st.winnerId);
     if (winner) winner.score += 5;
     room.phase = 'missile-command-end';
   }
   return { room, events };
+}
+
+// Cheap structural signature of the AI-mutable parts of missile state:
+// anything the AiTick can create/remove/claim. Passive drift (income, healing,
+// missile movement) is excluded on purpose — the slim tick covers it.
+function mcMutSig(state) {
+  const st = state;
+  const bKeys = Object.keys(st.buildings ?? {}).length;
+  const pKeys = Object.keys(st.pending ?? {}).length;
+  const rKeys = Object.keys(st.rubble ?? {}).length;
+  const mCount = st.missiles?.length ?? 0;
+  const ship = st.supplyShip ? 1 : 0;
+  const lastSupply = st.lastSupply?.at ?? 0;
+  const surge = Object.keys(st.buildSurge ?? {}).length;
+  return `${bKeys}/${pKeys}/${rKeys}/${mCount}/${ship}/${lastSupply}/${surge}`;
 }
 
 export function sweepInactiveRooms(now = Date.now()) {

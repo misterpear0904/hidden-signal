@@ -50,28 +50,29 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
   const isTerritoryPush = selectedGameId === 'territory-push';
   const isEvenPlayers = playerCount % 2 === 0;
   const isMissileCommand = selectedGameId === 'missile-command';
+  const missileAiOn = isMissileCommand && (roomState.missileCommandOptions?.aiOpponent === true);
 
   const canStart = selectedGame !== null &&
-    playerCount >= (selectedGame?.minPlayers ?? 2) &&
+    (isMissileCommand && missileAiOn ? playerCount >= 1 : playerCount >= (selectedGame?.minPlayers ?? 2)) &&
     playerCount <= (selectedGame?.maxPlayers ?? 12) &&
     (!isTerritoryPush || isEvenPlayers) &&
-    (!isMissileCommand || playerCount === 2);
+    (!isMissileCommand || (missileAiOn ? playerCount === 1 : playerCount === 2));
 
   const startBlockedReason = !selectedGame
     ? 'Choose a game above to continue'
-    : playerCount < (selectedGame.minPlayers)
+    : playerCount < (selectedGame.minPlayers) && !(isMissileCommand && missileAiOn && playerCount === 1)
     ? `Need at least ${selectedGame.minPlayers - playerCount} more player${selectedGame.minPlayers - playerCount !== 1 ? 's' : ''} for ${selectedGame.name}`
     : playerCount > (selectedGame.maxPlayers)
     ? `${selectedGame.name} supports at most ${selectedGame.maxPlayers} players`
     : isTerritoryPush && !isEvenPlayers
     ? 'Territory Push requires an EVEN number of players (e.g. 2, 4, 6, 8...)'
-    : isMissileCommand && playerCount !== 2
-    ? 'Missile Command is a 1v1 duel — exactly 2 players required'
+    : isMissileCommand && !(missileAiOn ? playerCount === 1 : playerCount === 2)
+    ? 'Missile Command is a 1v1 duel — exactly 2 players required (or 1 with AI Opponent ON)'
     : null;
 
   const chromaOptions = roomState.chromaOptions || { difficulty: 'easy', playerDifficulties: {}, fairPoints: true, extremeMode: false };
   const territoryOptions = roomState.territoryOptions || { extremeMode: false };
-  const missileCommandOptions = roomState.missileCommandOptions || { startingResources: 200, fogOfWar: true, fogHistory: false, supplyShip: false };
+  const missileCommandOptions = roomState.missileCommandOptions || { startingResources: 200, fogOfWar: true, fogHistory: false, supplyShip: false, aiOpponent: false, aiDifficulty: 'hard', aiType: 'balanced' };
   const myDifficulty = chromaOptions.playerDifficulties?.[myId] || 'easy';
 
   return (
@@ -659,6 +660,88 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
                 <span className="badge badge-muted">(Host Setting)</span>
               )}
             </div>
+            {/* AI Opponent toggle */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', background: missileCommandOptions.aiOpponent ? 'rgba(239,68,68,0.1)' : 'rgba(255,255,255,0.03)', borderRadius: 'var(--radius-lg)', border: `1px solid ${missileCommandOptions.aiOpponent ? 'rgba(239,68,68,0.4)' : 'var(--border)'}`, marginTop: 10 }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.9rem', color: missileCommandOptions.aiOpponent ? 'var(--rose-400)' : 'var(--text-primary)' }}>
+                  🤖 AI Opponent (single player)
+                </div>
+                <div className="text-xs text-muted" style={{ marginTop: 2 }}>
+                  {missileCommandOptions.aiOpponent
+                    ? 'ON: play solo vs an AI commander — no second player needed'
+                    : 'OFF: 1v1 duel, exactly 2 players required'}
+                </div>
+              </div>
+              {isHost ? (
+                <button
+                  type="button"
+                  id="ai-opponent-toggle"
+                  onClick={() => onUpdateMissileCommandOptions({ aiOpponent: !missileCommandOptions.aiOpponent })}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: 'var(--radius-full)',
+                    background: missileCommandOptions.aiOpponent ? 'var(--rose-400)' : 'rgba(255,255,255,0.1)',
+                    color: missileCommandOptions.aiOpponent ? '#fff' : 'var(--text-muted)',
+                    fontWeight: 700,
+                    fontSize: '0.8rem',
+                    border: 'none',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  {missileCommandOptions.aiOpponent ? 'ON ✓' : 'OFF'}
+                </button>
+              ) : (
+                <span className="badge" style={{ background: missileCommandOptions.aiOpponent ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.05)', color: missileCommandOptions.aiOpponent ? 'var(--rose-400)' : 'var(--text-muted)' }}>
+                  {missileCommandOptions.aiOpponent ? 'ON' : 'OFF'} (Host Setting)
+                </span>
+              )}
+            </div>
+            {missileCommandOptions.aiOpponent && (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', background: 'rgba(255,255,255,0.03)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)', marginTop: 10 }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>🤖 AI Difficulty</div>
+                    <div className="text-xs text-muted" style={{ marginTop: 2 }}>Easy = slow & timid · Hard = normal · Cheater = fast & boosted</div>
+                  </div>
+                  {isHost ? (
+                    <select
+                      value={missileCommandOptions.aiDifficulty ?? 'hard'}
+                      onChange={e => onUpdateMissileCommandOptions({ aiDifficulty: e.target.value as 'easy' | 'hard' | 'cheater' })}
+                      className="btn btn-sm btn-secondary"
+                      style={{ minWidth: 100 }}
+                    >
+                      <option value="easy">Easy</option>
+                      <option value="hard">Hard</option>
+                      <option value="cheater">Cheater</option>
+                    </select>
+                  ) : (
+                    <span className="badge badge-muted">{missileCommandOptions.aiDifficulty ?? 'hard'}</span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', background: 'rgba(255,255,255,0.03)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)', marginTop: 10 }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>🤖 AI Type</div>
+                    <div className="text-xs text-muted" style={{ marginTop: 2 }}>Aggressive = launchers · Defensive = shields · Economic = generators · Balanced = mix</div>
+                  </div>
+                  {isHost ? (
+                    <select
+                      value={missileCommandOptions.aiType ?? 'balanced'}
+                      onChange={e => onUpdateMissileCommandOptions({ aiType: e.target.value as 'aggressive' | 'defensive' | 'balanced' | 'economic' })}
+                      className="btn btn-sm btn-secondary"
+                      style={{ minWidth: 120 }}
+                    >
+                      <option value="aggressive">Aggressive</option>
+                      <option value="defensive">Defensive</option>
+                      <option value="balanced">Balanced</option>
+                      <option value="economic">Economic</option>
+                    </select>
+                  ) : (
+                    <span className="badge badge-muted">{missileCommandOptions.aiType ?? 'balanced'}</span>
+                  )}
+                </div>
+              </>
+            )}
             <p className="text-xs text-muted" style={{ marginTop: 10, lineHeight: 1.5 }}>
               🏝️ Top vs Bottom islands — you can only build on your own side. ⭐ Core has 4000 HP + slow regen. Destroy it to win!
             </p>

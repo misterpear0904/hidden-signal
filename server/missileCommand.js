@@ -1065,6 +1065,107 @@ export function filterMissileStateForPlayer(state, forPlayerId, now = Date.now()
   };
 }
 
+// ─── Slim traffic stream ("mc-tick") ─────────────────────────────────────
+// Options 1/3/4/6 of the bandwidth plan: the 6.7Hz tick no longer sends the
+// whole room state. "room-state" stays authoritative and event-driven;
+// between events a tiny mc-tick carries only the volatile bits: missiles in
+// flight (position-rounded), floored resources, per-building dynamic fields
+// that changed since the last frame (shield/core HP, stock, load timer,
+// healer beam), and the supply ship only when it appears/disappears.
+// Floats are rounded at the wire boundary (server-side state stays exact).
+const r4 = (n) => (Math.round(n * 10000) / 10000);
+
+const SHIP_FIELDS = { id: 1, dir: 1, fromX: 1, toX: 1, y: 1, startAt: 1, endAt: 1 };
+
+// Fresh diff cache: what the client currently knows after a full
+// room-state broadcast. Rooms store it between ticks (room.mcDyn).
+export function mcDynSnapshot(state) {
+  const dyn = { res: {}, bd: {}, ship: '' };
+  if (!state) return dyn;
+  for (const pid of [state.sides?.top, state.sides?.bottom]) {
+    if (pid) dyn.res[pid] = Math.floor(state.resources[pid] ?? 0);
+  }
+  for (const b of Object.values(state.buildings ?? {})) {
+    dyn.bd[b.id] = mcDynKey(b);
+  }
+  dyn.ship = state.supplyShip ? state.supplyShip.id : '';
+  return dyn;
+}
+
+function mcDynKey(b) {
+  return `${Math.round(b.shieldHp ?? 0)}|${Math.round(b.coreHp ?? 0)}|${b.stock ?? 0}|${b.loadingUntil ?? 0}|${b.healTargetId ?? ''}`;
+}
+
+// Non-mutating count of building dynamic fields that would go out on the next
+// slim tick (used to decide whether a heartbeat frame is worth sending).
+export function mcPendingDiffCount(state, dyn) {
+  if (!state) return 0;
+  let n = 0;
+  for (const b of Object.values(state.buildings ?? {})) {
+    if (dyn.bd[b.id] !== mcDynKey(b)) n++;
+  }
+  return n;
+}
+
+// Build one slim tick payload against a diff cache. Mutates the cache so the
+// next call only reports further changes. Returns null-tolerant compact:
+// empty segments are omitted entirely.
+export function mcTickPayload(state, now = Date.now(), dyn = mcDynSnapshot(state)) {
+  if (!state) return { t: now };
+  const out = { t: now };
+
+  // Resources (floored — the client HUD floors them for display anyway).
+  for (const pid of [state.sides?.top, state.sides?.bottom]) {
+    if (!pid) continue;
+    const v = Math.floor(state.resources[pid] ?? 0);
+    if (dyn.res[pid] !== v) { out.res = out.res || {}; out.res[pid] = v; dyn.res[pid] = v; }
+  }
+
+  // Missiles in flight — same field names the client already reads.
+  if (state.missiles?.length) {
+    out.m = state.missiles.map(m => ({
+      id: m.id, ownerId: m.ownerId, launcherId: m.launcherId ?? null,
+      launcherType: m.launcherType,
+      startX: r4(m.startX), startY: r4(m.startY),
+      targetX: r4(m.targetX), targetY: r4(m.targetY),
+      targetGx: m.targetGx, targetGy: m.targetGy,
+      currentX: r4(m.currentX), currentY: r4(m.currentY),
+      speed: m.speed, lane: m.lane ?? 0,
+      desperation: !!m.desperation, deployAt: m.deployAt ?? now,
+      damage: m.damage ?? 0, blast: m.blast ?? 0, createdAt: m.createdAt ?? now,
+    }));
+  }
+
+  // Building dynamic fields that changed. Player-owned + enemy values both
+  // included (matching current behavior: enemy core HP and visible shields
+  // are public; hidden values can't be located on the map because patches
+  // carry no coordinates).
+  for (const b of Object.values(state.buildings ?? {})) {
+    const key = mcDynKey(b);
+    if (dyn.bd[b.id] === key) continue;
+    dyn.bd[b.id] = key;
+    out.bd = out.bd || {};
+    const patch = {};
+    if (isShieldType(b.type)) patch.s = Math.round(b.shieldHp ?? 0);
+    if (b.type === 'core') patch.c = Math.round(b.coreHp ?? 0);
+    if (b.type === 'launcher') { patch.st = b.stock ?? 0; patch.lu = b.loadingUntil ?? 0; }
+    if (b.type === 'healer') patch.ht = b.healTargetId ?? null;
+    out.bd[b.id] = patch;
+  }
+
+  // Supply ship: send only when its presence changes (movement/route rides
+  // the event-driven room-state that replaced or created it).
+  const shipKey = state.supplyShip ? state.supplyShip.id : '';
+  if (dyn.ship !== shipKey) {
+    dyn.ship = shipKey;
+    out.sh = state.supplyShip
+      ? Object.fromEntries(Object.entries(state.supplyShip).filter(([k]) => SHIP_FIELDS[k]))
+      : null;
+  }
+
+  return out;
+}
+
 // Explore tiles around a point (missile impact) for the attacker
 function exploreAround(state, ownerId, gx, gy, radius = FOG_REVEAL_RADIUS, duration = FOG_TEMPORARY_DURATION) {
   if (!state.fogOfWar) return;
@@ -1091,16 +1192,19 @@ function exploreAround(state, ownerId, gx, gy, radius = FOG_REVEAL_RADIUS, durat
 // is REMEMBERED (-1): the player keeps a dimmed last-known view of it.
 // With history OFF (default) it is forgotten outright — no buildings linger.
 function expireFog(state, now) {
-  if (!state.fogOfWar) return;
+  if (!state.fogOfWar) return 0;
   const remember = state.fogHistory === true;
+  let changed = 0;
   for (const tiles of Object.values(state.exploredTiles)) {
     for (const [key, expiresAt] of Object.entries(tiles)) {
       if (expiresAt > 0 && expiresAt <= now) {
         if (remember) tiles[key] = -1;
         else delete tiles[key];
+        changed++;
       }
     }
   }
+  return changed;
 }
 
 // Advance simulation by dt seconds. Returns events for logging.
@@ -1114,8 +1218,9 @@ export function tickMissileCommand(state, now = Date.now()) {
   // Initialize fog of war on first tick (cores permanently visible)
   initFogOfWar(state);
 
-  // Expire temporary fog revelations
-  expireFog(state, now);
+  // Expire temporary fog revelations — a tile going dark is a visible state
+  // change, so it must trigger a full broadcast (fog data only rides there).
+  if (expireFog(state, now) > 0) events.push({ type: 'fog-expired' });
 
   // 0d. Supply freighter schedule: sail one crossing, then go dark until
   // the next sailing. Unclaimed ships simply sail away.
@@ -1367,4 +1472,169 @@ export function missileIncomePerSec(state, playerId) {
   const core = Object.values(state.buildings).find(b => b.ownerId === playerId && b.type === 'core');
   if (core && (core.coreHp ?? 0) > 0) income += state.coreIncomePerSec ?? MISSILE_CONFIG.coreIncomePerSec;
   return income;
+}
+
+
+export function missileAiTick(state, now = Date.now()) {
+  if (!state || state.winnerId || !state.aiPlayerId) return;
+  const ai = state.aiPlayerId;
+  const side = missileSideForPlayer(state, ai);
+  if (!side) return;
+  const enemySide = side === 'top' ? 'bottom' : 'top';
+
+  const difficulty = state.aiDifficulty || 'hard';
+  const type = state.aiType || 'balanced';
+
+  const interval = difficulty === 'easy' ? 3000 : difficulty === 'cheater' ? 700 : 1500;
+  if (!state.aiLastDecisionMs) state.aiLastDecisionMs = now;
+  if (now - state.aiLastDecisionMs < interval) return;
+  state.aiLastDecisionMs = now;
+
+  const own = Object.values(state.buildings).filter(b => b.ownerId === ai);
+  const ownLaunchers = own.filter(b => b.type === 'launcher');
+  const ownEco = own.filter(b => b.type === 'economy');
+  const ownShields = own.filter(b => b.type === 'shield' || b.type === 'shield_heavy');
+  const ownHealers = own.filter(b => b.type === 'healer');
+
+  // Count pending builds toward targets so we don't over-queue.
+  const pendingOwn = Object.values(state.pending ?? {}).filter(p => p.ownerId === ai && p.kind === 'build');
+  const pendingEco = pendingOwn.filter(p => p.type === 'economy').length;
+  const pendingShields = pendingOwn.filter(p => p.type === 'shield' || p.type === 'shield_heavy').length;
+  const pendingHealers = pendingOwn.filter(p => p.type === 'healer').length;
+  const pendingLaunchers = pendingOwn.filter(p => p.type === 'launcher').length;
+
+  function freeCell() {
+    for (let gx = 0; gx < MISSILE_CONFIG.gridCols; gx++) {
+      for (let gy = 0; gy < MISSILE_CONFIG.gridRows; gy++) {
+        const occ = Object.values(state.buildings).some(b => b.side === side && b.gx === gx && b.gy === gy) ||
+          Object.values(state.pending ?? {}).some(p => p.side === side && p.gx === gx && p.gy === gy) ||
+          Object.values(state.rubble ?? {}).some(r => r.side === side && r.gx === gx && r.gy === gy && r.ownerId === ai);
+        if (!occ) return { gx, gy };
+      }
+    }
+    return null;
+  }
+
+  // Base targets by type.
+  const baseTargets = {
+    aggressive: { eco: 2, shields: 1, healers: 0, launchers: 5, maxLevel: 5 },
+    defensive:  { eco: 3, shields: 4, healers: 2, launchers: 1, maxLevel: 5 },
+    economic:   { eco: 6, shields: 1, healers: 1, launchers: 1, maxLevel: 5 },
+    balanced:   { eco: 4, shields: 2, healers: 1, launchers: 3, maxLevel: 5 },
+  }[type] || { eco: 4, shields: 2, healers: 1, launchers: 3, maxLevel: 5 };
+
+  const targets = { ...baseTargets };
+  if (difficulty === 'cheater') { targets.eco += 1; targets.shields += 1; targets.launchers += 1; targets.maxLevel = 5; }
+
+  // Late-game scaling: as income grows, raise targets so the AI keeps expanding.
+  const income = missileIncomePerSec(state, ai);
+  if (income > 20) {
+    targets.eco = Math.max(targets.eco, 6);
+    targets.shields = Math.max(targets.shields, 3);
+    targets.launchers = Math.max(targets.launchers, 4);
+  }
+  if (income > 45) {
+    targets.eco = Math.max(targets.eco, 8);
+    targets.shields = Math.max(targets.shields, 5);
+    targets.launchers = Math.max(targets.launchers, 6);
+    targets.healers = Math.max(targets.healers, 2);
+  }
+
+  // Rebuild rubble first (half price, instant) — cheaper than fresh builds.
+  const ownRubble = Object.values(state.rubble ?? {}).filter(r => r.ownerId === ai);
+  if (ownRubble.length > 0) {
+    // rebuild the most valuable type first: launchers > shields > economy > healer
+    const priority = { launcher: 4, shield: 3, shield_heavy: 3, healer: 2, economy: 1 };
+    const pick = ownRubble.slice().sort((a, b) => (priority[b.type] || 0) - (priority[a.type] || 0))[0];
+    if (pick) {
+      const r = missileRebuildRubble(state, ai, pick.id);
+      if (!r?.error) return;
+    }
+  }
+
+  if (ownEco.length + pendingEco < targets.eco) {
+    const c = freeCell();
+    if (c) {
+      const r = missileBuildBuilding(state, ai, { buildingType: 'economy', gx: c.gx, gy: c.gy });
+      if (!r?.error) return;
+    }
+  }
+  if (ownShields.length + pendingShields < targets.shields) {
+    const c = freeCell();
+    if (c) {
+      const r = missileBuildBuilding(state, ai, { buildingType: 'shield', gx: c.gx, gy: c.gy });
+      if (!r?.error) return;
+    }
+  }
+  if (ownHealers.length + pendingHealers < targets.healers && (ownShields.length + pendingShields) >= 1) {
+    const c = freeCell();
+    if (c) {
+      const r = missileBuildBuilding(state, ai, { buildingType: 'healer', gx: c.gx, gy: c.gy });
+      if (!r?.error) return;
+    }
+  }
+  if (ownLaunchers.length + pendingLaunchers < targets.launchers) {
+    const c = freeCell();
+    if (c) {
+      const r = missileBuildBuilding(state, ai, { buildingType: 'launcher', launcherType: (ownLaunchers.length + pendingLaunchers) % 2 === 0 ? 'single' : 'scatter', gx: c.gx, gy: c.gy });
+      if (!r?.error) return;
+    }
+  }
+
+  // Upgrade: pick best candidate by type priority and affordability.
+  const upgradePriority = { launcher: 4, shield: 3, shield_heavy: 3, healer: 2, economy: 1 };
+  const candidates = own
+    .filter(b => b.type !== 'core' && b.level < targets.maxLevel)
+    .filter(b => !Object.values(state.pending ?? {}).some(p => p.kind === 'upgrade' && p.upgradeOf === b.id))
+    .filter(b => !Object.values(state.pending ?? {}).some(p => p.kind === 'sell' && p.sellOf === b.id))
+    .sort((a, b) => (upgradePriority[b.type] || 0) - (upgradePriority[a.type] || 0));
+  for (const b of candidates) {
+    const cost = upgradeCostFor(b);
+    if (cost !== null && (state.resources[ai] ?? 0) >= cost) {
+      const r = missileUpgradeBuilding(state, ai, b.id);
+      if (!r?.error) return;
+    }
+  }
+
+  // Strategic targeting: pick best enemy target.
+  const enemyBuildings = Object.values(state.buildings).filter(b => b.ownerId !== ai && b.side === enemySide);
+  const enemyShields = enemyBuildings.filter(b => b.type === 'shield' || b.type === 'shield_heavy');
+  const enemyLaunchers = enemyBuildings.filter(b => b.type === 'launcher');
+  const enemyEco = enemyBuildings.filter(b => b.type === 'economy');
+  const enemyCore = enemyBuildings.find(b => b.type === 'core');
+
+  let target = { gx: 6, gy: 3 }; // default: enemy core
+  if (difficulty !== 'easy') {
+    // Break weakest shield first
+    const weakShield = enemyShields
+      .filter(s => (s.shieldHp ?? s.maxShieldHp ?? 1) / (s.maxShieldHp ?? 1) < 0.6)
+      .sort((a, c) => ((a.shieldHp ?? 0) / (a.maxShieldHp ?? 1)) - ((c.shieldHp ?? 0) / (c.maxShieldHp ?? 1)))[0];
+    if (weakShield) {
+      target = { gx: weakShield.gx, gy: weakShield.gy };
+    } else if (enemyLaunchers.length > 0 && Math.random() < 0.4) {
+      // Sometimes target launchers to reduce enemy firepower
+      const L = enemyLaunchers[Math.floor(Math.random() * enemyLaunchers.length)];
+      target = { gx: L.gx, gy: L.gy };
+    } else if (enemyEco.length > 0 && Math.random() < 0.3) {
+      // Sometimes target economy
+      const E = enemyEco[Math.floor(Math.random() * enemyEco.length)];
+      target = { gx: E.gx, gy: E.gy };
+    }
+  }
+  // else target core (default)
+
+  const fireThreshold = difficulty === 'easy' ? (L) => (L.stock ?? 0) >= (L.maxStock ?? 3) : (L) => (L.stock ?? 0) > 0;
+  for (const L of ownLaunchers) {
+    if (fireThreshold(L)) {
+      const cd = L.cooldownMs ?? 0;
+      if (cd > 0 && now - (L.lastFiredAt ?? 0) < cd) continue;
+      missileLaunch(state, ai, { launcherId: L.id, targetGx: target.gx, targetGy: target.gy });
+    }
+  }
+
+  if (state.supplyShip) missileClaimShip(state, ai);
+
+  if (difficulty === 'cheater') {
+    state.resources[ai] = (state.resources[ai] ?? 0) + 5;
+  }
 }

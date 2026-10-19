@@ -337,6 +337,9 @@ export interface MissileCommandOptions {
   fogOfWar: boolean;
   fogHistory: boolean;
   supplyShip: boolean;
+  aiOpponent?: boolean;
+  aiDifficulty?: 'easy' | 'hard' | 'cheater';
+  aiType?: 'aggressive' | 'defensive' | 'balanced' | 'economic';
 }
 
 export interface Player {

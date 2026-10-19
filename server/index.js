@@ -95,7 +95,7 @@ import {
   BLUFF_BET_SEC_VALUE,
 } from './gameManager.js';
 // Fog redaction lives in the silo'd game module (not the wrapper layer).
-import { filterMissileStateForPlayer } from './missileCommand.js';
+import { filterMissileStateForPlayer, mcTickPayload, mcDynSnapshot, mcPendingDiffCount } from './missileCommand.js';
 
 // CORS: production requires CLIENT_ORIGIN to be set to your frontend URL
 // (e.g., https://hidden-signal-client.onrender.com).
@@ -169,6 +169,11 @@ const io = new Server(httpServer, {
   pingInterval: 25000,   // ping every 25s (default 25s)
   // Allow reconnection with longer delays for mobile network changes
   maxHttpBufferSize: 1e8,
+  // Bandwidth: compress room-state frames (3-16 KB of repetitive JSON).
+  // Frames under this threshold (the slim mc-tick stream) skip compression
+  // overhead entirely. socket.io defaults this OFF, we opt in because the
+  // per-frame CPU cost is small and traffic reduction is 5-10x on big JSON.
+  perMessageDeflate: { threshold: 2048 },
 });
 
 // Unique per process boot. Clients compare it on (re)connect: a changed
@@ -466,8 +471,10 @@ function roomPublicState(room, forPlayerId = null) {
     chromaOptions: room.chromaOptions || { difficulty: 'easy', fairPoints: true, extremeMode: false },
     territoryOptions: room.territoryOptions || { extremeMode: false },
     liarOptions: room.liarOptions || { extremeMode: false },
-    missileCommandOptions: room.missileCommandOptions || { startingResources: 200, fogOfWar: true, fogHistory: false, supplyShip: false },
-    missileCommandState: filterMissileStateForPlayer(room.missileCommandState, forPlayerId, Date.now()),
+    missileCommandOptions: room.missileCommandOptions || { startingResources: 200, fogOfWar: true, fogHistory: false, supplyShip: false, aiOpponent: false, aiDifficulty: 'hard', aiType: 'balanced' },
+    missileCommandState: stripMidGameIncomeHistory(
+      filterMissileStateForPlayer(room.missileCommandState, forPlayerId, Date.now()),
+    ),
     chromaState: room.chromaState || null,
     territoryState: publicTerritoryState,
     blendState: publicBlendState,
@@ -503,7 +510,14 @@ function roomPublicState(room, forPlayerId = null) {
   };
 }
 
-// Send a player their private role data
+// Income-rate history would leak the enemy economy mid-game; the fog filter
+// already withholds it when fog is ON, but the fog-OFF path returns the raw
+// state passthrough — strip it there too (the post-game view still gets it).
+function stripMidGameIncomeHistory(mc) {
+  if (!mc || mc.winnerId || mc.winReason || !mc.incomeHistory) return mc;
+  return { ...mc, incomeHistory: undefined };
+}
+
 function sendPrivateRole(socket, room) {
   const roleData = room.roles.find(r => r.playerId === socket.id);
   if (roleData) {
@@ -517,6 +531,24 @@ function broadcastRoomState(room) {
     if (playerSocket) {
       playerSocket.emit('room-state', roomPublicState(room, player.id));
     }
+  }
+  // Everyone just received the full authoritative state — resync the slim
+  // mc-tick diff cache so subsequent ticks only carry further changes.
+  if (room.phase === 'missile-command-play' && room.missileCommandState) {
+    room.mcDyn = mcDynSnapshot(room.missileCommandState);
+    room.mcLastEconSig = null;
+  }
+}
+
+// Emit one slim missile tick (missiles in flight + resources + dynamic
+// building fields). ~0.3-2.5 KB instead of the 3-16 KB full room state.
+function sendMcTick(room, now) {
+  const st = room.missileCommandState;
+  if (!st || room.phase !== 'missile-command-play') return;
+  if (!room.mcDyn) room.mcDyn = mcDynSnapshot(st);
+  const payload = mcTickPayload(st, now, room.mcDyn);
+  for (const player of room.players) {
+    io.sockets.sockets.get(player.id)?.emit('mc-tick', payload);
   }
 }
 
@@ -981,7 +1013,12 @@ io.on('connection', (socket) => {
     }
 
     if (gameId === 'missile-command') {
-      if (room.players.length !== 2) return socket.emit('error', 'Missile Command is a 1v1 duel (exactly 2 players)');
+      const aiEnabled = room.missileCommandOptions?.aiOpponent === true;
+      if (aiEnabled) {
+        if (room.players.length !== 1) return socket.emit('error', 'Missile Command vs AI needs exactly 1 player');
+      } else {
+        if (room.players.length !== 2) return socket.emit('error', 'Missile Command is a 1v1 duel (exactly 2 players)');
+      }
       clearRoomTimer(roomCode);
       const started = startGame(roomCode);
       if (!started) return socket.emit('error', 'Could not start Missile Command');
@@ -1294,16 +1331,23 @@ io.on('connection', (socket) => {
       socket.emit('room-expired', { roomCode, reason: 'Room no longer exists (server restart or expired)' });
       return;
     }
-    socket.emit('room-state', roomPublicState(room, socket.id));
+    // Full state to the requester — broadcast to ALL so everyone's view and
+    // the slim mc-tick diff cache resync to the same point in time.
+    broadcastRoomState(room);
   });
 });
 
 // ─── Missile Command real-time tick (silo'd) ────────────────────────────
 // Advances economy, healers, missiles and core regen for active games.
-// ~150ms (6.7Hz) rather than 250ms: clients extrapolate between these
-// snapshots, and a 4Hz reference path made fast missiles visibly steppy.
-// Snapshots go out only on visible changes (or a 1Hz heartbeat for economy
-// numbers); missiles in flight always stream so interpolation stays smooth.
+// Server-side simulation stays ~150ms (6.7Hz) — physics/AI cadence is
+// independent of wire cadence. On the wire:
+//   • events (launch, impact, build, upgrade, sell, fog, AI structural
+//     changes) → full authoritative room-state (the client can always trust
+//     it; diff caches resync),
+//   • missiles in flight, no events → slim `mc-tick` at ~250ms (4Hz; clients
+//     extrapolate between snapshots so fast missiles still glide),
+//   • otherwise a ~1Hz economy heartbeat that sends a slim mc-tick ONLY when
+//     the rounded economy actually changed (see bandwidth plan opts 3/4).
 setInterval(() => {
   try {
     const now = Date.now();
@@ -1312,10 +1356,27 @@ setInterval(() => {
       if (room.missileCommandState.winnerId) continue;
       const res = tickMissileRoom(room, now);
       if (!res) continue;
-      const inFlight = (room.missileCommandState.missiles?.length ?? 0) > 0;
-      if (res.events.length > 0 || inFlight || now - (room.missileLastBroadcastMs ?? 0) >= 1000) {
+      const st = room.missileCommandState;
+      const inFlight = (st.missiles?.length ?? 0) > 0;
+      if (res.events.length > 0) {
         room.missileLastBroadcastMs = now;
+        room.missileLastTickSentMs = now;
         broadcastRoomState(res.room);
+      } else if (inFlight) {
+        if (now - (room.missileLastTickSentMs ?? 0) >= 250) {
+          room.missileLastTickSentMs = now;
+          sendMcTick(room, now);
+        }
+      } else if (now - (room.missileLastBroadcastMs ?? 0) >= 1000) {
+        // Economy heartbeat: skip when nothing visibly changed — floored
+        // resources identical AND no pending building-dynamic diffs.
+        const pidA = st.sides?.top; const pidB = st.sides?.bottom;
+        const sig = `${Math.floor(st.resources[pidA] ?? 0)},${Math.floor(st.resources[pidB] ?? 0)},${mcPendingDiffCount(st, room.mcDyn ?? (room.mcDyn = mcDynSnapshot(st)))}`;
+        if (sig !== (room.mcLastEconSig ?? '')) {
+          room.mcLastEconSig = sig;
+          room.missileLastBroadcastMs = now;
+          sendMcTick(room, now);
+        }
       }
     }
   } catch (e) {

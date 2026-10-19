@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type { RoomState, RoleData, RoundRevealData, ChromaOptions, TerritoryOptions, LiarOptions, BluffAction, MissileBuildAction, MissileUpgradeAction, MissileLaunchAction, MissileTypeLaunchAction, MissileLoadAction, MissileKeepFireAction, MissileDesperationAction, MissileCommandOptions } from '../types/game';
 import { saveRoomSession, clearRoomSession, readRoomSession } from '../utils/roomSession';
+import { applyMissileTick, type MissileTickPayload } from '../components/missileCommand/mcTick';
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
 
@@ -333,6 +334,11 @@ export function useSocket(): SocketHookReturn {
         setMyRole(null);
       }
     };
+    // Slim high-frequency missile stream: merges into the current room state
+    // (FIFO with room-state is guaranteed on one socket, see mcTick.ts).
+    const onMcTick = (payload: MissileTickPayload) => {
+      setRoomState(prev => (prev ? applyMissileTick(prev, payload) : prev));
+    };
     const onRole = (role: RoleData) => setMyRole(role);
     const onReveal = (data: RoundRevealData) => setRoundReveal(data);
     const onError = (msg: unknown) => {
@@ -388,6 +394,7 @@ export function useSocket(): SocketHookReturn {
     s.on('connect_error', onConnectError);
     s.on('room-joined', onRoomJoined);
     s.on('room-state', onRoomState);
+    s.on('mc-tick', onMcTick);
     s.on('your-role', onRole);
     s.on('round-reveal', onReveal);
     s.on('error', onError);
@@ -408,6 +415,7 @@ export function useSocket(): SocketHookReturn {
       s.off('connect_error', onConnectError);
       s.off('room-joined', onRoomJoined);
       s.off('room-state', onRoomState);
+      s.off('mc-tick', onMcTick);
       s.off('your-role', onRole);
       s.off('round-reveal', onReveal);
       s.off('error', onError);

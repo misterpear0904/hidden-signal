@@ -193,7 +193,7 @@ export const MotionLayer = memo(function MotionLayer({ missiles, supplyShip, top
 
   // ── Snapshot missiles for smooth client-side interpolation ──
   useEffect(() => {
-    snapRef.current = { missiles: missiles.map(m => ({ ...m })), at: Date.now() };
+    snapRef.current = { missiles: (missiles ?? []).map(m => ({ ...m })), at: Date.now() };
     shipSailingRef.current = !!supplyShip;
   }, [missiles, supplyShip]);
 
@@ -248,7 +248,7 @@ export const MotionLayer = memo(function MotionLayer({ missiles, supplyShip, top
       {/* Missiles in flight (interpolated, fanned by lane).
           Kept to 3 lean nodes each (trail, head, target) with no CSS
           animations so big scatter volleys stay smooth. */}
-      {snapRef.current.missiles.map(m => {
+      {(snapRef.current.missiles ?? []).map(m => {
         const elapsed = Math.min(12, (renderNow - snapRef.current.at) / 1000);
         const sx = m.currentX * WORLD, sy = m.currentY * WORLD;
         const tx = m.targetX * WORLD, ty = m.targetY * WORLD;
@@ -973,8 +973,12 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   // first paint — not just the state change.)
   const POPUP_ARM_MS = 600;
   const popupOpenedAtRef = useRef(0);
-  const popupArmed = () => Date.now() - popupOpenedAtRef.current >= POPUP_ARM_MS;
-  const markPopupOpened = () => { popupOpenedAtRef.current = Date.now(); };
+  const popupOpenedByTouchRef = useRef(false);
+  const popupArmed = () => !popupOpenedByTouchRef.current || (Date.now() - popupOpenedAtRef.current >= POPUP_ARM_MS);
+  const markPopupOpened = (isTouch: boolean = false) => {
+    popupOpenedAtRef.current = Date.now();
+    popupOpenedByTouchRef.current = isTouch;
+  };
   // Last map tap (any tap on the board): the always-visible dock LOAD button
   // gets the same treatment — a bounce right after a map tap must not
   // start a missile build. Shorter window than popups (300ms): dock taps
@@ -1397,7 +1401,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
               Under fog, an enemy healer's beam gives away its exact tile, so
               it's only drawn once I have vision of that healer. */}
           {buildings.filter(b => b.type === 'healer' && b.healTargetId && (b.ownerId === myId || canSeeEnemyAt(b.gx, b.gy))).map(h => {
-            const t = mc.buildings[h.healTargetId!];
+            const t = (mc.buildings ?? {})[h.healTargetId!];
             if (!t) return null;
             const hr = cellRect(h.side, h.gx, h.gy, cols, rows);
             const tr = cellRect(t.side, t.gx, t.gy, cols, rows);
@@ -1501,7 +1505,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
               Self-contained 60fps subtree — the rest of this board only
               re-renders on state broadcasts / slow ticks. */}
           <MotionLayer
-            missiles={mc.missiles}
+            missiles={mc.missiles ?? []}
             supplyShip={mc.supplyShip}
             topOwnerId={mc.sides.top}
             cols={cols}
@@ -1652,7 +1656,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
               <span className="text-xs text-muted" style={{ fontSize: '0.6rem', fontWeight: 700 }}>FPS </span>
               <span style={{ fontWeight: 800, fontSize: '0.8rem', color: fps == null ? undefined : fps >= 25 ? '#4ade80' : fps >= 15 ? '#fbbf24' : '#fb7185' }}>{fps == null ? 'idle' : fps}</span>
             </span>
-            <span title="Game updates received from the server each second — about 7 while missiles are flying, 1 when quiet. If this drops but FPS holds steady, the hitch is network/server, not your device.">
+            <span title="Game updates received from the server each second - about 4 while missiles are flying, up to 1 when quiet. If this drops but FPS holds steady, the hitch is network/server, not your device.">
               <span className="text-xs text-muted" style={{ fontSize: '0.6rem', fontWeight: 700 }}>NET </span>
               <span style={{ fontWeight: 800, fontSize: '0.8rem' }}>{ups}/s</span>
             </span>
