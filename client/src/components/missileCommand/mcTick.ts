@@ -43,8 +43,7 @@ export function applyMissileTick(prev: RoomState, payload: MissileTickPayload): 
     n.resources = { ...mc.resources, ...payload.res };
   }
   if (payload.bd && Object.keys(payload.bd).length > 0) {
-    const next = dirty();
-    const buildings = { ...next.buildings ?? {} };
+    const buildings = { ...(mc.buildings ?? {}) };
     let changed = false;
     for (const [id, patch] of Object.entries(payload.bd)) {
       const b = buildings[id];
@@ -58,10 +57,9 @@ export function applyMissileTick(prev: RoomState, payload: MissileTickPayload): 
       if (patch.ht !== undefined) nb.healTargetId = patch.ht;
       if (nb !== b) { buildings[id] = nb; changed = true; }
     }
-    if (changed) next.buildings = buildings;
-  }
-  if (payload.bd && Object.keys(payload.bd).length === 0) {
-    // empty diff object means "buildings unchanged" — nothing to do
+    // Only dirt() when a field actually changed, so no-op frames keep the
+    // mc object identity stable (ups counter + memos skip re-renders).
+    if (changed) nextMc = { ...nextMc ?? mc, buildings };
   }
 
   // Supply ship presence flips: at sea (object) or sailed off (null).
@@ -69,7 +67,7 @@ export function applyMissileTick(prev: RoomState, payload: MissileTickPayload): 
     const next = dirty();
     next.supplyShip = payload.sh === null ? null : (next.supplyShip
       ? { ...next.supplyShip, ...payload.sh } as typeof next.supplyShip
-      : payload.sh as typeof next.supplyShip);
+      : payload.sh as unknown as typeof next.supplyShip);
   }
 
   return nextMc ? { ...prev, missileCommandState: nextMc } : prev;

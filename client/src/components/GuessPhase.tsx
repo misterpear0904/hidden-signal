@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import type { RoleData, RoomState, Player } from '../types/game';
-import type { GuessData } from '../hooks/useSocket';
+import type { GuessData, ActionAck } from '../hooks/useSocket';
 import { TOTAL_ROUNDS, avatarColor, avatarInitial } from '../constants';
 import TimerBar from './TimerBar';
 
@@ -8,13 +8,17 @@ interface Props {
   myRole: RoleData;
   roomState: RoomState;
   myId: string;
-  onSubmitGuess: (guessData: GuessData) => void;
+  // Task 1: promise-resolving submit — "Guess Locked In!" renders only after
+  // the server acknowledges the requestId.
+  onSubmitGuess: (guessData: GuessData) => Promise<ActionAck>;
 }
 
 export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: Props) {
   const [selectedPartner, setSelectedPartner] = useState<string>('');
   const [selectedSuspect, setSelectedSuspect] = useState<string>('');
   const [submitted, setSubmitted] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
 
   const isHidden = myRole.role === 'hidden';
   const alreadySubmitted = roomState.guesses.some(g => g.playerId === myId);
@@ -25,17 +29,25 @@ export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: P
   const canSubmitHidden = selectedPartner !== '';
   const canSubmitNeutral = selectedSuspect !== '';
 
-  const handleSubmit = useCallback(() => {
-    if (effectivelySubmitted) return;
+  const handleSubmit = useCallback(async () => {
+    if (effectivelySubmitted || pending) return;
     if (isHidden) {
       if (!canSubmitHidden) return;
-      onSubmitGuess({ guessedPartnerId: selectedPartner });
     } else {
       if (!canSubmitNeutral) return;
-      onSubmitGuess({ guessedPlayerId: selectedSuspect });
     }
-    setSubmitted(true);
-  }, [effectivelySubmitted, isHidden, canSubmitHidden, canSubmitNeutral, selectedPartner, selectedSuspect, onSubmitGuess]);
+    setPending(true);
+    setSendError(null);
+    const ack = await onSubmitGuess(
+      isHidden ? { guessedPartnerId: selectedPartner } : { guessedPlayerId: selectedSuspect },
+    );
+    setPending(false);
+    if (ack.ok) {
+      setSubmitted(true);
+    } else {
+      setSendError(ack.error ?? 'Not confirmed by the server — try again');
+    }
+  }, [effectivelySubmitted, pending, isHidden, canSubmitHidden, canSubmitNeutral, selectedPartner, selectedSuspect, onSubmitGuess]);
 
   const playerIndex = (id: string) => roomState.players.findIndex(p => p.id === id);
 
@@ -196,12 +208,24 @@ export default function GuessPhase({ myRole, roomState, myId, onSubmitGuess }: P
             <button
               className={`btn btn-lg btn-full mt-24 ${(isHidden ? canSubmitHidden : canSubmitNeutral) ? 'btn-primary' : 'btn-secondary'
                 }`}
-              disabled={isHidden ? !canSubmitHidden : !canSubmitNeutral}
+              disabled={(isHidden ? !canSubmitHidden : !canSubmitNeutral) || pending}
               onClick={handleSubmit}
               id="submit-guess-btn"
             >
-              🎯 Lock In Guess
+              {pending ? '🎯 Locking In…' : '🎯 Lock In Guess'}
             </button>
+            {sendError && (
+              <div
+                role="alert"
+                style={{
+                  marginTop: 12, padding: '10px 14px', borderRadius: 'var(--radius-md)',
+                  background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)',
+                  color: 'var(--rose-400)', fontWeight: 700, fontSize: '0.85rem', textAlign: 'center',
+                }}
+              >
+                {sendError}
+              </div>
+            )}
           </div>
         ) : (
           <div className="glass p-32 text-center" style={{ borderRadius: 'var(--radius-xl)' }}>

@@ -1,34 +1,49 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { RoleData, RoomState } from '../types/game';
+import type { ActionAck } from '../hooks/useSocket';
 import TimerBar from './TimerBar';
 
 interface Props {
   myRole: RoleData;
   roomState: RoomState;
   myId: string;
-  onSubmitSignal: (signal: string) => void;
+  // Task 1: promise-resolving submit — local "Signal Sent!" success may only
+  // render after the server acknowledges the requestId.
+  onSubmitSignal: (signal: string) => Promise<ActionAck>;
 }
 
 export default function SignalPhase({ myRole, roomState, myId, onSubmitSignal }: Props) {
   const [signal, setSignal] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const isHidden = myRole.role === 'hidden';
 
   // Reset local state each round so a previous signal never echoes
   useEffect(() => {
     setSignal('');
     setSubmitted(false);
+    setPending(false);
+    setSendError(null);
   }, [roomState.round, roomState.code]);
 
   const alreadySubmitted = roomState.signals.some(s => s.playerId === myId);
   const effectivelySubmitted = submitted || alreadySubmitted;
 
-  const handleSubmit = useCallback((e: React.FormEvent) => {
+  const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!signal.trim() || effectivelySubmitted) return;
-    onSubmitSignal(signal.trim());
-    setSubmitted(true);
-  }, [signal, effectivelySubmitted, onSubmitSignal]);
+    if (!signal.trim() || effectivelySubmitted || pending) return;
+    setPending(true);
+    setSendError(null);
+    const ack = await onSubmitSignal(signal.trim());
+    setPending(false);
+    if (ack.ok) {
+      setSubmitted(true);
+    } else {
+      // Not confirmed by the server — keep the form usable and say so.
+      setSendError(ack.error ?? 'Not confirmed by the server — try again');
+    }
+  }, [signal, effectivelySubmitted, pending, onSubmitSignal]);
 
   // Count how many submitted (server only exposes count or submitted flag during this phase)
   const submittedCount = roomState.submittedSignalCount;
@@ -112,11 +127,23 @@ export default function SignalPhase({ myRole, roomState, myId, onSubmitSignal }:
               <button
                 type="submit"
                 className="btn btn-primary btn-lg"
-                disabled={signal.trim().length === 0}
+                disabled={signal.trim().length === 0 || pending}
                 id="submit-signal-btn"
               >
-                📡 Submit Signal
+                {pending ? '📡 Sending…' : '📡 Submit Signal'}
               </button>
+              {sendError && (
+                <div
+                  role="alert"
+                  style={{
+                    padding: '10px 14px', borderRadius: 'var(--radius-md)',
+                    background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)',
+                    color: 'var(--rose-400)', fontWeight: 700, fontSize: '0.85rem', textAlign: 'center',
+                  }}
+                >
+                  {sendError}
+                </div>
+              )}
             </form>
           ) : (
             <div className="flex flex-col items-center gap-16" style={{ padding: '20px 0' }}>

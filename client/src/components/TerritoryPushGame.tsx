@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react';
 import type { RoomState } from '../types/game';
+import type { ActionAck } from '../hooks/useSocket';
 
 interface Props {
   roomState: RoomState;
   myId: string;
   isHost: boolean;
-  onSubmitPick: (colIndex: number) => void;
-  onPlaceMine?: (row: number, col: number) => void;
+  // Task 1: promise-resolving submits — "✓ Column Locked In" / "💣 Mine
+  // deployed" UI renders only after the server acknowledges the requestId.
+  onSubmitPick: (colIndex: number) => Promise<ActionAck>;
+  onPlaceMine?: (row: number, col: number) => Promise<ActionAck>;
   onNextTurn: () => void;
 }
 
@@ -16,6 +19,8 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
   const [firedCol, setFiredCol] = useState<number | null>(null);
   const [isPlacingMine, setIsPlacingMine] = useState(false);
   const [mineFeedback, setMineFeedback] = useState<string | null>(null);
+  const [pickPending, setPickPending] = useState(false);
+  const [pickError, setPickError] = useState<string | null>(null);
   const [now, setNow] = useState<number>(Date.now());
 
   const territory = roomState.territoryState;
@@ -35,6 +40,8 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
     if (!isExtreme) {
       setSelectedCol(null);
       setLockedCol(null);
+      setPickPending(false);
+      setPickError(null);
     }
   }, [territory?.turn, isExtreme]);
 
@@ -96,20 +103,33 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
   const redPlayers = roomState.players.filter(p => territory.teams.red.includes(p.id));
   const bluePlayers = roomState.players.filter(p => territory.teams.blue.includes(p.id));
 
-  function handleStandardLockIn() {
+  async function handleStandardLockIn() {
     if (isRedTeam || isBlueTeam) {
-      if (selectedCol !== null && !hasSubmitted) {
-        setLockedCol(selectedCol);
-        onSubmitPick(selectedCol);
+      if (selectedCol !== null && !hasSubmitted && !pickPending) {
+        setPickPending(true);
+        setPickError(null);
+        const ack = await onSubmitPick(selectedCol);
+        setPickPending(false);
+        if (ack.ok) {
+          // Server recorded the pick — now (and only now) show the lock-in
+          // success state. The authoritative pick also lands in the
+          // room-state broadcast via submittedPicks.
+          setLockedCol(selectedCol);
+        } else {
+          setPickError(ack.error ?? '⚠ Your pick was not confirmed by the server — try again or wait for resync');
+        }
       }
     }
   }
 
-  function handleExtremeFire(c: number) {
+  async function handleExtremeFire(c: number) {
     if (!(isRedTeam || isBlueTeam)) return;
     if (availableShots > 0 && !territory?.winnerTeam) {
       setFiredCol(c);
-      onSubmitPick(c);
+      const ack = await onSubmitPick(c);
+      if (!ack.ok) {
+        setPickError(ack.error ?? '⚠ Shot not confirmed by the server — resyncing');
+      }
     }
   }
 
@@ -122,9 +142,15 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
       const isFriendlyTile = isRedTeam ? isRedTile : isBlueTeam ? !isRedTile : false;
 
       if (isFriendlyTile && onPlaceMine) {
-        onPlaceMine(r, c);
         setIsPlacingMine(false);
-        setMineFeedback(`💣 Mine deployed at Col ${c + 1}, Row ${r + 1}!`);
+        // Success feedback only after the server acks — a dropped mine emit
+        // used to render "💣 Mine deployed!" for a mine that never existed.
+        onPlaceMine(r, c)
+          .then(ack => {
+            setMineFeedback(ack.ok
+              ? `💣 Mine deployed at Col ${c + 1}, Row ${r + 1}!`
+              : `⚠ Mine not accepted — ${ack.error ?? 'try again'}`);
+          });
       }
       return;
     }
@@ -149,7 +175,16 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                 {isExtreme ? (
                   <span className="badge badge-rose" style={{ animation: 'pulse 2s infinite' }}>🔥 Extreme Real-Time (10x20)</span>
                 ) : (
-                  <span className="badge badge-purple">Turn {territory.turn}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span className="badge badge-purple" style={{ fontSize: '0.95rem', padding: '6px 12px', fontWeight: 800 }}>
+                      ⚔️ Turn {territory.turn}
+                    </span>
+                    {roomState.timerEnd && (
+                      <span className={`badge badge-muted${Math.ceil((roomState.timerEnd - now) / 1000) <= 5 ? ' timer-critical' : ''}`} style={{ fontSize: '0.95rem', padding: '6px 12px', fontWeight: 800, color: 'var(--amber-400)' }} role="timer" aria-label={`${Math.max(0, Math.ceil((roomState.timerEnd - now) / 1000))} seconds remaining`}>
+                        ⏱ {Math.max(0, Math.ceil((roomState.timerEnd - now) / 1000))}s
+                      </span>
+                    )}
+                  </div>
                 )}
               </div>
               <p className="text-xs text-muted" style={{ margin: 0 }}>
@@ -726,6 +761,8 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                   ? availableShots > 0
                     ? `⚡ CLICK COLUMN TO PUSH (${availableShots} SHOT${availableShots !== 1 ? 'S' : ''} READY)`
                     : '⏳ CHARGING NEXT SHOT...'
+                  : pickPending
+                  ? '⏳ Confirming with server…'
                   : hasSubmitted ? '✓ Column Locked In' : 'Select Column to Push'}
               </label>
 
@@ -801,16 +838,32 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
               {!isExtreme && (
                 <>
                   {!hasSubmitted ? (
-                    <button
-                      type="button"
-                      id="lock-in-column-btn"
-                      disabled={selectedCol === null}
-                      onClick={handleStandardLockIn}
-                      className={`btn btn-lg btn-full ${selectedCol !== null ? 'btn-primary' : 'btn-secondary'}`}
-                      style={{ marginTop: 14 }}
-                    >
-                      {selectedCol !== null ? `🚀 Lock In Column ${selectedCol + 1}` : 'Select a Column above'}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        id="lock-in-column-btn"
+                        disabled={selectedCol === null || pickPending}
+                        onClick={handleStandardLockIn}
+                        className={`btn btn-lg btn-full ${selectedCol !== null && !pickPending ? 'btn-primary' : 'btn-secondary'}`}
+                        style={{ marginTop: 14 }}
+                      >
+                        {pickPending
+                          ? '⏳ Locking in…'
+                          : selectedCol !== null ? `🚀 Lock In Column ${selectedCol + 1}` : 'Select a Column above'}
+                      </button>
+                      {pickError && (
+                        <div
+                          role="alert"
+                          style={{
+                            marginTop: 10, padding: '10px 14px', borderRadius: 'var(--radius-md)',
+                            background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)',
+                            color: 'var(--rose-400)', fontWeight: 700, fontSize: '0.85rem', textAlign: 'center',
+                          }}
+                        >
+                          {pickError}
+                        </div>
+                      )}
+                    </>
                   ) : (
                     <div
                       className="glass text-center"
@@ -819,7 +872,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                       <span style={{ color: 'var(--green-400)', fontWeight: 700 }}>
                         ✓ Locked in Column {displayLockedCol !== null ? displayLockedCol + 1 : ''}!
                       </span>
-                      <p className="text-xs text-muted" style={{ margin: '4px 0 0' }}>Waiting for all players to submit...</p>
+                      <p className="text-xs text-muted" style={{ margin: '4px 0 0' }}>Waiting for server confirmation / resync…</p>
                     </div>
                   )}
                 </>
@@ -837,7 +890,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {redPlayers.map(p => {
-                  const isDone = territory.submittedPicks[p.id] !== undefined;
+                  const isDone = p.id === myId ? (lockedCol !== null || territory.submittedPicks[p.id] !== undefined) : territory.submittedPicks[p.id] !== undefined;
                   const pEnergy = territory.energy?.[p.id];
                   return (
                     <div
@@ -878,7 +931,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {bluePlayers.map(p => {
-                  const isDone = territory.submittedPicks[p.id] !== undefined;
+                  const isDone = p.id === myId ? (lockedCol !== null || territory.submittedPicks[p.id] !== undefined) : territory.submittedPicks[p.id] !== undefined;
                   const pEnergy = territory.energy?.[p.id];
                   return (
                     <div
@@ -1060,7 +1113,7 @@ export default function TerritoryPushGame({ roomState, myId, isHost, onSubmitPic
                 )}
                 {!isExtreme && (
                   <li>
-                    <strong style={{ color: '#fff' }}>🛡️ Defender Advantage:</strong> Defending behind your home 4 rows grants +1 free defensive push value in clashes.
+                    <strong style={{ color: '#fff' }}>🛡️ Defender Advantage:</strong> Clashes in your home half grant +2 Defender Bonus force to repel invaders.
                   </li>
                 )}
               </ul>

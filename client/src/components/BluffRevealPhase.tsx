@@ -5,12 +5,13 @@ import { PlayingCard } from './BluffBetPhase';
 interface Props {
   roomState: RoomState;
   myId: string;
-  isHost: boolean;
+  isHost?: boolean;
   isLastRound: boolean;
   onNextRound: () => void;
 }
 
-export default function BluffRevealPhase({ roomState, myId, isHost, isLastRound, onNextRound }: Props) {
+export default function BluffRevealPhase({ roomState, myId, isHost = false, isLastRound, onNextRound }: Props) {
+  const isHostNow = roomState?.hostId != null ? roomState.hostId === myId : (isHost ?? false);
   const bluff = roomState.bluffState;
   if (!bluff) return null;
 
@@ -43,7 +44,9 @@ export default function BluffRevealPhase({ roomState, myId, isHost, isLastRound,
         </div>
 
         <div className="glass p-24" style={{ borderRadius: 'var(--radius-xl)', marginBottom: 20 }}>
-          <h2 className="heading-md mb-16 text-center">Showdown cards</h2>
+          <h2 className="heading-md mb-16 text-center">
+            {bluff.reason === 'showdown' ? 'Showdown cards' : 'Revealed cards'}
+          </h2>
           <div style={{ display: 'flex', justifyContent: 'center', gap: 24 }}>
             {roomState.players.map(p => {
               const card = bluff.showdownCards?.[p.id] ?? bluff.cards[p.id];
@@ -51,7 +54,7 @@ export default function BluffRevealPhase({ roomState, myId, isHost, isLastRound,
               return (
                 <div key={p.id} style={{ textAlign: 'center' }}>
                   <div className="text-xs text-muted mb-8" style={{ fontWeight: 700 }}>
-                    {p.name}{p.id === myId ? ' (You)' : ''} {isWinner ? '👑' : ''}
+                    {`${p.name}${p.id === myId ? ' (You)' : ''}${isWinner ? ' 👑' : ''}`}
                   </div>
                   <PlayingCard rank={card} />
                   <div className={`score-delta ${(bluff.points[p.id] ?? 0) > 0 ? 'delta-pos' : 'delta-zero'}`} style={{ marginTop: 8 }}>
@@ -63,12 +66,11 @@ export default function BluffRevealPhase({ roomState, myId, isHost, isLastRound,
           </div>
           {myDelta > 0 && (
             <p className="text-center text-sm mt-16" style={{ color: 'var(--green-400)', fontWeight: 700 }}>
-              +{myDelta} pt{myDelta === 1 ? '' : 's'} for you this round!
-            </p>
+              {`+${myDelta} pt${myDelta === 1 ? '' : 's'} for you this round!`}            </p>
           )}
         </div>
 
-        {isHost ? (
+        {isHostNow ? (
           <button className="btn btn-lg btn-primary btn-full" onClick={onNextRound} id="next-bluff-round-btn">
             {isLastRound ? '🏆 View Final Leaderboard' : 'Next Round ➔'}
           </button>

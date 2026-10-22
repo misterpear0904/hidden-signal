@@ -24,7 +24,7 @@ import type {
   MissileDesperationAction,
 } from '../../types/game';
 import { WORLD, TOP_RECT, BOTTOM_RECT, cellRect, BUILD_OPTIONS, BUILD_CATEGORIES, STATS, BUILDING_META, upgradeCostFor, sellRefundFor, rebuildCostFor, SELL_SECONDS, SHIELD_COVER_CELLS, SHIELD_HEAVY_COVER_CELLS, HEALER_COVER_CELLS, CORE_INCOME_FALLBACK, MAX_STOCK, BUILD_SECONDS, LOAD_SECONDS } from './config';
-import { visionOfTile, canSeeEnemyAtTile } from './fog';
+import { visionOfTile, canSeeEnemyAtTile, type TileVision } from './fog';
 import MissileCommandStats from './MissileCommandStats';
 import { BUILD_ID } from '../../buildInfo';
 
@@ -44,6 +44,8 @@ interface Props {
   onFireDesperation: (action: MissileDesperationAction) => void;
   onClaimSupplyShip: () => void;
   onPlayAgain: () => void;
+  onRematch?: () => void;
+  onLeaveRoom?: () => void;
 }
 
 interface Cell { side: 'top' | 'bottom'; gx: number; gy: number; }
@@ -313,14 +315,16 @@ export const MotionLayer = memo(function MotionLayer({ missiles, supplyShip, top
   );
 });
 
-// Per-building memoized node. Broadcasts arrive up to ~7Hz with fresh
-// object identities, and without this the whole board's VDOM (~5k nodes
-// late-game) rebuilds on every tick. The parent passes a signature covering
-// every rendered field (clocks quantized to whole seconds, so load bars
-// still step at 1Hz); unchanged buildings skip reconciliation entirely.
-const BuildingNode = memo(function BuildingNode({ b, sig, isMine, isSel, vis, cols, rows, reducedMotion, fxLite, nowMs }: {
+// Per-building memoized node. Broadcasts arrive up to ~4Hz (mc-tick stream)
+// plus event-driven full states, and without this the whole board's VDOM
+// (~5k nodes late-game) rebuilds on every tick. The parent passes a
+// signature covering every rendered field — the UI clock is deliberately
+// EXCLUDED (a now/1000 term re-rendered every node 1×/s forever). Loading
+// launchers carry their own per-second `secKey` so build bars still step.
+const BuildingNode = memo(function BuildingNode({ b, sig, secKey, isMine, isSel, vis, cols, rows, reducedMotion, fxLite, nowMs }: {
   b: MissileBuilding;
   sig: string;
+  secKey: number;
   isMine: boolean;
   isSel: boolean;
   vis: 'live' | 'stale';
@@ -486,9 +490,9 @@ const BuildingNode = memo(function BuildingNode({ b, sig, isMine, isSel, vis, co
       })()}
     </g>
   );
-}, (p, n) => p.sig === n.sig);
+}, (p, n) => p.sig === n.sig && p.secKey === n.secKey);
 
-export default function MissileCommandGame({ roomState, myId, isHost, onBuild, onUpgrade, onSell, onCancelSell, onRebuild, onLoad, onLaunch, onLaunchType, onSetKeepFire, onFireDesperation, onClaimSupplyShip, onPlayAgain }: Props) {
+function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, onSell, onCancelSell, onRebuild, onLoad, onLaunch, onLaunchType, onSetKeepFire, onFireDesperation, onClaimSupplyShip, onPlayAgain, onRematch, onLeaveRoom }: Props) {
   const mc = roomState.missileCommandState;
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -519,7 +523,9 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
       const t = setTimeout(() => setDespTip(false), 9000);
       return () => clearTimeout(t);
     }
-  });
+    // No deps would cancel the 9s hide timer after EVERY render — with the
+    // slim mc-tick merging at 4Hz the tooltip then never auto-hides.
+  }, [mc, myId]);
   // Aiming started (or strike spent) — tooltip has served its purpose.
   useEffect(() => {
     if (targetDesperation) setDespTip(false);
@@ -594,7 +600,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     // Per-pointer tracking: a stationary resting thumb must not cancel a
     // quick tap from another finger. A tap = this finger was quick + still
     // while every other active finger stayed still.
-    pointers: new Map<number, { x: number; y: number; downX: number; downY: number; downT: number; moved: boolean; tol: number }>(),
+    pointers: new Map<number, { x: number; y: number; downX: number; downY: number; downT: number; moved: boolean; tol: number; touch: boolean }>(),
     pinchDist: 0,
     pinchZoom: 1,
     // True once a second finger joins. Lifts from real pinches must not
@@ -650,7 +656,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     if (!s || s.at <= lastSupplySeenRef.current) return;
     lastSupplySeenRef.current = s.at;
     const mine = s.ownerId === myId;
-    const who = mine ? 'You' : (roomState.players.find(p => p.id === s.ownerId)?.name ?? 'Enemy');
+    const who = mine ? 'You' : (playersById.get(s.ownerId)?.name ?? 'Enemy');
     const exact = s.kind === 'credits'
       ? `+${s.detail.amount}cr`
       : s.kind === 'barrage'
@@ -747,6 +753,13 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   const occSigTop = useMemo(() => buildings.filter(b => b.side === 'top').map(b => `${b.gx},${b.gy}`).join('|'), [buildings]);
   const occSigBottom = useMemo(() => buildings.filter(b => b.side === 'bottom').map(b => `${b.gx},${b.gy}`).join('|'), [buildings]);
   const shieldBuildings = useMemo(() => buildings.filter(b => b.type === 'shield' || b.type === 'shield_heavy'), [buildings]);
+  // Transient arrays re-derived inline were re-filtering per render — memoize
+  // against the same deps so pan/pinch re-renders skip the chain work.
+  const pendingList = useMemo(() => Object.values(mc?.pending ?? {}), [mc?.pending]);
+  const activeBeams = useMemo(
+    () => buildings.filter(b => b.type === 'healer' && b.healTargetId),
+    [buildings],
+  );
   const selected: MissileBuilding | null = (selectedId && mc?.buildings?.[selectedId]) || null;
   const selCellKey = selected ? { side: selected.side, key: `${selected.gx},${selected.gy}` } : null;
   // Incoming influence for the selected OWN building: shields covering it,
@@ -794,19 +807,25 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   const dockCompact = myLaunchers.length > 5;
   // Server-owned keep-firing lock for me, if any.
   const myKeepFire = mc?.keepFire?.[myId] ?? null;
+  // A confirmed server-side lock clears the local "armed" picker state.
+  useEffect(() => { if (myKeepFire) setKeepFireArmed(false); }, [myKeepFire]);
   // Server-owned desperation flag for me. Unlocks at 50% core HP, one shot.
   const myDesperation = mc?.desperation?.[myId] ?? { unlocked: false, used: false };
 
-  const enemyName = enemyId ? (roomState.players.find(p => p.id === enemyId)?.name ?? 'Enemy') : 'Enemy';
+  // Memoized player lookup: 5+ roomState.players.find() calls per render
+  // (HUD, toast, placards) became repeated linear scans of the same array.
+  const playersById = useMemo(() => new Map(roomState.players.map(p => [p.id, p])), [roomState.players]);
+
+  const enemyName = enemyId ? (playersById.get(enemyId)?.name ?? 'Enemy') : 'Enemy';
   // Null-safe: unknown/loader states report nothing rather than a false alarm.
-  const enemyConnected = enemyId ? (roomState.players.find(p => p.id === enemyId)?.connected ?? true) : true;
-  const winnerName = mc?.winnerId ? (roomState.players.find(p => p.id === mc.winnerId)?.name ?? '???') : null;
+  const enemyConnected = enemyId ? (playersById.get(enemyId)?.connected ?? true) : true;
+  const winnerName = mc?.winnerId ? (playersById.get(mc.winnerId)?.name ?? '???') : null;
   // Island placards in the channel name each side by its owner, so you can
   // tell the two shores apart at a glance even when zoomed out.
-  const topName = (roomState.players.find(p => p.id === mc?.sides?.top)?.name ?? 'PLAYER 1').toUpperCase();
-  const bottomName = (roomState.players.find(p => p.id === mc?.sides?.bottom)?.name ?? 'PLAYER 2').toUpperCase();
+  const topName = ((mc?.sides?.top ? playersById.get(mc.sides.top)?.name : null) ?? 'PLAYER 1').toUpperCase();
+  const bottomName = ((mc?.sides?.bottom ? playersById.get(mc.sides.bottom)?.name : null) ?? 'PLAYER 2').toUpperCase();
   const iWon = mc?.winnerId === myId;
-  const isTargeting = targetLauncherId !== null || targetType !== null || targetDesperation;
+  const isTargeting = targetLauncherId !== null || targetType !== null || targetDesperation || keepFireArmed;
   // Fog of war
   const fogOfWar = mc?.fogOfWar ?? false;
   const getExplored = (pid: string) => (fogOfWar && mc?.exploredTiles) ? (mc.exploredTiles[pid] ?? {}) : {};
@@ -849,6 +868,19 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
       </g>
     );
   }, [fogOfWar, mySide, myExplored, cols, rows, nowTick]);
+  // ── ─
+  // Per-tile vision map, precomputed once per explored-set / UI-clock change.
+  // This replaces per-render N× `${gx},${gy}` string building + dictionary
+  // probing in visionOfTile for every building, pending site, and shield.
+  // Same classification rules as visionOfTile (fog History aware).
+  const visionByTile = useMemo(() => {
+    const map = new Map<string, TileVision>();
+    if (!fogOfWar) return map;
+    for (const [key, v] of Object.entries(myExplored)) {
+      map.set(key, v === 0 || v > nowTick ? 'live' : (mc?.fogHistory ?? false) ? 'stale' : 'hidden');
+    }
+    return map;
+  }, [fogOfWar, myExplored, nowTick, mc?.fogHistory]);
   // Loading guard sits BELOW every hook above (returning earlier would change
   // the hook count between renders and crash React once state arrives).
   if (!mc) {
@@ -863,12 +895,13 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
   // Vision state of an enemy tile — pure helpers in ./fog (unit-tested).
   // exploredTiles encoding: 0 = permanent, -1 = remembered, >0 = expiry ms
   const fogHistory = mc.fogHistory ?? false;
-  const visionOpts = { fogOfWar, fogHistory, now };
-  const visionOf = (gx: number, gy: number) => visionOfTile(myExplored, visionOpts, gx, gy);
+  // Map lookups (precomputed above the guard) instead of N re-derivations.
+  const visionOf = (gx: number, gy: number): TileVision =>
+    fogOfWar ? (visionByTile.get(`${gx},${gy}`) ?? 'hidden') : 'live';
   // Can I currently see an enemy tile? Stale tiles do NOT count — they're
   // memory, not vision, so aura/beam effects that depend on live sight must
   // not leak through them.
-  const canSeeEnemyAt = (gx: number, gy: number) => canSeeEnemyAtTile(myExplored, visionOpts, gx, gy);
+  const canSeeEnemyAt = (gx: number, gy: number) => visionOf(gx, gy) === 'live';
 
   // ── View transform ──
   const vbW = WORLD / zoom, vbH = WORLD / zoom;
@@ -891,12 +924,13 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     setTargetLauncherId(null);
     setTargetType(null);
     setTargetDesperation(false);
+    setKeepFireArmed(false);
   }
 
   // Tap = quick + still, resolved at the TOUCHDOWN point (not liftoff):
   // drift inside tolerance would otherwise open the neighbouring tile.
   // Pinches never tap. Long-press opens the same targets for holds.
-  function handleTap(clientX: number, clientY: number) {
+  function handleTap(clientX: number, clientY: number, isTouch: boolean) {
     if (!mySide) return;
     lastMapTapAtRef.current = Date.now();
     const w = toWorld(clientX, clientY);
@@ -917,17 +951,20 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     // 1. Targeting → strike enemy square (single launcher, whole type, or
     //    the one-time desperation strike). Tapping your own side backs out
     //    of targeting instead of leaving you stuck (use ✖ to cancel too).
-    if (targetLauncherId || targetType || targetDesperation) {
+    //    While keep-firing is armed, enemy-square taps lock a target instead
+    //    of opening the intel tooltip.
+    if (targetLauncherId || targetType || targetDesperation || keepFireArmed) {
       if (cell.side !== mySide) {
         if (targetDesperation) onFireDesperation({ targetGx: cell.gx, targetGy: cell.gy });
         else if (targetLauncherId) onLaunch({ launcherId: targetLauncherId, targetGx: cell.gx, targetGy: cell.gy });
-        else if (targetType) {
+        else {
           // Keep-fire armed → lock this tile; the server re-fires here on
           // every missile load until cleared. Otherwise it's a one-off volley.
+          const t = targetType ?? (stockByType.single > 0 ? 'single' : (stockByType.scatter > 0 ? 'scatter' : 'single'));
           if (keepFireArmed) {
-            onSetKeepFire({ armed: true, targetGx: cell.gx, targetGy: cell.gy, launcherType: targetType });
+            onSetKeepFire({ armed: true, targetGx: cell.gx, targetGy: cell.gy, launcherType: t });
             setKeepFireArmed(false);
-          } else {
+          } else if (targetType) {
             onLaunchType({ launcherType: targetType, targetGx: cell.gx, targetGy: cell.gy });
           }
         }
@@ -952,13 +989,13 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
       }
       setBuildCell(null);
       setSelectedId(b.id);
-      markPopupOpened();
+      markPopupOpened(isTouch);
       return;
     }
     if (cell.side === mySide) {
       setSelectedId(null);
       setBuildCell(cell);
-      markPopupOpened();
+      markPopupOpened(isTouch);
     } else {
       setBuildCell(null);
       setSelectedId(null);
@@ -1001,6 +1038,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
       x: e.clientX, y: e.clientY,
       downX: e.clientX, downY: e.clientY,
       downT: Date.now(), moved: false,
+      touch: e.pointerType === 'touch',
       tol: e.pointerType === 'touch' ? TAP_TOL : 10,
     });
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
@@ -1032,19 +1070,30 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
         longPressPidRef.current = pid;
         const w = toWorld(cx, cy);
         const cell = worldToCell(w.x, w.y, cols, rows);
-        if (!cell || cell.side !== mySide) return;
+        if (!cell) return;
+        // While armed, long-press may inspect enemy squares (normal taps lock).
+        if (cell.side !== mySide && !keepFireArmed) return;
         // Long-press opens WHATEVER is on the cell — a building's panel or,
         // on an empty square, the build menu. Same gesture for both, so it
         // never depends on what happens to be under the finger.
         const b = byCell.get(`${cell.side}:${cell.gx}:${cell.gy}`);
+        if (cell.side !== mySide) {
+          // Enemy side: only inspect visible buildings; never open a build menu.
+          if (!b) return;
+          if (visionOf(b.gx, b.gy) !== 'live') return;
+          setBuildCell(null);
+          setSelectedId(b.id);
+          markPopupOpened(true);
+          return;
+        }
         if (b) {
           setBuildCell(null);
           setSelectedId(b.id);
-          markPopupOpened();
+          markPopupOpened(true);
         } else {
           setSelectedId(null);
           setBuildCell(cell);
-          markPopupOpened();
+          markPopupOpened(true);
         }
       }, LONG_PRESS_MS);
     }
@@ -1114,10 +1163,11 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     if (me.moved) return;
     const othersStill = [...g.pointers.values()].every(p => !p.moved);
     if (!othersStill) return;
-    handleTap(me.downX, me.downY);
+    handleTap(me.downX, me.downY, me.touch);
   }
 
   function startTargeting(launcherId: string) {
+    setKeepFireArmed(false);
     setTargetLauncherId(launcherId);
     setTargetType(null);
     setTargetDesperation(false);
@@ -1144,9 +1194,25 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
     if (myKeepFire) {
       onSetKeepFire({ armed: false });
       setKeepFireArmed(false);
-    } else {
-      setKeepFireArmed(v => !v);
+      cancelTargeting();
+      return;
     }
+    setKeepFireArmed(v => {
+      const next = !v;
+      if (next) {
+        setTargetLauncherId(null);
+        setTargetDesperation(false);
+        if (targetType === null) {
+          const t = stockByType.single > 0 ? 'single' : (stockByType.scatter > 0 ? 'scatter' : 'single');
+          setTargetType(t);
+        }
+        setSelectedId(null);
+        setBuildCell(null);
+      } else {
+        cancelTargeting();
+      }
+      return next;
+    });
   }
 
   const upgradeCost = selected ? upgradeCostFor(selected) : null;
@@ -1400,7 +1466,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
           {/* Heal effect (visible to BOTH players): beam + pulses + ripple.
               Under fog, an enemy healer's beam gives away its exact tile, so
               it's only drawn once I have vision of that healer. */}
-          {buildings.filter(b => b.type === 'healer' && b.healTargetId && (b.ownerId === myId || canSeeEnemyAt(b.gx, b.gy))).map(h => {
+          {activeBeams.filter(h => h.ownerId === myId || canSeeEnemyAt(h.gx, h.gy)).map(h => {
             const t = (mc.buildings ?? {})[h.healTargetId!];
             if (!t) return null;
             const hr = cellRect(h.side, h.gx, h.gy, cols, rows);
@@ -1538,21 +1604,26 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             // seeded permanently visible by the server, so this matches).
             const vis = isMine ? 'live' : visionOf(b.gx, b.gy);
             if (vis === 'hidden') return null;
-            // Signature covers every rendered field; clocks quantized to
-            // whole seconds so load bars still step at 1Hz.
+            // Signature covers every rendered field. The UI clock is NOT in
+            // it — a global `Math.floor(now / 1000)` term made every node's
+            // memo comparison fail 1×/second, re-rendering the whole board
+            // even when nothing changed. Only ACTIVELY loading launchers get
+            // a per-second `secKey` so their build bars still step at 1Hz.
             const sig = JSON.stringify([
               b.id, b.side, b.gx, b.gy, b.type, b.launcherType ?? '', b.level,
               Math.ceil(b.hp ?? 0), b.maxHp, Math.ceil(b.coreHp ?? 0), b.maxCoreHp,
               Math.ceil(b.shieldHp ?? 0), b.maxShieldHp, b.stock ?? 0, b.maxStock ?? 3,
-              Math.floor((b.loadingUntil ?? 0) / 1000), Math.floor(now / 1000),
+              Math.floor((b.loadingUntil ?? 0) / 1000),
               isMine ? 1 : 0, isSel ? 1 : 0, vis,
               reducedMotion ? 1 : 0, fxLite ? 1 : 0, cols, rows,
             ]);
+            const loadingActive = isMine && b.type === 'launcher' && (b.loadingUntil ?? 0) > now;
             return (
               <BuildingNode
                 key={b.id}
                 b={b}
                 sig={sig}
+                secKey={loadingActive ? Math.floor(now / 1000) : 0}
                 isMine={isMine}
                 isSel={isSel}
                 vis={vis}
@@ -1568,7 +1639,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
           {/* Construction sites & upgrade progress. Enemy activity is only
               shown with live vision — otherwise a 🚧 telegraphs exactly what
               and where the opponent is building through the fog. */}
-          {Object.values(mc.pending ?? {}).map(p => {
+          {pendingList.map(p => {
             const isMine = p.ownerId === myId;
             if (!isMine && visionOf(p.gx, p.gy) !== 'live') return null;
             const r = cellRect(p.side, p.gx, p.gy, cols, rows);
@@ -1647,28 +1718,26 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
         {/* ── Top HUD overlay ── */}
         <div style={{ position: 'absolute', top: 8, left: 8, right: 8, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'stretch', pointerEvents: 'none' }}>
           <div style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 12px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-            <div className="text-xs" style={{ fontWeight: 800, color: 'var(--amber-400)', fontSize: '1.05rem', lineHeight: 1.1 }}>💰 {myResources}</div>
-            <div className="text-xs text-muted" style={{ fontSize: '0.65rem' }}>+{myIncome}/s • {roomState.code}{((mc.buildSurge?.[myId] ?? 0) > now) && <span style={{ color: '#4ade80', fontWeight: 800 }}> • ⚡2x {Math.ceil(((mc.buildSurge?.[myId] ?? 0) - now) / 1000)}s</span>}</div>
+            <div className="text-xs" style={{ fontWeight: 800, color: 'var(--amber-400)', fontSize: '1.05rem', lineHeight: 1.1 }}>{`💰 ${myResources}`}</div>
+            <div className="text-xs text-muted" style={{ fontSize: '0.65rem' }}>{`+${myIncome}/s • ${roomState.code}`}{((mc.buildSurge?.[myId] ?? 0) > now) && <span style={{ color: '#4ade80', fontWeight: 800 }}>{` • ⚡2x ${Math.ceil(((mc.buildSurge?.[myId] ?? 0) - now) / 1000)}s`}</span>}</div>
           </div>
           {/* Perf box: render FPS + server updates/sec, each labeled. */}
           <div style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 10px', display: 'flex', alignItems: 'center', gap: 10 }}>
             <span title="Frames drawn per second — how smooth motion looks. 'idle' just means nothing is animating right now.">
-              <span className="text-xs text-muted" style={{ fontSize: '0.6rem', fontWeight: 700 }}>FPS </span>
-              <span style={{ fontWeight: 800, fontSize: '0.8rem', color: fps == null ? undefined : fps >= 25 ? '#4ade80' : fps >= 15 ? '#fbbf24' : '#fb7185' }}>{fps == null ? 'idle' : fps}</span>
+              <span className="text-xs text-muted" style={{ fontSize: '0.6rem', fontWeight: 700 }}>{`FPS `}</span>              <span style={{ fontWeight: 800, fontSize: '0.8rem', color: fps == null ? undefined : fps >= 25 ? '#4ade80' : fps >= 15 ? '#fbbf24' : '#fb7185' }}>{fps == null ? 'idle' : fps}</span>
             </span>
             <span title="Game updates received from the server each second - about 4 while missiles are flying, up to 1 when quiet. If this drops but FPS holds steady, the hitch is network/server, not your device.">
-              <span className="text-xs text-muted" style={{ fontSize: '0.6rem', fontWeight: 700 }}>NET </span>
-              <span style={{ fontWeight: 800, fontSize: '0.8rem' }}>{ups}/s</span>
+              <span className="text-xs text-muted" style={{ fontSize: '0.6rem', fontWeight: 700 }}>{`NET `}</span>              <span style={{ fontWeight: 800, fontSize: '0.8rem' }}>{ups}/s</span>
             </span>
           </div>
           <div style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 10px', flex: 1, minWidth: 120 }}>
-            <div className="text-xs" style={{ fontWeight: 800, fontSize: '0.65rem' }}>⭐ YOU {mySide === 'top' ? '🔼' : '🔽'} {myCore ? `${Math.ceil(myCore.coreHp!)}/${myCore.maxCoreHp}` : ''}</div>
+            <div className="text-xs" style={{ fontWeight: 800, fontSize: '0.65rem' }}>{`⭐ YOU ${mySide === 'top' ? '🔼' : '🔽'} ${myCore ? `${Math.ceil(myCore.coreHp!)}/${myCore.maxCoreHp}` : ''}`}</div>
             <div style={{ height: 6, background: 'rgba(255,255,255,0.12)', borderRadius: 3, overflow: 'hidden', marginTop: 3 }}>
               <div style={{ width: `${myCorePct}%`, height: '100%', background: 'linear-gradient(90deg,#4ade80,#22d3ee)' }} />
             </div>
           </div>
           <div style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 10px', flex: 1, minWidth: 120 }}>
-            <div className="text-xs" style={{ fontWeight: 800, fontSize: '0.65rem' }}>⭐ {enemyName.toUpperCase()} {enemyCore ? `${Math.ceil(enemyCore.coreHp!)}/${enemyCore.maxCoreHp}` : ''}{enemyConnected === false && <span style={{ color: 'var(--amber-400)' }}> • ⚠ disconnected</span>}</div>
+            <div className="text-xs" style={{ fontWeight: 800, fontSize: '0.65rem' }}>{`⭐ ${enemyName.toUpperCase()} ${enemyCore ? `${Math.ceil(enemyCore.coreHp!)}/${enemyCore.maxCoreHp}` : ''}`}{enemyConnected === false && <span style={{ color: 'var(--amber-400)' }}>{` • ⚠ disconnected`}</span>}</div>
             <div style={{ height: 6, background: 'rgba(255,255,255,0.12)', borderRadius: 3, overflow: 'hidden', marginTop: 3 }}>
               <div style={{ width: `${enemyCorePct}%`, height: '100%', background: 'linear-gradient(90deg,#fb7185,#f43f5e)' }} />
             </div>
@@ -1702,8 +1771,7 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
         {isTargeting && (
           <div style={{ position: 'absolute', top: 74, left: '50%', transform: 'translateX(-50%)', pointerEvents: 'auto', display: 'flex', gap: 8, alignItems: 'center', background: 'rgba(0,0,0,0.72)', border: '1px solid rgba(251,191,36,0.6)', borderRadius: 12, padding: '8px 12px', whiteSpace: 'nowrap' }}>
             <span style={{ fontWeight: 800, color: '#fbbf24', fontSize: '0.9rem', animation: 'mc-pulse 1s infinite' }}>
-              🎯 TAP ENEMY SQUARE{targetType ? ` — ALL ${targetType.toUpperCase()}` : ''}
-              {keepFireArmed && targetType ? ' · 🔒 WILL LOCK' : ''}
+              🎯 TAP ENEMY SQUARE{targetType ? ` — ALL ${targetType.toUpperCase()}` : ''}{keepFireArmed ? (targetType ? ' · 🔒 WILL LOCK' : ' · 🔒 ARMED') : ''}
               {targetDesperation ? ' · ☢️ DESPERATION — ONE SHOT' : ''}
             </span>
             <button type="button" onClick={cancelTargeting}
@@ -1979,8 +2047,8 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             myResources={myResources}
             upgradeCost={upgradeCost}
             coreIncome={coreIncome}
-            pendingUp={Object.values(mc.pending ?? {}).find(p => p.kind === 'upgrade' && p.upgradeOf === selected.id) ?? null}
-            pendingSell={Object.values(mc.pending ?? {}).find(p => p.kind === 'sell' && p.sellOf === selected.id) ?? null}
+            pendingUp={(pendingList.find(p => p.kind === 'upgrade' && p.upgradeOf === selected.id) as unknown as { targetLevel: number; completeAt: number } | null) ?? null}
+            pendingSell={(pendingList.find(p => p.kind === 'sell' && p.sellOf === selected.id) as unknown as { completeAt: number; refund?: number } | null) ?? null}
             coverCount={selectedInfluence?.shields.length ?? 0}
             healerCount={selectedInfluence?.healers.length ?? 0}
             onUpgrade={() => { if (!popupArmed()) return; onUpgrade(selected.id); setSelectedId(null); }}
@@ -1999,11 +2067,11 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
             <div>👆 <b>Tap a square</b> on your island to build, or <b>tap any building</b> for stats, upgrades &amp; fire control. Tapping anywhere else closes panels.</div>
             <div>🧱 Destroyed buildings leave <b>rubble</b> — tap it to <b>rebuild instantly at half cost</b>, or build something else over it.</div>
             <div>🏠 <b>Tap any building</b> for stats, upgrades &amp; fire control. Gold ★ show its level.</div>
-            <div>⭐ Your <b>Core pays +{coreIncome}/s</b> — destroy the enemy Core (4000 HP) to win!</div>
+            <div>{`⭐ Your `}<b>{`Core pays +${coreIncome}/s`}</b>{` — destroy the enemy Core (4000 HP) to win!`}</div>
             <div>🛡️ Shields <b>fully block</b> blasts while charged (≈ 25 covered squares). Empty covered squares still drain the shield. Hide Generators inside!</div>
             <div>💚 Shield Healers fix <b>one shield at a time</b> (weakest first — green beam shows it).</div>
             <div>🚢 If supply ships are on, a freighter crosses the channel — <b>tap it first</b> for credits, a missile rain, or 2x build speed. Rewards scale up when behind!</div>
-            <div>🚀 <b>Launchers auto-load up to {MAX_STOCK} missiles</b> ({LOAD_SECONDS}s each) — just <b>FIRE the volley</b>, or <b>🔥 ALL</b> of one type at once!</div>
+            <div>🚀 <b>Launchers auto-load up to {MAX_STOCK} missiles</b> ({LOAD_SECONDS}s each) — just <b>FIRE the volley</b>, <b>🔥 ALL</b> of one type at once, <b>🔁 KEEP FIRING</b> to auto-fire every loaded missile at a locked tile, or <b>☢️ DESPERATION</b> (one-shot 2000-dmg warhead, unlocked at 50% core HP)!</div>
             <div>💥 <b>Scatter does the most total damage</b> — best shield-breaker. Single is precise.</div>
             <div>⏱ Buildings take time: <b>3s → 5s → 10s → 20s → 30s</b> by level. Build many in parallel!</div>
             <div>🖱 <b>Drag</b> to pan, <b>wheel/pinch</b> to zoom.</div>
@@ -2023,9 +2091,18 @@ export default function MissileCommandGame({ roomState, myId, isHost, onBuild, o
               <MissileCommandStats mc={mc} players={roomState.players} myId={myId} />
             </div>
             {isHost && (
-              <button type="button" className="btn btn-primary mt-16" onClick={onPlayAgain}>🔄 Back to Lobby</button>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 16, flexWrap: 'wrap' }}>
+                <button type="button" className="btn btn-primary" onClick={onRematch} disabled={!onRematch} title="Start the same battle again">🔁 Rematch</button>
+                <button type="button" className="btn btn-secondary" onClick={onPlayAgain}>🔄 Back to Lobby</button>
+                <button type="button" className="btn btn-secondary" onClick={onLeaveRoom} disabled={!onLeaveRoom}>🚪 Leave Room</button>
+              </div>
             )}
-            {!isHost && <p className="text-xs text-muted mt-16">Waiting for host to return to lobby…</p>}
+            {!isHost && (
+              <>
+                <p className="text-xs text-muted mt-16">Waiting for host to start a rematch or return to lobby…</p>
+                <button type="button" className="btn btn-secondary mt-16" onClick={onLeaveRoom} disabled={!onLeaveRoom}>🚪 Leave Room</button>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -2262,3 +2339,11 @@ function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendin
     </div>
   );
 }
+
+// --- -
+// Wrapper memo: App re-renders on ANY socket state change (other games'
+// events, merged mc-ticks at 4Hz, toasts). All handler props are stable
+// useCallbacks from useSocket, so one memo() here skips re-running the
+// whole component render when nothing it renders changed.
+export default memo(MissileCommandGameBase);
+

@@ -63,6 +63,7 @@ export interface ChromaRoundState {
   roundWinnerName: string | null;
   pointsAwarded: number;
   shiftDurationSec: number;
+  roundEndsAt?: number | null;
   seed: number;
   // 10s race after first finder: others can solve for half points
   raceEndAt: number | null;
@@ -181,7 +182,7 @@ export interface MissileBuilding {
 export interface MissileInFlight {
   id: string;
   ownerId: string;
-  launcherId: string;
+  launcherId: string | null; // null for desperation / supply barrage launches
   launcherType: MissileLauncherType;
   startX: number;
   startY: number;
@@ -212,7 +213,7 @@ export interface ConstructionSite {
   gx: number;
   gy: number;
   ownerId: string;
-  targetLevel: number;
+  targetLevel?: number; // absent for pending sells
   completeAt: number;
   upgradeOf?: string; // building id, when kind === 'upgrade'
   sellOf?: string; // building id, when kind === 'sell'
@@ -418,6 +419,9 @@ export interface LiarGameState {
   winnerId: string | null;         // only at reveal
   winnerName: string | null;       // only at reveal
   loserId: string | null;          // only at reveal
+  timedOutId?: string | null;      // only at reveal (timeout)
+  winnerReason?: 'last-bidder' | 'next-in-rotation' | null;
+  timeoutBidCount?: number;
   reason: 'liar' | 'exact' | 'timeout' | null;  // only at reveal
   challengedBid: { qty: number; face: number; bidderId: string } | null;
   actualCount: number | null;      // only at reveal
@@ -451,6 +455,7 @@ export interface BluffGameState {
 
 export interface RoomState {
   code: string;
+  hostId?: string | null;
   selectedGameId: string;
   chromaOptions: ChromaOptions;
   territoryOptions?: TerritoryOptions;

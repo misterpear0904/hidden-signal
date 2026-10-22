@@ -1,11 +1,15 @@
+import { useState } from 'react';
 import type { RoomState, BluffAction } from '../types/game';
+import type { ActionAck } from '../hooks/useSocket';
 import { TOTAL_ROUNDS } from '../constants';
 import TimerBar from './TimerBar';
 
 interface Props {
   roomState: RoomState;
   myId: string;
-  onAction: (action: BluffAction) => void;
+  // Task 1: promise-resolving action — server rejections surface on the
+  // controls instead of being silently dropped.
+  onAction: (action: BluffAction) => Promise<ActionAck>;
 }
 
 export function PlayingCard({ rank, hidden, small }: { rank?: 'Joker' | 'J' | 'Q' | 'K'; hidden?: boolean; small?: boolean }) {
@@ -25,14 +29,17 @@ export function PlayingCard({ rank, hidden, small }: { rank?: 'Joker' | 'J' | 'Q
         boxShadow: '0 6px 18px rgba(0,0,0,0.4)',
         color: isRed ? '#dc2626' : '#0f172a',
         fontWeight: 800,
+        overflow: 'hidden',
+        textAlign: 'center',
+        padding: '0 4px',
       }}
     >
       {hidden ? (
         <span style={{ fontSize: small ? '1.2rem' : '2rem', color: '#fff' }}>🂠</span>
       ) : (
         <>
-          <span style={{ fontSize: small ? '1.6rem' : '3rem', lineHeight: 1 }}>{rank}</span>
-          <span style={{ fontSize: small ? '0.6rem' : '0.7rem', letterSpacing: '0.1em' }}>
+          <span style={{ fontSize: rank === 'Joker' ? (small ? '1rem' : '1.6rem') : (small ? '1.6rem' : '3rem'), lineHeight: 1.1, overflowWrap: 'break-word', maxWidth: '100%' }}>{rank}</span>
+          <span style={{ fontSize: small ? '0.6rem' : '0.7rem', letterSpacing: rank === 'Joker' ? '0.04em' : '0.1em' }}>
             {rank === 'J' ? 'JACK' : rank === 'Q' ? 'QUEEN' : rank === 'K' ? 'KING' : 'JOKER'}
           </span>
         </>
@@ -50,8 +57,19 @@ const ACTION_LABEL: Record<BluffAction, string> = {
 };
 
 export default function BluffBetPhase({ roomState, myId, onAction }: Props) {
+  const [pending, setPending] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const bluff = roomState.bluffState;
   if (!bluff) return null;
+
+  const submitAction = async (action: BluffAction) => {
+    if (pending) return;
+    setPending(true);
+    setActionError(null);
+    const ack = await onAction(action);
+    setPending(false);
+    if (!ack.ok) setActionError(ack.error ?? 'Not confirmed by the server — try again');
+  };
 
   const myCard = bluff.cards[myId];
   const opponent = roomState.players.find(p => p.id !== myId);
@@ -66,7 +84,7 @@ export default function BluffBetPhase({ roomState, myId, onAction }: Props) {
     : bluff.facingBet
     ? capped
       ? `Bidding cap reached (${maxRaises}) — you must call!`
-      : `${nameOf(lastActor?.playerId ?? '')} raised (${betCount}/${maxRaises}) — raise back, call or fold!`
+      : `${nameOf(lastActor?.playerId ?? '')} bet/raised (${betCount}/${maxRaises}) — raise back, call or fold!`
     : 'Your move — check or bet!';
 
   return (
@@ -118,7 +136,7 @@ export default function BluffBetPhase({ roomState, myId, onAction }: Props) {
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
               {bluff.history.map((h, i) => (
                 <span key={i} className="badge badge-muted" style={{ fontSize: '0.7rem' }}>
-                  {h.playerName}: {ACTION_LABEL[h.action]}
+                  {`${h.playerName}: ${ACTION_LABEL[h.action]}`}
                 </span>
               ))}
             </div>
@@ -127,22 +145,34 @@ export default function BluffBetPhase({ roomState, myId, onAction }: Props) {
 
         {/* Actions */}
         <div className="glass p-20" style={{ borderRadius: 'var(--radius-xl)' }}>
+          {actionError && (
+            <div
+              role="alert"
+              style={{
+                marginBottom: 10, padding: '10px 14px', borderRadius: 'var(--radius-md)',
+                background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)',
+                color: 'var(--rose-400)', fontWeight: 700, fontSize: '0.85rem', textAlign: 'center',
+              }}
+            >
+              {actionError}
+            </div>
+          )}
           {!myTurn ? (
             <p className="text-muted text-sm text-center" style={{ fontStyle: 'italic' }}>Opponent is thinking…</p>
           ) : bluff.facingBet ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {!capped && (
-                <button className="btn btn-amber btn-lg btn-full" onClick={() => onAction('raise')} id="bluff-raise-btn">
-                  📈 Raise ({betCount}/{maxRaises})
+                <button className="btn btn-amber btn-lg btn-full" disabled={pending} onClick={() => submitAction('raise')} id="bluff-raise-btn">
+                  {pending ? '📈 Raising…' : `📈 Raise (${betCount}/${maxRaises})`}
                 </button>
               )}
               <div style={{ display: 'flex', gap: 10 }}>
                 {!capped && (
-                  <button className="btn btn-secondary btn-lg btn-full" onClick={() => onAction('fold')} id="bluff-fold-btn">
+                  <button className="btn btn-secondary btn-lg btn-full" disabled={pending} onClick={() => submitAction('fold')} id="bluff-fold-btn">
                     🏳️ Fold
                   </button>
                 )}
-                <button className="btn btn-primary btn-lg btn-full" onClick={() => onAction('call')} id="bluff-call-btn">
+                <button className="btn btn-primary btn-lg btn-full" disabled={pending} onClick={() => submitAction('call')} id="bluff-call-btn">
                   📞 Call{capped ? ' (forced)' : ' — showdown!'}
                 </button>
               </div>
@@ -152,10 +182,10 @@ export default function BluffBetPhase({ roomState, myId, onAction }: Props) {
             </div>
           ) : (
             <div style={{ display: 'flex', gap: 10 }}>
-              <button className="btn btn-secondary btn-lg btn-full" onClick={() => onAction('check')} id="bluff-check-btn">
+              <button className="btn btn-secondary btn-lg btn-full" disabled={pending} onClick={() => submitAction('check')} id="bluff-check-btn">
                 ➖ Check
               </button>
-              <button className="btn btn-primary btn-lg btn-full" onClick={() => onAction('bet')} id="bluff-bet-btn">
+              <button className="btn btn-primary btn-lg btn-full" disabled={pending} onClick={() => submitAction('bet')} id="bluff-bet-btn">
                 💰 Bet
               </button>
             </div>

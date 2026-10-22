@@ -7,6 +7,9 @@ import { BUILD_ID } from '../buildInfo';
 interface Props {
   roomState: RoomState;
   myId: string;
+  connected?: boolean;
+  connectionStatus?: 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'server_sleeping' | 'failed';
+  onRetryConnection?: () => void;
   onSelectGame: (gameId: string) => void;
   onUpdateChromaOptions: (options: Partial<ChromaOptions>) => void;
   onUpdateTerritoryOptions: (options: Partial<TerritoryOptions>) => void;
@@ -15,11 +18,12 @@ interface Props {
   onSetPlayerDifficulty: (difficulty: 'easy' | 'medium' | 'hard') => void;
   onKickPlayer: (targetId: string) => void;
   onStartGame: () => void;
+  onLeaveRoom?: () => void;
 }
 
-export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOptions, onUpdateTerritoryOptions, onUpdateLiarOptions, onUpdateMissileCommandOptions, onSetPlayerDifficulty, onKickPlayer, onStartGame }: Props) {
+export default function Lobby({ roomState, myId, connected = true, connectionStatus = 'connected', onRetryConnection, onSelectGame, onUpdateChromaOptions, onUpdateTerritoryOptions, onUpdateLiarOptions, onUpdateMissileCommandOptions, onSetPlayerDifficulty, onKickPlayer, onStartGame, onLeaveRoom }: Props) {
   const me = roomState.players.find(p => p.id === myId);
-  const isHost = me?.isHost ?? false;
+  const isHost = roomState.hostId ? roomState.hostId === myId : (me?.isHost ?? false);
   const playerCount = roomState.players.length;
   const [copied, setCopied] = useState(false);
 
@@ -83,8 +87,11 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
           <div className="flex items-center justify-center gap-12 mb-16">
             <div className="badge badge-purple">Game Lounge Lobby</div>
             <div className="flex items-center gap-8">
-              <div className="conn-dot online" />
-              <span className="text-xs text-muted">Live</span>
+              <div className={connected ? 'conn-dot online' : (connectionStatus === 'connecting' || connectionStatus === 'reconnecting' || connectionStatus === 'server_sleeping' ? 'conn-dot pulsing' : 'conn-dot offline')} />
+              <span className="text-xs text-muted">{connected ? 'Live' : (connectionStatus === 'reconnecting' ? 'Reconnecting...' : connectionStatus === 'connecting' ? 'Connecting...' : connectionStatus === 'server_sleeping' ? 'Server waking...' : 'Disconnected')}</span>
+              {!connected && onRetryConnection && (
+                <button type="button" className="btn btn-sm" onClick={onRetryConnection} style={{ padding: '2px 8px', fontSize: '0.7rem' }}>Reconnect</button>
+              )}
             </div>
           </div>
           <h1 className="heading-xl">
@@ -173,6 +180,13 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
 
         {/* Players */}
         <div className="glass p-24" style={{ borderRadius: 'var(--radius-xl)', marginBottom: 24 }}>
+          {(roomState.hostId
+            ? !roomState.players.some(p => p.id === roomState.hostId)
+            : !roomState.players.some(p => p.isHost)) && (
+            <div role="alert" className="badge badge-amber" style={{ display: 'block', fontSize: '0.75rem', marginBottom: 12, padding: '8px 12px', whiteSpace: 'normal', textAlign: 'center' }}>
+              ⚠ This room currently has no host (this shouldn&apos;t happen) — nobody can change settings, kick, or start the game. If it persists, all players should leave and create a new room.
+            </div>
+          )}
           <div className="flex justify-between items-center" style={{ marginBottom: 20 }}>
             <h2 className="heading-md">Players</h2>
             <div className="flex items-center gap-8">
@@ -195,7 +209,7 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
           <div className="player-grid stagger">
             {roomState.players.map((p, i) => {
               const pDiff = chromaOptions.playerDifficulties?.[p.id] || 'easy';
-              const kickable = isHost && p.id !== myId && !p.isHost;
+              const kickable = isHost && p.id !== myId && !(roomState.hostId ? p.id === roomState.hostId : p.isHost);
               return (
                 <div
                   key={p.id}
@@ -210,9 +224,9 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
                   </div>
                   <div className="player-name">{p.name}</div>
                   <div className="flex flex-wrap gap-4 justify-center">
-                    {p.isHost && <div className="badge badge-amber" style={{ fontSize: '0.6rem' }}>Host</div>}
+                    {(roomState.hostId ? p.id === roomState.hostId : p.isHost) && <div className="badge badge-amber" style={{ fontSize: '0.6rem' }}>Host</div>}
                     {p.id === myId && <div className="badge badge-cyan" style={{ fontSize: '0.6rem' }}>You</div>}
-                    {!p.connected && <div className="badge badge-rose" style={{ fontSize: '0.6rem' }}>⚠ Disconnected — waiting…</div>}
+                    {!p.connected && <div className="badge badge-rose" style={{ fontSize: '0.6rem', maxWidth: '100%', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', whiteSpace: 'normal', textAlign: 'center' }}>⚠ Disconnected — waiting…</div>}
                     {selectedGameId === 'chroma-shift' && (
                       <div
                         className="badge"
@@ -777,6 +791,17 @@ export default function Lobby({ roomState, myId, onSelectGame, onUpdateChromaOpt
           </div>
         )}
 
+        <div className="text-center" style={{ marginTop: 16 }}>
+          <button
+            type="button"
+            className="btn btn-sm btn-secondary"
+            id="leave-room-btn"
+            onClick={onLeaveRoom}
+            disabled={!onLeaveRoom}
+          >
+            🚪 Leave Room
+          </button>
+        </div>
         {/* Build stamp — proves which client version this browser is running */}
         <p className="text-center text-xs text-muted" style={{ marginTop: 16, opacity: 0.5 }} title="Client build ID">
           build {BUILD_ID.slice(0, 8)}

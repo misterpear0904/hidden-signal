@@ -5,12 +5,13 @@ import { PipDice, sortDiceAsc } from './Dice';
 interface Props {
   roomState: RoomState;
   myId: string;
-  isHost: boolean;
+  isHost?: boolean;
   isLastRound: boolean;
   onNextRound: () => void;
 }
 
-export default function LiarRevealPhase({ roomState, myId, isHost, isLastRound, onNextRound }: Props) {
+export default function LiarRevealPhase({ roomState, myId, isHost = false, isLastRound, onNextRound }: Props) {
+  const isHostNow = roomState?.hostId != null ? roomState.hostId === myId : (isHost ?? false);
   const liar = roomState.liarState;
   if (!liar) return null;
 
@@ -19,8 +20,11 @@ export default function LiarRevealPhase({ roomState, myId, isHost, isLastRound, 
   const iWon = liar.winnerId === myId;
   const myDelta = liar.points[myId] ?? 0;
 
+  const lastBid = liar.bids?.[liar.bids.length - 1] ?? bid;
   const headline = liar.reason === 'timeout'
-    ? `⏱️ ${nameOf(liar.loserId)} ran out of time!`
+    ? (liar.bids?.length
+        ? `⏱️ ${nameOf(liar.loserId)} ran out of time!`
+        : `⏱️ ${nameOf(liar.loserId)} ran out of time before bidding!`)
     : liar.reason === 'exact'
     ? (liar.winnerId === bid?.bidderId
         ? `🎯 Count wasn't exact — ${nameOf(liar.winnerId)} takes it!`
@@ -43,13 +47,18 @@ export default function LiarRevealPhase({ roomState, myId, isHost, isLastRound, 
           </div>
           <div style={{ fontSize: '3.5rem', marginBottom: 8 }}>{iWon ? '🏆' : '🎲'}</div>
           <h1 className="heading-xl mb-8">{headline}</h1>
-          {bid && (
+          {bid && liar.reason !== 'timeout' && (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginTop: 8 }}>
               <p className="text-muted text-sm">
-                Bid was <strong style={{ color: '#fff', fontSize: '1.1rem' }}>{bid.qty} ×</strong>
-                {' '}— actually <strong style={{ color: 'var(--amber-400)', fontSize: '1.1rem' }}>{liar.actualCount}</strong>
+                Bid was{' '}<strong style={{ color: '#fff', fontSize: '1.1rem' }}>{bid.qty} ×</strong>                {' '}— actually <strong style={{ color: 'var(--amber-400)', fontSize: '1.1rem' }}>{liar.actualCount}</strong>
               </p>
               <PipDice value={bid.face} size={44} />
+            </div>
+          )}
+          {liar.reason === 'timeout' && (
+            <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 'var(--radius-md)', background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.35)', color: 'var(--amber-400)', fontWeight: 600, fontSize: '0.85rem', textAlign: 'center' }}>
+              {lastBid
+                ? <>Standing bid was{' '}<strong>{lastBid.qty} ×</strong>{' '}<PipDice value={lastBid.face} size={28} />{' '}—{' '}{nameOf(liar.loserId)} failed to raise, so{' '}{nameOf(liar.winnerId)} (last bidder) wins +1.</>                : <>No bid was placed —{' '}{nameOf(liar.winnerId)} (next in turn order) wins +1.</>}
             </div>
           )}
         </div>
@@ -73,12 +82,11 @@ export default function LiarRevealPhase({ roomState, myId, isHost, isLastRound, 
           </div>
           {myDelta > 0 && (
             <p className="text-center text-sm mt-16" style={{ color: 'var(--green-400)', fontWeight: 700 }}>
-              +{myDelta} pt{myDelta === 1 ? '' : 's'} for you this round!
-            </p>
+              {`+${myDelta} pt${myDelta === 1 ? '' : 's'} for you this round!`}            </p>
           )}
         </div>
 
-        {isHost ? (
+        {isHostNow ? (
           <button className="btn btn-lg btn-primary btn-full" onClick={onNextRound} id="next-liar-round-btn">
             {isLastRound ? '🏆 View Final Leaderboard' : 'Next Round ➔'}
           </button>

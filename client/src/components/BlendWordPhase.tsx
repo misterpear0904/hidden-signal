@@ -1,34 +1,48 @@
 import { useState, useEffect, type FormEvent } from 'react';
 import type { RoomState } from '../types/game';
+import type { ActionAck } from '../hooks/useSocket';
 import { TOTAL_ROUNDS } from '../constants';
 import TimerBar from './TimerBar';
 
 interface Props {
   roomState: RoomState;
   myId: string;
-  onSubmitClue: (word: string) => void;
+  // Task 1: promise-resolving submit — "Clue locked in!" renders only after
+  // the server acknowledges the requestId.
+  onSubmitClue: (word: string) => Promise<ActionAck>;
 }
 
 export default function BlendWordPhase({ roomState, myId, onSubmitClue }: Props) {
   const [word, setWord] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const blend = roomState.blendState;
   const amChameleon = blend?.amChameleon ?? false;
 
   useEffect(() => {
     setWord('');
     setSubmitted(false);
+    setPending(false);
+    setSendError(null);
   }, [roomState.round, roomState.code]);
 
   if (!blend) return null;
   const alreadySubmitted = blend.clues.some(c => c.playerId === myId);
   const done = submitted || alreadySubmitted;
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!word.trim() || done) return;
-    onSubmitClue(word.trim());
-    setSubmitted(true);
+    if (!word.trim() || done || pending) return;
+    setPending(true);
+    setSendError(null);
+    const ack = await onSubmitClue(word.trim());
+    setPending(false);
+    if (ack.ok) {
+      setSubmitted(true);
+    } else {
+      setSendError(ack.error ?? 'Not confirmed by the server — try again');
+    }
   };
 
   return (
@@ -91,9 +105,21 @@ export default function BlendWordPhase({ roomState, myId, onSubmitClue }: Props)
                   autoFocus
                 />
               </div>
-              <button type="submit" className="btn btn-primary btn-lg" disabled={word.trim().length === 0} id="submit-blend-clue-btn">
-                🦎 Submit Clue
+              <button type="submit" className="btn btn-primary btn-lg" disabled={word.trim().length === 0 || pending} id="submit-blend-clue-btn">
+                {pending ? '🦎 Sending…' : '🦎 Submit Clue'}
               </button>
+              {sendError && (
+                <div
+                  role="alert"
+                  style={{
+                    padding: '10px 14px', borderRadius: 'var(--radius-md)',
+                    background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)',
+                    color: 'var(--rose-400)', fontWeight: 700, fontSize: '0.85rem', textAlign: 'center',
+                  }}
+                >
+                  {sendError}
+                </div>
+              )}
             </form>
           ) : (
             <div className="flex flex-col items-center gap-16" style={{ padding: '20px 0' }}>

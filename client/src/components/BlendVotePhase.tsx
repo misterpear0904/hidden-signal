@@ -1,29 +1,41 @@
 import { useState } from 'react';
 import type { RoomState } from '../types/game';
+import type { ActionAck } from '../hooks/useSocket';
 import { TOTAL_ROUNDS, avatarColor, avatarInitial } from '../constants';
 import TimerBar from './TimerBar';
 
 interface Props {
   roomState: RoomState;
   myId: string;
-  onSubmitVote: (targetId: string) => void;
+  // Task 1: promise-resolving submit — "Vote Locked In!" renders only after
+  // the server acknowledges the requestId.
+  onSubmitVote: (targetId: string) => Promise<ActionAck>;
 }
 
 export default function BlendVotePhase({ roomState, myId, onSubmitVote }: Props) {
   const [selected, setSelected] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const blend = roomState.blendState;
   if (!blend) return null;
 
   const done = submitted;
   const others = roomState.players.filter(p => p.id !== myId);
   const nameOf = (id: string) => roomState.players.find(p => p.id === id)?.name ?? '???';
-  const clueOf = (id: string) => blend.clues.find(c => c.playerId === id)?.word ?? '…';
+  const clueOf = (id: string) => blend.clues.find(c => c.playerId === id)?.word ?? '— no clue —';
 
-  const handleSubmit = () => {
-    if (!selected || done) return;
-    onSubmitVote(selected);
-    setSubmitted(true);
+  const handleSubmit = async () => {
+    if (!selected || done || pending) return;
+    setPending(true);
+    setSendError(null);
+    const ack = await onSubmitVote(selected);
+    setPending(false);
+    if (ack.ok) {
+      setSubmitted(true);
+    } else {
+      setSendError(ack.error ?? 'Not confirmed by the server — try again');
+    }
   };
 
   return (
@@ -92,12 +104,24 @@ export default function BlendVotePhase({ roomState, myId, onSubmitVote }: Props)
             </div>
             <button
               className={`btn btn-lg btn-full mt-24 ${selected ? 'btn-primary' : 'btn-secondary'}`}
-              disabled={!selected}
+              disabled={!selected || pending}
               onClick={handleSubmit}
               id="submit-blend-vote-btn"
             >
-              🎯 Lock In Vote
+              {pending ? '🎯 Locking In…' : '🎯 Lock In Vote'}
             </button>
+            {sendError && (
+              <div
+                role="alert"
+                style={{
+                  marginTop: 12, padding: '10px 14px', borderRadius: 'var(--radius-md)',
+                  background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)',
+                  color: 'var(--rose-400)', fontWeight: 700, fontSize: '0.85rem', textAlign: 'center',
+                }}
+              >
+                {sendError}
+              </div>
+            )}
           </div>
         ) : (
           <div className="glass p-32 text-center" style={{ borderRadius: 'var(--radius-xl)' }}>

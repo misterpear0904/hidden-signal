@@ -394,7 +394,7 @@ function applyLevelUp(state, b) {
 
 export function missileBuildBuilding(state, playerId, action) {
   const side = missileSideForPlayer(state, playerId);
-  if (!side) return { error: 'You are not in this match' };
+  if (!side) return { error: 'You are not in this match', code: 'NOT_IN_MATCH', membershipLost: true, rejoin: true };
   if (state.winnerId) return { error: 'Game is over' };
   const { buildingType, launcherType, gx, gy } = action || {};
   if (!['economy', 'shield', 'shield_heavy', 'healer', 'launcher'].includes(buildingType)) return { error: 'Invalid building type' };
@@ -443,6 +443,8 @@ function upgradeCostFor(b) {
 
 export function missileUpgradeBuilding(state, playerId, buildingId) {
   if (state.winnerId) return { error: 'Game is over' };
+  const side = missileSideForPlayer(state, playerId);
+  if (!side) return { error: 'You are not in this match', code: 'NOT_IN_MATCH', membershipLost: true, rejoin: true };
   const b = state.buildings[buildingId];
   if (!b) return { error: 'Building not found' };
   if (b.ownerId !== playerId) return { error: 'Not your building' };
@@ -475,7 +477,7 @@ export function missileUpgradeBuilding(state, playerId, buildingId) {
 export function missileSellBuilding(state, playerId, buildingId) {
   if (state.winnerId) return { error: 'Game is over' };
   const side = missileSideForPlayer(state, playerId);
-  if (!side) return { error: 'You are not in this match' };
+  if (!side) return { error: 'You are not in this match', code: 'NOT_IN_MATCH', membershipLost: true, rejoin: true };
   const b = state.buildings[buildingId];
   if (!b) return { error: 'Building not found' };
   if (b.ownerId !== playerId) return { error: 'Not your building' };
@@ -497,7 +499,7 @@ export function missileSellBuilding(state, playerId, buildingId) {
 // Cancel a pending sale. Free — the refund was never paid out.
 export function missileCancelSell(state, playerId, buildingId) {
   if (state.winnerId) return { error: 'Game is over' };
-  if (!missileSideForPlayer(state, playerId)) return { error: 'You are not in this match' };
+  if (!missileSideForPlayer(state, playerId)) return { error: 'You are not in this match', code: 'NOT_IN_MATCH', membershipLost: true, rejoin: true };
   const job = pendingSellFor(state, buildingId);
   if (!job) return { error: 'No sale in progress' };
   if (job.ownerId !== playerId) return { error: 'Not your building' };
@@ -513,7 +515,7 @@ export function missileCancelSell(state, playerId, buildingId) {
 export function missileRebuildRubble(state, playerId, rubbleId) {
   if (state.winnerId) return { error: 'Game is over' };
   const side = missileSideForPlayer(state, playerId);
-  if (!side) return { error: 'You are not in this match' };
+  if (!side) return { error: 'You are not in this match', code: 'NOT_IN_MATCH', membershipLost: true, rejoin: true };
   const r = state.rubble?.[rubbleId];
   if (!r) return { error: 'Rubble not found' };
   if (r.ownerId !== playerId || r.side !== side) return { error: 'Not your rubble' };
@@ -570,7 +572,7 @@ function buildShotPattern(state, launcher, side, enemySide, targetGx, targetGy, 
 export function missileLoadMissile(state, playerId, launcherId) {
   if (state.winnerId) return { error: 'Game is over' };
   const side = missileSideForPlayer(state, playerId);
-  if (!side) return { error: 'You are not in this match' };
+  if (!side) return { error: 'You are not in this match', code: 'NOT_IN_MATCH', membershipLost: true, rejoin: true };
   const launcher = state.buildings[launcherId];
   if (!launcher || launcher.type !== 'launcher') return { error: 'Launcher not found' };
   if (launcher.ownerId !== playerId) return { error: 'Not your launcher' };
@@ -612,6 +614,10 @@ function fireVolley(state, launcher, enemySide, targetGx, targetGy, now) {
     }
     added.push(...pattern);
   }
+  // Defensive: loaded/rejoined states could lack the array — elsewhere
+  // missiles stay ??-null-safe; launchers must not throw either (a throw
+  // here used to kill the WHOLE missile tick pass).
+  if (!state.missiles) state.missiles = [];
   state.missiles.push(...added);
   try {
     const st = ensureStats(state, launcher.ownerId);
@@ -625,7 +631,7 @@ function fireVolley(state, launcher, enemySide, targetGx, targetGy, now) {
 export function missileLaunch(state, playerId, action) {
   if (state.winnerId) return { error: 'Game is over' };
   const side = missileSideForPlayer(state, playerId);
-  if (!side) return { error: 'You are not in this match' };
+  if (!side) return { error: 'You are not in this match', code: 'NOT_IN_MATCH', membershipLost: true, rejoin: true };
   const { launcherId, targetGx, targetGy } = action || {};
   const launcher = state.buildings[launcherId];
   if (!launcher || launcher.type !== 'launcher') return { error: 'Launcher not found' };
@@ -649,7 +655,7 @@ export function missileLaunch(state, playerId, action) {
 export function missileLaunchType(state, playerId, launcherType, targetGx, targetGy) {
   if (state.winnerId) return { error: 'Game is over' };
   const side = missileSideForPlayer(state, playerId);
-  if (!side) return { error: 'You are not in this match' };
+  if (!side) return { error: 'You are not in this match', code: 'NOT_IN_MATCH', membershipLost: true, rejoin: true };
   if (!['single', 'scatter'].includes(launcherType)) return { error: 'Invalid launcher type' };
   if (!isValidCell(targetGx, targetGy)) return { error: 'Invalid target square' };
   const launchers = Object.values(state.buildings).filter(
@@ -676,7 +682,7 @@ export function missileLaunchType(state, playerId, launcherType, targetGx, targe
 export function missileSetKeepFire(state, playerId, action) {
   if (state.winnerId) return { error: 'Game is over' };
   const side = missileSideForPlayer(state, playerId);
-  if (!side) return { error: 'You are not in this match' };
+  if (!side) return { error: 'You are not in this match', code: 'NOT_IN_MATCH', membershipLost: true, rejoin: true };
   if (!state.keepFire) state.keepFire = {};
   if (!action || action.armed !== true) {
     state.keepFire[playerId] = null;
@@ -695,7 +701,7 @@ export function missileSetKeepFire(state, playerId, action) {
 export function missileFireDesperation(state, playerId, action) {
   if (state.winnerId) return { error: 'Game is over' };
   const side = missileSideForPlayer(state, playerId);
-  if (!side) return { error: 'You are not in this match' };
+  if (!side) return { error: 'You are not in this match', code: 'NOT_IN_MATCH', membershipLost: true, rejoin: true };
   const { targetGx, targetGy } = action || {};
   if (!isValidCell(targetGx, targetGy)) return { error: 'Invalid target square' };
   const flag = state.desperation?.[playerId];
@@ -724,6 +730,7 @@ export function missileFireDesperation(state, playerId, action) {
     deployAt: now,
   };
   flag.used = true;
+  if (!state.missiles) state.missiles = [];
   state.missiles.push(m);
   try {
     const st = ensureStats(state, playerId);
@@ -761,7 +768,7 @@ export function supplyScaleFor(myWorth, enemyWorth) {
 export function missileClaimShip(state, playerId) {
   if (state.winnerId) return { error: 'Game is over' };
   const side = missileSideForPlayer(state, playerId);
-  if (!side) return { error: 'You are not in this match' };
+  if (!side) return { error: 'You are not in this match', code: 'NOT_IN_MATCH', membershipLost: true, rejoin: true };
   if (!state.supplyShipEnabled) return { error: 'Supply ships are off' };
   const ship = state.supplyShip;
   const now = Date.now();
@@ -816,6 +823,7 @@ export function missileClaimShip(state, playerId) {
         lane: (i % 5) - 2,
       };
     });
+    if (!state.missiles) state.missiles = [];
     state.missiles.push(...added);
     detail = { tiles: tiles.length };
     try {
@@ -1211,6 +1219,8 @@ function expireFog(state, now) {
 export function tickMissileCommand(state, now = Date.now()) {
   if (!state || state.winnerId || state.gameEndTime) return { events: [] };
   const events = [];
+  // Defensive shape: keep loaded/rejoined legacy states null-safe here too.
+  if (!state.missiles) state.missiles = [];
   const last = state.lastEconomyTick || now;
   const dt = Math.max(0, Math.min(5, (now - last) / 1000));
   state.lastEconomyTick = now;
@@ -1241,6 +1251,9 @@ export function tickMissileCommand(state, now = Date.now()) {
     } else if (state.supplyShip && now >= state.supplyShip.endAt) {
       state.supplyShip = null;
       state.nextShipAt = now + scfg.intervalMs + Math.random() * (scfg.jitterMs ?? 0);
+      // Unclaimed ship sailed away — slim ticks only carry sh:null on CHANGE,
+      // and a quiet room's heartbeat could stay stale forever, so flag it.
+      events.push({ type: 'supply-depart' });
     }
   }
 
@@ -1303,6 +1316,10 @@ export function tickMissileCommand(state, now = Date.now()) {
     if (b.type !== 'launcher') continue;
     if ((b.loadingUntil ?? 0) > now) continue;
     if ((b.stock ?? 0) >= (b.maxStock ?? MISSILE_CONFIG.maxStock)) continue;
+    // A launcher the owner initiated a sale on keeps auto-loading at full
+    // price until demolition lands — stop spending their money (paid stock
+    // would be destroyed with the building anyway).
+    if (pendingSellFor(state, b.id)) continue;
     if ((state.resources[b.ownerId] ?? 0) < (b.missileCost || 0)) continue;
     state.resources[b.ownerId] -= b.missileCost;
     b.loadingUntil = now + (MISSILE_CONFIG.loadMs ?? 5000) / surgeRate(state, b.ownerId, now);
@@ -1482,6 +1499,20 @@ export function missileAiTick(state, now = Date.now()) {
   if (!side) return;
   const enemySide = side === 'top' ? 'bottom' : 'top';
 
+  // Desperation strike (free, one-time): take the shot as soon as it
+  // unlocks (core ≤55%) aimed straight at the enemy core. The AI used to
+  // hoard it forever — the comeback superweapon was dead code.
+  const myDesp = state.desperation?.[ai];
+  const myCoreEarly = Object.values(state.buildings).find(b => b.type === 'core' && b.ownerId === ai);
+  if (myDesp?.unlocked && !myDesp.used && myCoreEarly && ((myCoreEarly.coreHp ?? 0) > 0)
+    && (myCoreEarly.coreHp / (myCoreEarly.maxCoreHp ?? 1)) <= 0.55) {
+    const enemyCoreEarly = Object.values(state.buildings).find(b => b.type === 'core' && b.ownerId !== ai);
+    if (enemyCoreEarly && (enemyCoreEarly.coreHp ?? 0) > 0) {
+      const r = missileFireDesperation(state, ai, { targetGx: enemyCoreEarly.gx, targetGy: enemyCoreEarly.gy });
+      if (!r?.error) return;
+    }
+  }
+
   const difficulty = state.aiDifficulty || 'hard';
   const type = state.aiType || 'balanced';
 
@@ -1503,13 +1534,16 @@ export function missileAiTick(state, now = Date.now()) {
   const pendingHealers = pendingOwn.filter(p => p.type === 'healer').length;
   const pendingLaunchers = pendingOwn.filter(p => p.type === 'launcher').length;
 
+  // AI-side occupancy set — candidates O(1) instead of the old per-cell
+  // triple Object.values().some() full scans (worst case ~8k iterations).
+  const occAICells = new Set();
+  for (const b of Object.values(state.buildings)) if (b.side === side) occAICells.add(`${b.gx},${b.gy}`);
+  for (const p of Object.values(state.pending ?? {})) if (p.side === side) occAICells.add(`${p.gx},${p.gy}`);
+  for (const r of Object.values(state.rubble ?? {})) if (r.side === side && r.ownerId === ai) occAICells.add(`${r.gx},${r.gy}`);
   function freeCell() {
     for (let gx = 0; gx < MISSILE_CONFIG.gridCols; gx++) {
       for (let gy = 0; gy < MISSILE_CONFIG.gridRows; gy++) {
-        const occ = Object.values(state.buildings).some(b => b.side === side && b.gx === gx && b.gy === gy) ||
-          Object.values(state.pending ?? {}).some(p => p.side === side && p.gx === gx && p.gy === gy) ||
-          Object.values(state.rubble ?? {}).some(r => r.side === side && r.gx === gx && r.gy === gy && r.ownerId === ai);
-        if (!occ) return { gx, gy };
+        if (!occAICells.has(`${gx},${gy}`)) return { gx, gy };
       }
     }
     return null;
@@ -1541,11 +1575,21 @@ export function missileAiTick(state, now = Date.now()) {
   }
 
   // Rebuild rubble first (half price, instant) — cheaper than fresh builds.
+  // Respect remaining build quotas too: without this the AI would waste
+  // half-cost on quota types it never wanted past targets.
   const ownRubble = Object.values(state.rubble ?? {}).filter(r => r.ownerId === ai);
   if (ownRubble.length > 0) {
+    const rem = {
+      launcher: ownLaunchers.length + pendingLaunchers < targets.launchers,
+      shield: ownShields.length + pendingShields < targets.shields,
+      shield_heavy: ownShields.length + pendingShields < targets.shields,
+      economy: ownEco.length + pendingEco < targets.eco,
+      healer: ownHealers.length + pendingHealers < targets.healers && (ownShields.length + pendingShields) >= 1,
+    };
     // rebuild the most valuable type first: launchers > shields > economy > healer
     const priority = { launcher: 4, shield: 3, shield_heavy: 3, healer: 2, economy: 1 };
-    const pick = ownRubble.slice().sort((a, b) => (priority[b.type] || 0) - (priority[a.type] || 0))[0];
+    const pick = ownRubble.slice().sort((a, b) => (priority[b.type] || 0) - (priority[a.type] || 0))
+      .find(r => rem[r.type]);
     if (pick) {
       const r = missileRebuildRubble(state, ai, pick.id);
       if (!r?.error) return;
@@ -1583,10 +1627,15 @@ export function missileAiTick(state, now = Date.now()) {
 
   // Upgrade: pick best candidate by type priority and affordability.
   const upgradePriority = { launcher: 4, shield: 3, shield_heavy: 3, healer: 2, economy: 1 };
+  // One Set pass instead of two full filter scans per candidate.
+  const pendingUpIds = new Set(Object.values(state.pending ?? {})
+    .filter(p => p.kind === 'upgrade').map(p => p.upgradeOf));
+  const pendingSellIds = new Set(Object.values(state.pending ?? {})
+    .filter(p => p.kind === 'sell').map(p => p.sellOf));
   const candidates = own
     .filter(b => b.type !== 'core' && b.level < targets.maxLevel)
-    .filter(b => !Object.values(state.pending ?? {}).some(p => p.kind === 'upgrade' && p.upgradeOf === b.id))
-    .filter(b => !Object.values(state.pending ?? {}).some(p => p.kind === 'sell' && p.sellOf === b.id))
+    .filter(b => !pendingUpIds.has(b.id))
+    .filter(b => !pendingSellIds.has(b.id))
     .sort((a, b) => (upgradePriority[b.type] || 0) - (upgradePriority[a.type] || 0));
   for (const b of candidates) {
     const cost = upgradeCostFor(b);
@@ -1603,7 +1652,7 @@ export function missileAiTick(state, now = Date.now()) {
   const enemyEco = enemyBuildings.filter(b => b.type === 'economy');
   const enemyCore = enemyBuildings.find(b => b.type === 'core');
 
-  let target = { gx: 6, gy: 3 }; // default: enemy core
+  let target = enemyCore ? { gx: enemyCore.gx, gy: enemyCore.gy } : { gx: 6, gy: 3 }; // default: enemy core
   if (difficulty !== 'easy') {
     // Break weakest shield first
     const weakShield = enemyShields

@@ -1,7 +1,7 @@
 // missileCommand/MissileCommandStats.tsx — SILO'D post-game breakdown for Missile Command.
 // Pure SVG/div charts (no chart dependency). Remove this file to remove the report.
 
-import { Fragment } from 'react';
+import { Fragment, useMemo } from 'react';
 import type { MissileCommandState, MissilePlayerStats, Player } from '../../types/game';
 
 export function emptyStats(): MissilePlayerStats {
@@ -75,9 +75,7 @@ function IncomeChart({ mc, topName, botName }: { mc: MissileCommandState; topNam
   return (
     <div>
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: '0.78rem', fontWeight: 700, marginBottom: 6 }}>
-        <span style={{ color: '#22d3ee' }}>● {topName} — {last.top.toFixed(1)}/s</span>
-        <span style={{ color: '#fb7185' }}>● {botName} — {last.bottom.toFixed(1)}/s</span>
-      </div>
+        <span style={{ color: '#22d3ee' }}>{`● ${topName} — ${last.top.toFixed(1)}/s`}</span>        <span style={{ color: '#fb7185' }}>{`● ${botName} — ${last.bottom.toFixed(1)}/s`}</span>      </div>
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', display: 'block' }} role="img" aria-label={`Income per second over time for ${topName} versus ${botName}`}>
         {gridVals.map(v => (
           <Fragment key={v}>
@@ -142,7 +140,8 @@ interface Props {
 export default function MissileCommandStats({ mc, players, myId }: Props) {
   const topId = mc.sides.top;
   const botId = mc.sides.bottom;
-  const nameOf = (pid: string) => players.find(p => p.id === pid)?.name ?? (pid === myId ? 'You' : 'Enemy');
+  const byId = useMemo(() => new Map(players.map(p => [p.id, p])), [players]);
+  const nameOf = (pid: string) => byId.get(pid)?.name ?? (pid === myId ? 'You' : 'Enemy');
   const top = statsOf(mc, topId);
   const bot = statsOf(mc, botId);
   const topName = nameOf(topId);
@@ -203,7 +202,7 @@ export default function MissileCommandStats({ mc, players, myId }: Props) {
         <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           {[top, bot].map((s, i) => (
             <div key={i}>
-              <div className="text-xs text-muted" style={{ marginBottom: 4 }}>{i === 0 ? topName : botName} dealt</div>
+              <div className="text-xs text-muted" style={{ marginBottom: 4 }}>{`${i === 0 ? topName : botName} dealt`}</div>
               <StackedBar parts={[
                 { value: s.coreDamage, color: '#a78bfa' },
                 { value: s.structureDamage, color: '#fbbf24' },
@@ -259,7 +258,7 @@ export default function MissileCommandStats({ mc, players, myId }: Props) {
         <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           {[top, bot].map((s, i) => (
             <div key={i}>
-              <div className="text-xs text-muted" style={{ marginBottom: 4 }}>{i === 0 ? topName : botName} income mix</div>
+              <div className="text-xs text-muted" style={{ marginBottom: 4 }}>{`${i === 0 ? topName : botName} income mix`}</div>
               <StackedBar parts={[
                 { value: s.incomeEconomy, color: '#fbbf24' },
                 { value: s.incomeCore, color: '#4ade80' },

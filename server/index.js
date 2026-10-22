@@ -6,6 +6,10 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import { logger } from './logger.js';
 import { PROTOCOL_VERSION } from './version.js';
+// Task 1 — server-acknowledged actions: every game action carries a client
+// requestId and answers its socket ack with { ok, error }. Duplicates replay
+// their stored result; rejections/duplicates are logged (see actionAck.js).
+import { beginAction } from './actionAck.js';
 
 // Helper: get room or emit room-expired and return null
 function getRoomOrExpire(socket, roomCode) {
@@ -24,6 +28,7 @@ import {
   startGame,
   selectGame,
   kickPlayer,
+  leaveRoom,
   updateChromaOptions,
   updateTerritoryOptions,
   updateLiarOptions,
@@ -43,6 +48,7 @@ import {
   setPlayerDifficulty,
   submitChromaGuess,
   resolveChromaRace,
+  expireChromaRound,
   nextChromaRound,
   submitBlendClue,
   blendAllCluesIn,
@@ -52,6 +58,8 @@ import {
   resolveBlendVotes,
   submitBlendGuess,
   expireBlendGuess,
+  expireBlendWord,
+  expireBlendVote,
   nextBlendRound,
   submitLiarBid,
   resolveLiarCall,
@@ -64,6 +72,10 @@ import {
   submitTerritoryPick,
   placeTerritoryMine,
   nextTerritoryTurn,
+  expireTerritoryTurn,
+  autoResolveTerritoryTurn,
+  TERRITORY_TURN_SEC,
+  TERRITORY_TURN_SEC_VALUE,
   getTeamBonusCounts,
   getTeamRechargeIntervalMs,
   advanceToSignal,
@@ -75,13 +87,16 @@ import {
   advanceRound,
   playerDisconnected,
   rejoinRoom,
+  buildRevealPayload,
   REJOIN_GRACE_MS,
   deleteRoom,
   sweepInactiveRooms,
+  freeExpiredGhostSeats,
   isHost,
   startEndVote,
   submitEndVote,
   cancelEndVote,
+  forceAdvance,
   resetToLobby,
   rooms,
   SIGNAL_TIME_SEC,
@@ -200,11 +215,43 @@ function setRoomTimer(code, ms, cb) {
   roomTimers.set(code, id);
 }
 
+function armTerritoryTurnTimer(code) {
+  const room = getRoom(code);
+  if (!room || room.phase !== 'territory-turn' || room.territoryState?.extremeMode) return;
+  const ms = Math.max(0, (room.timerEnd ?? Date.now() + TERRITORY_TURN_SEC * 1000) - Date.now());
+  setRoomTimer(code, ms || TERRITORY_TURN_SEC * 1000, () => {
+    clearRoomTimer(code);
+    try {
+      const r = expireTerritoryTurn(code);
+      if (r) {
+        broadcastRoomState(r);
+        if (r.phase === 'territory-turn' && !r.territoryState?.extremeMode) {
+          armTerritoryTurnTimer(code);
+        }
+      }
+    } catch (e) {
+      console.error('[timer] expireTerritoryTurn failed', e);
+    }
+  });
+}
+
 // Periodic sweep of abandoned rooms (every 10 min). Occupants of deleted
 // rooms are told why (instead of staring at a frozen room), then logged.
 setInterval(() => {
   try {
     const before = rooms.size;
+    // Free expired ghost seats first and notify those clients so they get a
+    // rejoin path instead of staring at a frozen match.
+    const freed = freeExpiredGhostSeats(Date.now());
+    for (const { code, removedIds } of freed) {
+      for (const id of removedIds) {
+        const sock = io.sockets.sockets.get(id);
+        if (sock) {
+          try { sock.leave(code); } catch {}
+          sock.emit('kicked', { roomCode: code, reason: 'Your seat expired — rejoin to continue' });
+        }
+      }
+    }
     const deleted = sweepInactiveRooms(Date.now());
     const after = rooms.size;
     for (const { code, occupants, reason } of deleted) {
@@ -237,7 +284,10 @@ setInterval(() => {
     const now = Date.now();
     for (const room of rooms.values()) {
       if (!room.timerEnd || now < room.timerEnd + 5000) continue;
-      if (roomTimers.has(room.code)) continue;
+      // An armed timer that has clearly overrun (10s past deadline) is stuck
+      // too — clear it and run the phase's normal timeout path.
+      if (roomTimers.has(room.code) && now < room.timerEnd + 10000) continue;
+      if (roomTimers.has(room.code)) clearRoomTimer(room.code);
       healStuckRoom(room.code, room.phase);
     }
   } catch (e) {
@@ -255,10 +305,12 @@ function healStuckRoom(code, phase) {
     }
     if (phase === 'discuss') {
       logger.warn('watchdog_heal', { roomCode: code, phase });
+      clearRoomTimer(code);
       const r2 = advanceToGuess(code);
       if (!r2) return;
       broadcastRoomState(r2);
       setRoomTimer(code, GUESS_TIME_SEC * 1000, () => {
+        clearRoomTimer(code);
         try {
           autoResolveRound(code);
         } catch (e) {
@@ -269,12 +321,31 @@ function healStuckRoom(code, phase) {
     }
     if (phase === 'guess') {
       logger.warn('watchdog_heal', { roomCode: code, phase });
+      clearRoomTimer(code);
       autoResolveRound(code);
+      return;
+    }
+    if (phase === 'reveal') {
+      // Results watchdog: re-send the round-reveal payload + state so a client
+      // that missed it (or reloaded into a frozen "Calculating results…"
+      // screen) can recover instead of spinning forever.
+      logger.warn('watchdog_heal', { roomCode: code, phase });
+      const room = getRoom(code);
+      if (!room) return;
+      const payload = buildRevealPayload(room);
+      if (payload) {
+        for (const p of room.players) {
+          const sock = io.sockets.sockets.get(p.id);
+          if (sock) sock.emit('round-reveal', payload);
+        }
+      }
+      broadcastRoomState(room);
+      room.timerEnd = Date.now() + 30000;
       return;
     }
     if (phase === 'blend-word') {
       logger.warn('watchdog_heal', { roomCode: code, phase });
-      const r1 = advanceToBlendVote(code);
+      const r1 = expireBlendWord(code);
       if (!r1) return;
       broadcastRoomState(r1);
       setRoomTimer(code, BLEND_VOTE_SEC_VALUE * 1000, () => {
@@ -307,6 +378,27 @@ function healStuckRoom(code, phase) {
       logger.warn('watchdog_heal', { roomCode: code, phase });
       const r = expireBluffBet(code);
       if (r) broadcastRoomState(r);
+      return;
+    }
+    if (phase === 'territory-turn') {
+      logger.warn('watchdog_heal', { roomCode: code, phase });
+      const r = expireTerritoryTurn(code);
+      if (r) {
+        broadcastRoomState(r);
+        if (r.phase === 'territory-turn' && !r.territoryState?.extremeMode) armTerritoryTurnTimer(code);
+      }
+      return;
+    }
+    if (phase === 'chroma-play') {
+      logger.warn('watchdog_heal', { roomCode: code, phase });
+      const room = getRoom(code);
+      if (room?.chromaState?.raceEndAt) {
+        const r = resolveChromaRace(code);
+        if (r) broadcastRoomState(r);
+      } else {
+        const r = expireChromaRound(code);
+        if (r) broadcastRoomState(r);
+      }
       return;
     }
   } catch (e) {
@@ -490,11 +582,14 @@ function roomPublicState(room, forPlayerId = null) {
       : null,
     phase: room.phase,
     round: room.round,
+    hostId: room.hostId || null,
     players: room.players.map(p => ({
       id: p.id,
       name: p.name,
       score: p.score,
-      isHost: p.isHost,
+      // Host identity is derived from the single source of truth (room.hostId),
+      // never from a stale per-player flag.
+      isHost: room.hostId ? p.id === room.hostId : p.isHost,
       connected: p.connected,
     })),
     signals: room.phase === 'discuss' || room.phase === 'guess' || room.phase === 'reveal' || room.phase === 'end'
@@ -559,16 +654,19 @@ function startSignalPhase(code) {
   broadcastRoomState(room);
   // Auto-advance signal -> discuss -> guess on timeout
   setRoomTimer(code, SIGNAL_TIME_SEC * 1000, () => {
+    clearRoomTimer(code);
     try {
       const r1 = advanceToDiscuss(code);
       if (!r1) return;
       broadcastRoomState(r1);
       setRoomTimer(code, DISCUSS_TIME_SEC * 1000, () => {
+        clearRoomTimer(code);
         try {
           const r2 = advanceToGuess(code);
           if (!r2) return;
           broadcastRoomState(r2);
           setRoomTimer(code, GUESS_TIME_SEC * 1000, () => {
+            clearRoomTimer(code);
             try {
               autoResolveRound(code);
             } catch (e) {
@@ -590,11 +688,13 @@ function startDiscussPhase(code) {
   if (!room) return;
   broadcastRoomState(room);
   setRoomTimer(code, DISCUSS_TIME_SEC * 1000, () => {
+    clearRoomTimer(code);
     try {
       const r2 = advanceToGuess(code);
       if (!r2) return;
       broadcastRoomState(r2);
       setRoomTimer(code, GUESS_TIME_SEC * 1000, () => {
+        clearRoomTimer(code);
         try {
           autoResolveRound(code);
         } catch (e) {
@@ -625,6 +725,7 @@ function checkAllSubmitted(room, type) {
 }
 
 function autoResolveChromaRace(code) {
+  clearRoomTimer(code);
   const room = resolveChromaRace(code);
   if (!room) return;
   broadcastRoomState(room);
@@ -636,7 +737,7 @@ function startBlendWordPhase(code) {
   broadcastRoomState(room);
   setRoomTimer(code, BLEND_WORD_SEC_VALUE * 1000, () => {
     try {
-      const r1 = advanceToBlendVote(code);
+      const r1 = expireBlendWord(code);
       if (!r1) return;
       broadcastRoomState(r1);
       setRoomTimer(code, BLEND_VOTE_SEC_VALUE * 1000, () => {
@@ -647,13 +748,14 @@ function startBlendWordPhase(code) {
         }
       });
     } catch (e) {
-      console.error('[timer] advanceToBlendVote failed', e);
+      console.error('[timer] expireBlendWord failed', e);
     }
   });
 }
 
 function autoResolveBlendVotes(code) {
-  const room = resolveBlendVotes(code);
+  clearRoomTimer(code);
+  const room = expireBlendVote(code);
   if (!room) return;
   broadcastRoomState(room);
   if (room.phase === 'blend-guess') {
@@ -671,8 +773,14 @@ function autoResolveBlendVotes(code) {
 function startLiarBidPhase(code) {
   const room = getRoom(code);
   if (!room || room.phase !== 'liar-bid') return;
+  if (typeof room.timerEnd !== 'number') room.timerEnd = Date.now() + LIAR_BID_SEC_VALUE * 1000;
   broadcastRoomState(room);
-  setRoomTimer(code, LIAR_BID_SEC_VALUE * 1000, () => {
+  // One server turn clock: arm from the room's own deadline instead of a
+  // freshly recomputed constant, so the broadcast timerEnd and the armed
+  // timer can never drift apart.
+  const ms = Math.max(0, room.timerEnd - Date.now());
+  setRoomTimer(code, ms, () => {
+    clearRoomTimer(code);
     try {
       const r = expireLiarBid(code);
       if (r) broadcastRoomState(r);
@@ -697,6 +805,7 @@ function startBluffBetPhase(code) {
 }
 
 function autoResolveRound(code) {
+  clearRoomTimer(code);
   const result = resolveRound(code);
   if (!result) return;
   const { room, scoreDeltas } = result;
@@ -715,6 +824,8 @@ function autoResolveRound(code) {
     scoreDeltas: deltas,
     players: room.players,
   });
+  // Arm a results watchdog so a missed reveal payload can be re-sent.
+  room.timerEnd = Date.now() + 30000;
   broadcastRoomState(room);
 }
 
@@ -749,187 +860,366 @@ io.on('connection', (socket) => {
     if (!playerName?.trim() || !roomCode?.trim()) return socket.emit('error', 'Name and code required');
     const code = roomCode.trim().toUpperCase();
     logger.info('join_room_attempt', { code, playerName: playerName.trim().substring(0, 20), socketId: socket.id, roomsCount: rooms.size });
+    const roomBefore = getRoom(code);
+    const oldHostId = roomBefore?.hostId || null;
     const result = joinRoom(code, socket.id, playerName.trim().substring(0, 20));
     if (result.error) {
       logger.warn('join_room_failed', { code, error: result.error, roomsCount: rooms.size, existingRooms: Array.from(rooms.keys()) });
       return socket.emit('error', result.error);
     }
 
+    const room = result.room;
+    if (oldHostId && room.hostId && oldHostId !== room.hostId) {
+      const newHost = room.players.find(p => p.id === room.hostId);
+      io.to(room.code).emit('host-changed', { newHostId: room.hostId, newHostName: newHost?.name || 'a player' });
+    }
     logger.room.join(code, socket.id, { playerName: playerName.trim().substring(0, 20) });
     socket.join(code);
     socket.emit('room-joined', { roomCode: code, playerId: socket.id });
-    broadcastRoomState(result.room);
+    broadcastRoomState(room);
+    sendPrivateRole(socket, room);
+    const joinRevealPayload = buildRevealPayload(room);
+    if (joinRevealPayload) socket.emit('round-reveal', joinRevealPayload);
   });
 
-  socket.on('kick-player', ({ roomCode, targetId } = {}) => {
-    if (!roomCode || !targetId) return socket.emit('error', 'Room and player required');
+  socket.on('kick-player', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'kick-player', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, targetId } = data;
+    if (!roomCode || !targetId) return done(false, 'Room and player required');
     const result = kickPlayer(roomCode, socket.id, targetId);
-    if (result.error) return socket.emit('error', result.error);
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
     const kickedSocket = io.sockets.sockets.get(targetId);
     if (kickedSocket) {
       kickedSocket.leave(roomCode);
       kickedSocket.emit('kicked', { roomCode });
     }
     broadcastRoomState(result.room);
+    return done(true);
   });
 
-  socket.on('select-game', ({ roomCode, gameId } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('leave-room', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'leave-room', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode } = data || {};
+    if (!roomCode) return done(false, 'Room required');
+    const code = roomCode.trim().toUpperCase();
+    const roomBefore = getRoom(code);
+    const oldHostId = roomBefore?.hostId || null;
+    const result = leaveRoom(code, socket.id);
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
+    socket.leave(code);
+    const room = result.room;
+    if (room) {
+      broadcastRoomState(room);
+      // Host leave triggers clean migration notification (Task 2/8).
+      if (oldHostId && room.hostId && oldHostId !== room.hostId) {
+        const newHost = room.players.find(p => p.id === room.hostId);
+        io.to(code).emit('host-changed', { newHostId: room.hostId, newHostName: newHost?.name || 'a player' });
+      }
+    }
+    return done(true);
+  });
+
+  socket.on('select-game', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'select-game', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, gameId } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = getRoom(roomCode);
-    if (!room || !isHost(room, socket.id)) return socket.emit('error', 'Only host can change game');
+    if (!room || !isHost(room, socket.id)) return done(false, 'Only host can change game');
     const updated = selectGame(roomCode, gameId);
     if (updated) broadcastRoomState(updated);
+    return done(true);
   });
 
-  socket.on('update-chroma-options', ({ roomCode, options } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('update-chroma-options', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'update-chroma-options', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, options } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = getRoom(roomCode);
-    if (!room || !isHost(room, socket.id)) return socket.emit('error', 'Only host can change options');
+    if (!room || !isHost(room, socket.id)) return done(false, 'Only host can change options');
     const updated = updateChromaOptions(roomCode, options);
     if (updated) broadcastRoomState(updated);
+    return done(true);
   });
 
-  socket.on('update-territory-options', ({ roomCode, options } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('update-territory-options', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'update-territory-options', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, options } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = getRoom(roomCode);
-    if (!room || !isHost(room, socket.id)) return socket.emit('error', 'Only host can change options');
+    if (!room || !isHost(room, socket.id)) return done(false, 'Only host can change options');
     const updated = updateTerritoryOptions(roomCode, options);
     if (updated) broadcastRoomState(updated);
+    return done(true);
   });
 
-  socket.on('update-liar-options', ({ roomCode, options } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('update-liar-options', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'update-liar-options', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, options } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = getRoom(roomCode);
-    if (!room || !isHost(room, socket.id)) return socket.emit('error', 'Only host can change options');
+    if (!room || !isHost(room, socket.id)) return done(false, 'Only host can change options');
     const updated = updateLiarOptions(roomCode, options);
     if (updated) broadcastRoomState(updated);
+    return done(true);
   });
 
-  socket.on('update-missile-command-options', ({ roomCode, options } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('update-missile-command-options', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'update-missile-command-options', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, options } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = getRoom(roomCode);
-    if (!room || !isHost(room, socket.id)) return socket.emit('error', 'Only host can change options');
+    if (!room || !isHost(room, socket.id)) return done(false, 'Only host can change options');
     const updated = updateMissileCommandOptions(roomCode, options);
     if (updated) broadcastRoomState(updated);
+    return done(true);
   });
 
-  socket.on('build-missile-building', ({ roomCode, action } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('build-missile-building', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'build-missile-building', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, action } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = getRoomOrExpire(socket, roomCode);
-    if (!room) return;
+    if (!room) return done(false, 'Room no longer exists');
     const result = buildMissileBuilding(roomCode, socket.id, action);
-    if (!result) return socket.emit('error', 'Cannot build now');
-    if (result.error) return socket.emit('error', result.error);
+    if (!result) return done(false, 'Cannot build now');
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
     broadcastRoomState(result.room);
+    return done(true);
   });
 
-  socket.on('upgrade-missile-building', ({ roomCode, action } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('upgrade-missile-building', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'upgrade-missile-building', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, action } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = getRoomOrExpire(socket, roomCode);
-    if (!room) return;
+    if (!room) return done(false, 'Room no longer exists');
     const buildingId = typeof action === 'string' ? action : action?.buildingId;
     const result = upgradeMissileBuilding(roomCode, socket.id, buildingId);
-    if (!result) return socket.emit('error', 'Cannot upgrade now');
-    if (result.error) return socket.emit('error', result.error);
+    if (!result) return done(false, 'Cannot upgrade now');
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
     broadcastRoomState(result.room);
+    return done(true);
   });
 
-  socket.on('sell-missile-building', ({ roomCode, buildingId } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('sell-missile-building', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'sell-missile-building', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, buildingId } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = getRoomOrExpire(socket, roomCode);
-    if (!room) return;
+    if (!room) return done(false, 'Room no longer exists');
     const id = typeof buildingId === 'string' ? buildingId : buildingId?.buildingId;
     const result = sellMissileBuilding(roomCode, socket.id, id);
-    if (!result) return socket.emit('error', 'Cannot sell now');
-    if (result.error) return socket.emit('error', result.error);
+    if (!result) return done(false, 'Cannot sell now');
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
     broadcastRoomState(result.room);
+    return done(true);
   });
 
-  socket.on('cancel-missile-sell', ({ roomCode, buildingId } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('cancel-missile-sell', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'cancel-missile-sell', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, buildingId } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = getRoomOrExpire(socket, roomCode);
-    if (!room) return;
+    if (!room) return done(false, 'Room no longer exists');
     const id = typeof buildingId === 'string' ? buildingId : buildingId?.buildingId;
     const result = cancelMissileSell(roomCode, socket.id, id);
-    if (!result) return socket.emit('error', 'Cannot cancel sale now');
-    if (result.error) return socket.emit('error', result.error);
+    if (!result) return done(false, 'Cannot cancel sale now');
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
     broadcastRoomState(result.room);
+    return done(true);
   });
 
-  socket.on('rebuild-rubble', ({ roomCode, rubbleId } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('rebuild-rubble', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'rebuild-rubble', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, rubbleId } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = getRoomOrExpire(socket, roomCode);
-    if (!room) return;
+    if (!room) return done(false, 'Room no longer exists');
     const id = typeof rubbleId === 'string' ? rubbleId : rubbleId?.rubbleId;
     const result = rebuildRubble(roomCode, socket.id, id);
-    if (!result) return socket.emit('error', 'Cannot rebuild now');
-    if (result.error) return socket.emit('error', result.error);
+    if (!result) return done(false, 'Cannot rebuild now');
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
     broadcastRoomState(result.room);
+    return done(true);
   });
 
-  socket.on('launch-missile', ({ roomCode, action } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('launch-missile', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'launch-missile', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, action } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = getRoomOrExpire(socket, roomCode);
-    if (!room) return;
+    if (!room) return done(false, 'Room no longer exists');
     const result = launchMissile(roomCode, socket.id, action);
-    if (!result) return socket.emit('error', 'Cannot launch now');
-    if (result.error) return socket.emit('error', result.error);
+    if (!result) return done(false, 'Cannot launch now');
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
     broadcastRoomState(result.room);
+    return done(true);
   });
 
-  socket.on('load-missile', ({ roomCode, launcherId } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('load-missile', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'load-missile', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, launcherId } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = getRoomOrExpire(socket, roomCode);
-    if (!room) return;
+    if (!room) return done(false, 'Room no longer exists');
     const id = typeof launcherId === 'string' ? launcherId : launcherId?.launcherId;
     const result = loadMissile(roomCode, socket.id, id);
-    if (!result) return socket.emit('error', 'Cannot load now');
-    if (result.error) return socket.emit('error', result.error);
+    if (!result) return done(false, 'Cannot load now');
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
     broadcastRoomState(result.room);
+    return done(true);
   });
 
-  socket.on('launch-missile-type', ({ roomCode, launcherType, targetGx, targetGy } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('launch-missile-type', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'launch-missile-type', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, launcherType, targetGx, targetGy } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = getRoomOrExpire(socket, roomCode);
-    if (!room) return;
+    if (!room) return done(false, 'Room no longer exists');
     const gx = typeof targetGx === 'number' ? targetGx : targetGx?.gx;
     const gy = typeof targetGy === 'number' ? targetGy : targetGy?.gy;
     const result = launchMissileType(roomCode, socket.id, launcherType, gx, gy);
-    if (!result) return socket.emit('error', 'Cannot launch now');
-    if (result.error) return socket.emit('error', result.error);
+    if (!result) return done(false, 'Cannot launch now');
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
     broadcastRoomState(result.room);
+    return done(true);
   });
 
-  socket.on('set-keep-fire', ({ roomCode, action } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('set-keep-fire', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'set-keep-fire', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, action } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = getRoomOrExpire(socket, roomCode);
-    if (!room) return;
+    if (!room) return done(false, 'Room no longer exists');
     const result = setKeepFire(roomCode, socket.id, action);
-    if (!result) return socket.emit('error', 'Cannot set keep-fire now');
-    if (result.error) return socket.emit('error', result.error);
+    if (!result) return done(false, 'Cannot set keep-fire now');
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
     broadcastRoomState(result.room);
+    return done(true);
   });
 
-  socket.on('fire-desperation', ({ roomCode, targetGx, targetGy } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('fire-desperation', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'fire-desperation', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, targetGx, targetGy } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = getRoomOrExpire(socket, roomCode);
-    if (!room) return;
+    if (!room) return done(false, 'Room no longer exists');
     const gx = typeof targetGx === 'number' ? targetGx : targetGx?.gx;
     const gy = typeof targetGy === 'number' ? targetGy : targetGy?.gy;
     const result = fireDesperation(roomCode, socket.id, { targetGx: gx, targetGy: gy });
-    if (!result) return socket.emit('error', 'Cannot fire now');
-    if (result.error) return socket.emit('error', result.error);
+    if (!result) return done(false, 'Cannot fire now');
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
     broadcastRoomState(result.room);
+    return done(true);
   });
 
-  socket.on('claim-supply-ship', ({ roomCode } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('claim-supply-ship', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'claim-supply-ship', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = getRoomOrExpire(socket, roomCode);
-    if (!room) return;
+    if (!room) return done(false, 'Room no longer exists');
     const result = claimSupplyShip(roomCode, socket.id);
-    if (!result) return socket.emit('error', 'Cannot claim now');
-    if (result.error) return socket.emit('error', result.error);
+    if (!result) return done(false, 'Cannot claim now');
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
     broadcastRoomState(result.room);
+    return done(true);
   });
 
   // Heartbeat: client pings to keep room alive and detect server restarts.
@@ -946,89 +1236,108 @@ io.on('connection', (socket) => {
     socket.emit('heartbeat-ack', { serverTime: Date.now(), clientTimestamp: timestamp });
   });
 
-  socket.on('set-player-difficulty', ({ roomCode, difficulty } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('set-player-difficulty', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'set-player-difficulty', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, difficulty } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = setPlayerDifficulty(roomCode, socket.id, difficulty);
     if (room) broadcastRoomState(room);
+    return done(room ? true : false, room ? null : 'Cannot set difficulty now');
   });
 
-  socket.on('start-game', ({ roomCode } = {}) => {
+  socket.on('start-game', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'start-game', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode } = data;
     if (!checkRateLimit(socket.id)) {
       logger.health.rateLimit(socket.id);
-      return socket.emit('error', 'Too many requests');
+      return done(false, 'Too many requests');
     }
     const room = getRoom(roomCode);
     if (!room) {
       socket.emit('room-expired', { roomCode, reason: 'Room no longer exists (server restart or expired)' });
-      return socket.emit('error', 'Room not found');
+      return done(false, 'Room not found');
     }
-    if (!isHost(room, socket.id)) return socket.emit('error', 'Only the host can start');
+    if (!isHost(room, socket.id)) return done(false, 'Only the host can start');
 
     const gameId = room.selectedGameId || 'hidden-signal';
     logger.game.action(roomCode, gameId, 'start', socket.id, { playerCount: room.players.length });
 
     if (gameId === 'chroma-shift') {
-      if (room.players.length < 2) return socket.emit('error', 'Need at least 2 players for Chroma Shift');
+      if (room.players.length < 2) return done(false, 'Need at least 2 players for Chroma Shift');
       clearRoomTimer(roomCode);
       const started = startGame(roomCode);
-      if (!started) return socket.emit('error', 'Could not start Chroma Shift');
+      if (!started) return done(false, 'Could not start Chroma Shift');
       broadcastRoomState(started);
-      return;
+      if (started?.chromaState?.shiftDurationSec) {
+        setRoomTimer(roomCode, started.chromaState.shiftDurationSec * 1000, () => {
+          try {
+            const r = expireChromaRound(roomCode);
+            if (r) broadcastRoomState(r);
+          } catch (e) { console.error('[timer] expireChromaRound failed', e); }
+        });
+      }
+      return done(true);
     }
 
     if (gameId === 'territory-push') {
-      if (room.players.length < 2) return socket.emit('error', 'Need at least 2 players for Territory Push');
-      if (room.players.length % 2 !== 0) return socket.emit('error', 'Territory Push requires an EVEN number of players');
+      if (room.players.length < 2) return done(false, 'Need at least 2 players for Territory Push');
+      if (room.players.length % 2 !== 0) return done(false, 'Territory Push requires an EVEN number of players');
       const started = startGame(roomCode);
-      if (!started) return socket.emit('error', 'Could not start Territory Push');
+      if (!started) return done(false, 'Could not start Territory Push');
       broadcastRoomState(started);
-      return;
+      if (!started?.territoryState?.extremeMode) {
+        clearRoomTimer(roomCode);
+        armTerritoryTurnTimer(roomCode);
+      }
+      return done(true);
     }
 
     if (gameId === 'blend-in') {
-      if (room.players.length < 3) return socket.emit('error', 'Need at least 3 players for Blend In');
+      if (room.players.length < 3) return done(false, 'Need at least 3 players for Blend In');
       clearRoomTimer(roomCode);
       const started = startGame(roomCode);
-      if (!started) return socket.emit('error', 'Could not start Blend In');
+      if (!started) return done(false, 'Could not start Blend In');
       startBlendWordPhase(roomCode);
-      return;
+      return done(true);
     }
 
     if (gameId === 'liar-dice') {
-      if (room.players.length < 2 || room.players.length > 12) return socket.emit('error', "Liar's Dice requires 2-12 players");
+      if (room.players.length < 2 || room.players.length > 12) return done(false, "Liar's Dice requires 2-12 players");
       clearRoomTimer(roomCode);
       const started = startGame(roomCode);
-      if (!started) return socket.emit('error', "Could not start Liar's Dice");
+      if (!started) return done(false, "Could not start Liar's Dice");
       startLiarBidPhase(roomCode);
-      return;
+      return done(true);
     }
 
     if (gameId === 'bluff-card') {
-      if (room.players.length !== 2) return socket.emit('error', 'Bluff Card is a 2-player duel');
+      if (room.players.length !== 2) return done(false, 'Bluff Card is a 2-player duel');
       clearRoomTimer(roomCode);
       const started = startGame(roomCode);
-      if (!started) return socket.emit('error', 'Could not start Bluff Card');
+      if (!started) return done(false, 'Could not start Bluff Card');
       startBluffBetPhase(roomCode);
-      return;
+      return done(true);
     }
 
     if (gameId === 'missile-command') {
       const aiEnabled = room.missileCommandOptions?.aiOpponent === true;
       if (aiEnabled) {
-        if (room.players.length !== 1) return socket.emit('error', 'Missile Command vs AI needs exactly 1 player');
+        if (room.players.length !== 1) return done(false, 'Missile Command vs AI needs exactly 1 player');
       } else {
-        if (room.players.length !== 2) return socket.emit('error', 'Missile Command is a 1v1 duel (exactly 2 players)');
+        if (room.players.length !== 2) return done(false, 'Missile Command is a 1v1 duel (exactly 2 players)');
       }
       clearRoomTimer(roomCode);
       const started = startGame(roomCode);
-      if (!started) return socket.emit('error', 'Could not start Missile Command');
+      if (!started) return done(false, 'Could not start Missile Command');
       broadcastRoomState(started);
-      return;
+      return done(true);
     }
 
-    if (room.players.length < 4) return socket.emit('error', 'Need at least 4 players for Hidden Signal');
+    if (room.players.length < 4) return done(false, 'Need at least 4 players for Hidden Signal');
     const started = startGame(roomCode);
-    if (!started) return socket.emit('error', 'Could not start game');
+    if (!started) return done(false, 'Could not start game');
 
     broadcastRoomState(started);
 
@@ -1038,58 +1347,92 @@ io.on('connection', (socket) => {
     }
 
     startSignalPhase(roomCode);
+    return done(true);
   });
 
-  socket.on('submit-chroma-guess', ({ roomCode, tileIndex } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('submit-chroma-guess', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'submit-chroma-guess', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, tileIndex } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const result = submitChromaGuess(roomCode, socket.id, tileIndex);
     // Rejected guesses (stale phase, out-of-range tile, expired race) used to
     // vanish silently while wrong guesses flashed instantly — say so instead.
-    if (!result) return socket.emit('error', 'Tile not accepted — the round may have just ended');
+    if (!result) return done(false, 'Tile not accepted — the round may have just ended');
 
-    if (!result.correct) {
+    // Hard rejects carry a reason the client can toast verbatim.
+    if (result.reason === 'too-late' || result.reason === 'not-your-round') {
+      const msg = result.reason === 'too-late'
+        ? 'Too late — the race ended'
+        : 'Not your round';
+      if (result.room) broadcastRoomState(result.room);
+      return done(false, msg);
+    }
+
+    if (!result.correct && result.reason === 'wrong') {
       socket.emit('chroma-wrong-click');
     } else if (result.raceStarted) {
-      // First finder: open 10s race, then reveal
+      // First finder: open 10s race, then reveal (round timeout no longer applies)
+      clearRoomTimer(roomCode);
       setRoomTimer(roomCode, CHROMA_RACE_MS_VALUE, () => autoResolveChromaRace(roomCode));
     }
-    broadcastRoomState(result.room);
+    if (result.room) broadcastRoomState(result.room);
+    return done(true);
   });
 
-  socket.on('next-chroma-round', ({ roomCode } = {}) => {
+  socket.on('next-chroma-round', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'next-chroma-round', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode } = data;
     const room = getRoom(roomCode);
-    if (!room || !isHost(room, socket.id)) return;
+    if (!room || !isHost(room, socket.id)) return done(false, 'Only host can advance the round');
     clearRoomTimer(roomCode);
     const next = nextChromaRound(roomCode);
-    if (next) broadcastRoomState(next);
+    if (next) {
+      broadcastRoomState(next);
+      if (next?.chromaState?.shiftDurationSec) {
+        setRoomTimer(roomCode, next.chromaState.shiftDurationSec * 1000, () => {
+          try {
+            const r = expireChromaRound(roomCode);
+            if (r) broadcastRoomState(r);
+          } catch (e) { console.error('[timer] expireChromaRound failed', e); }
+        });
+      }
+    }
+    return done(true);
   });
 
-  socket.on('submit-blend-clue', ({ roomCode, word } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('submit-blend-clue', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'submit-blend-clue', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, word } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = submitBlendClue(roomCode, socket.id, word);
-    if (!room) return socket.emit('error', 'Cannot submit clue now');
-    socket.emit('blend-clue-accepted');
+    if (!room) return done(false, 'Cannot submit clue now');
     if (blendAllCluesIn(room)) {
       clearRoomTimer(roomCode);
       try {
-        const next = advanceToBlendVote(roomCode);
+        const next = expireBlendWord(roomCode);
         if (next) {
           broadcastRoomState(next);
           setRoomTimer(roomCode, BLEND_VOTE_SEC_VALUE * 1000, () => autoResolveBlendVotes(roomCode));
         }
       } catch (e) {
-        console.error('[submit-blend-clue] advanceToBlendVote failed', e);
+        console.error('[submit-blend-clue] expireBlendWord failed', e);
       }
     } else {
       broadcastRoomState(room);
     }
+    return done(true);
   });
 
-  socket.on('submit-blend-vote', ({ roomCode, targetId } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('submit-blend-vote', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'submit-blend-vote', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, targetId } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = submitBlendVote(roomCode, socket.id, targetId);
-    if (!room) return socket.emit('error', 'Cannot submit vote now');
-    socket.emit('blend-vote-accepted');
+    if (!room) return done(false, 'Cannot submit vote now');
     if (blendAllVotesIn(room)) {
       clearRoomTimer(roomCode);
       try {
@@ -1100,151 +1443,255 @@ io.on('connection', (socket) => {
     } else {
       broadcastRoomState(room);
     }
+    return done(true);
   });
 
-  socket.on('submit-blend-guess', ({ roomCode, guess } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('submit-blend-guess', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'submit-blend-guess', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, guess } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = submitBlendGuess(roomCode, socket.id, guess);
-    if (!room) return socket.emit('error', 'Cannot submit guess now');
+    if (!room) return done(false, 'Cannot submit guess now');
     clearRoomTimer(roomCode);
     broadcastRoomState(room);
+    return done(true);
   });
 
-  socket.on('next-blend-round', ({ roomCode } = {}) => {
+  socket.on('next-blend-round', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'next-blend-round', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode } = data;
     const room = getRoom(roomCode);
-    if (!room || !isHost(room, socket.id)) return;
+    if (!room || !isHost(room, socket.id)) return done(false, 'Only host can advance the round');
     clearRoomTimer(roomCode);
     const next = nextBlendRound(roomCode);
-    if (!next) return;
+    if (!next) return done(false, 'Cannot advance the round now');
     if (next.phase === 'end') {
       broadcastRoomState(next);
-      return;
+      return done(true);
     }
     startBlendWordPhase(roomCode);
+    return done(true);
   });
 
-  socket.on('submit-liar-bid', ({ roomCode, qty, face } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('submit-liar-bid', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'submit-liar-bid', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, qty, face } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
+    // State real reason instead of a generic "wait your turn or raise" toast.
+    const pre = getRoom(roomCode);
+    if (!pre || pre.phase !== 'liar-bid' || !pre.liarState) {
+      return done(false, pre?.phase === 'liar-reveal'
+        ? 'Time is up — this round already resolved'
+        : 'Cannot bid now — bidding is closed');
+    }
+    if (!pre.players.some(p => p.id === socket.id)) {
+      return done(false, 'You are not in this room');
+    }
+    if (pre.liarState.toActId !== socket.id) {
+      return done(false, 'Wait your turn to bid');
+    }
+    if (!Number.isInteger(qty) || !Number.isInteger(face) || face < 1 || face > 6) {
+      return done(false, 'Invalid bid — face must be 1-6');
+    }
+    const totalDice = (pre.liarState.diceEach || 3) * pre.players.length;
+    if (!Number.isInteger(qty) || qty < 1 || qty > totalDice) {
+      return done(false, `Invalid bid — quantity must be 1-${totalDice}`);
+    }
+    const last = pre.liarState.bids[pre.liarState.bids.length - 1];
+    if (last && !(qty > last.qty || (qty === last.qty && face > last.face))) {
+      return done(false, 'Bid must raise quantity or face');
+    }
+    if (pre.timerEnd && Date.now() > pre.timerEnd) {
+      return done(false, 'Time is up — your bid expired');
+    }
     const room = submitLiarBid(roomCode, socket.id, qty, face);
-    if (!room) return socket.emit('error', 'Cannot bid now — wait your turn or raise the bid');
+    if (!room) return done(false, 'Bid not accepted — wait your turn or raise the bid');
     clearRoomTimer(roomCode);
     broadcastRoomState(room);
-    setRoomTimer(roomCode, LIAR_BID_SEC_VALUE * 1000, () => {
-      const r = expireLiarBid(roomCode);
-      if (r) broadcastRoomState(r);
+    const ms = Math.max(0, (room.timerEnd ?? Date.now() + LIAR_BID_SEC_VALUE * 1000) - Date.now());
+    setRoomTimer(roomCode, ms, () => {
+      clearRoomTimer(roomCode);
+      try {
+        const r = expireLiarBid(roomCode);
+        if (r) broadcastRoomState(r);
+      } catch (e) {
+        console.error('[timer] expireLiarBid failed', e);
+      }
     });
+    return done(true);
   });
 
-  socket.on('submit-liar-call', ({ roomCode, kind } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('submit-liar-call', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'submit-liar-call', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, kind } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = resolveLiarCall(roomCode, socket.id, kind);
-    if (!room) return socket.emit('error', 'Cannot call now');
+    if (!room) return done(false, 'Cannot call now');
     clearRoomTimer(roomCode);
     broadcastRoomState(room);
+    return done(true);
   });
 
-  socket.on('next-liar-round', ({ roomCode } = {}) => {
+  socket.on('next-liar-round', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'next-liar-round', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode } = data;
     const room = getRoom(roomCode);
-    if (!room || !isHost(room, socket.id)) return;
+    if (!room || !isHost(room, socket.id)) return done(false, 'Only host can advance the round');
     clearRoomTimer(roomCode);
     const next = nextLiarRound(roomCode);
-    if (!next) return;
+    if (!next) return done(false, 'Cannot advance the round now');
     if (next.phase === 'end') {
       broadcastRoomState(next);
-      return;
+      return done(true);
     }
     startLiarBidPhase(roomCode);
+    return done(true);
   });
 
-  socket.on('submit-bluff-action', ({ roomCode, action } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('submit-bluff-action', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'submit-bluff-action', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, action } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = submitBluffAction(roomCode, socket.id, action);
-    if (!room) return socket.emit('error', 'Cannot act now');
+    if (!room) return done(false, 'Cannot act now');
     clearRoomTimer(roomCode);
     if (room.phase === 'bluff-reveal') {
       broadcastRoomState(room);
-      return;
+      return done(true);
     }
     broadcastRoomState(room);
     setRoomTimer(roomCode, BLUFF_BET_SEC_VALUE * 1000, () => {
+      clearRoomTimer(roomCode);
       const r = expireBluffBet(roomCode);
       if (r) broadcastRoomState(r);
     });
+    return done(true);
   });
 
-  socket.on('next-bluff-round', ({ roomCode } = {}) => {
+  socket.on('next-bluff-round', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'next-bluff-round', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode } = data;
     const room = getRoom(roomCode);
-    if (!room || !isHost(room, socket.id)) return;
+    if (!room || !isHost(room, socket.id)) return done(false, 'Only host can advance the round');
     clearRoomTimer(roomCode);
     const next = nextBluffRound(roomCode);
-    if (!next) return;
+    if (!next) return done(false, 'Cannot advance the round now');
     if (next.phase === 'end') {
       broadcastRoomState(next);
-      return;
+      return done(true);
     }
     startBluffBetPhase(roomCode);
+    return done(true);
   });
 
-  socket.on('submit-territory-pick', ({ roomCode, colIndex } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('submit-territory-pick', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'submit-territory-pick', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, colIndex } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const result = submitTerritoryPick(roomCode, socket.id, colIndex);
-    if (!result) return socket.emit('error', 'Cannot submit pick now');
-    if (result.error) return socket.emit('error', result.error);
+    if (!result) return done(false, 'Cannot submit pick now');
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
     broadcastRoomState(result.room);
+    if (!result.room?.territoryState?.extremeMode && result.resolved && result.room?.phase === 'territory-turn') {
+      clearRoomTimer(roomCode);
+      armTerritoryTurnTimer(roomCode);
+    }
+    return done(true);
   });
 
-  socket.on('place-territory-mine', ({ roomCode, row, col } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('place-territory-mine', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'place-territory-mine', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, row, col } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const result = placeTerritoryMine(roomCode, socket.id, row, col);
-    if (!result) return socket.emit('error', 'Cannot place mine now');
-    if (result.error) return socket.emit('error', result.error);
+    if (!result) return done(false, 'Cannot place mine now');
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
     broadcastRoomState(result.room);
+    return done(true);
   });
 
-  socket.on('next-territory-turn', ({ roomCode } = {}) => {
+  socket.on('next-territory-turn', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'next-territory-turn', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode } = data;
     const room = getRoom(roomCode);
-    if (!room || !isHost(room, socket.id)) return socket.emit('error', 'Only host can skip turn');
+    if (!room || !isHost(room, socket.id)) return done(false, 'Only host can skip turn');
     const next = nextTerritoryTurn(roomCode);
     if (next) {
       broadcastRoomState(next);
+      if (!next?.territoryState?.extremeMode && next?.phase === 'territory-turn') {
+        clearRoomTimer(roomCode);
+        armTerritoryTurnTimer(roomCode);
+      }
+      return done(true);
     }
+    return done(false, 'Cannot skip turn now');
   });
 
-  socket.on('submit-signal', ({ roomCode, signal } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
-    if (!signal?.trim()) return socket.emit('error', 'Signal cannot be empty');
+  socket.on('submit-signal', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'submit-signal', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, signal } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
+    if (!signal?.trim()) return done(false, 'Signal cannot be empty');
     const room = submitSignal(roomCode, socket.id, signal);
-    if (!room) return socket.emit('error', 'Cannot submit signal now');
+    if (!room) return done(false, 'Cannot submit signal now');
 
-    socket.emit('signal-accepted');
     broadcastRoomState(room);
     checkAllSubmitted(room, 'signal');
+    return done(true);
   });
 
-  socket.on('submit-guess', ({ roomCode, guessData } = {}) => {
-    if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
+  socket.on('submit-guess', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'submit-guess', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, guessData } = data;
+    if (!checkRateLimit(socket.id)) return done(false, 'Too many requests');
     const room = submitGuess(roomCode, socket.id, guessData);
-    if (!room) return socket.emit('error', 'Cannot submit guess now');
+    if (!room) return done(false, 'Cannot submit guess now');
 
-    socket.emit('guess-accepted');
     broadcastRoomState(room);
     checkAllSubmitted(room, 'guess');
+    return done(true);
   });
 
-  socket.on('next-round', ({ roomCode } = {}) => {
+  socket.on('next-round', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'next-round', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode } = data;
     const room = getRoom(roomCode);
-    if (!room) return;
-    if (!isHost(room, socket.id)) return; // Only host
+    if (!room) return done(false, 'Room not found');
+    if (!isHost(room, socket.id)) return done(false, 'Only host can advance the round'); // Only host
 
+    clearRoomTimer(roomCode);
     const next = advanceRound(roomCode);
-    if (!next) return;
+    if (!next) return done(false, 'Cannot advance the round now');
 
     if (next.phase === 'end') {
       broadcastRoomState(next);
-      return;
+      return done(true);
     }
-
-    broadcastRoomState(next);
 
     // Send each player their private role for the new round
     for (const player of next.players) {
@@ -1252,46 +1699,109 @@ io.on('connection', (socket) => {
       if (playerSocket) sendPrivateRole(playerSocket, next);
     }
 
+    // Single atomic broadcast into the new round (startSignalPhase broadcasts
+    // the signal phase to everyone at once). Avoids an intermediate
+    // role-reveal frame that could desync clients.
     startSignalPhase(roomCode);
+    return done(true);
   });
 
-  socket.on('request-end-vote', ({ roomCode } = {}) => {
+  socket.on('request-end-vote', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'request-end-vote', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode } = data;
     const result = startEndVote(roomCode, socket.id);
-    if (result.error) return socket.emit('error', result.error);
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
     if (result.passed) clearRoomTimer(roomCode);
     broadcastRoomState(result.room);
+    return done(true);
   });
 
-  socket.on('submit-end-vote', ({ roomCode, agree } = {}) => {
+  socket.on('submit-end-vote', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'submit-end-vote', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode, agree } = data;
     const result = submitEndVote(roomCode, socket.id, agree !== false);
-    if (result.error) return socket.emit('error', result.error);
+    if (result.error) {
+      if (result.membershipLost) {
+        if (result.room) broadcastRoomState(result.room);
+        socket.emit('membership-lost', { roomCode, reason: result.error, rejoin: true });
+      }
+      return done(false, result.error);
+    }
     if (result.failed) {
       io.to(roomCode).emit('end-vote-failed', { declinedBy: result.declinedBy });
     }
     if (result.passed) clearRoomTimer(roomCode);
     broadcastRoomState(result.room);
+    return done(true);
   });
 
-  socket.on('cancel-end-vote', ({ roomCode } = {}) => {
+  socket.on('cancel-end-vote', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'cancel-end-vote', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode } = data;
     const room = cancelEndVote(roomCode, socket.id);
     if (room) broadcastRoomState(room);
+    return done(true);
   });
 
-  socket.on('play-again', ({ roomCode } = {}) => {
+  // Host-only force advance / end round. Aliased under several event names so
+  // a stalled phase is recoverable regardless of which control triggered it.
+  function handleForceAdvance(socket, evt, data, ack) {
+    const done = beginAction(socket, evt, data, ack, getRoom);
+    if (!done) return;
+    const { roomCode } = data || {};
     const room = getRoom(roomCode);
-    if (!room) return;
-    if (!isHost(room, socket.id)) return;
+    if (!room) return done(false, 'Room not found');
+    if (!isHost(room, socket.id)) return done(false, 'Only host can force advance');
+    clearRoomTimer(roomCode);
+    const updated = forceAdvance(roomCode, socket.id);
+    if (!updated) return done(false, 'Cannot advance now');
+    broadcastRoomState(updated);
+    return done(true);
+  }
+  for (const evt of ['force-advance', 'force-advance-round', 'forceAdvance', 'force-advance-phase', 'end-round', 'endRound', 'skip-phase', 'resolve-phase', 'force-round', 'end-current-round']) {
+    socket.on(evt, (data = {}, ack = null) => handleForceAdvance(socket, evt, data, ack));
+  }
+
+  socket.on('play-again', (data = {}, ack = null) => {
+    const done = beginAction(socket, 'play-again', data, ack, getRoom);
+    if (!done) return;
+    const { roomCode } = data;
+    const room = getRoom(roomCode);
+    if (!room) return done(false, 'Room not found');
+    if (!isHost(room, socket.id)) return done(false, 'Only host can return everyone to the lobby');
 
     // Reset scores, go back to lobby (clear all game modes)
     resetToLobby(room);
     clearRoomTimer(roomCode);
     broadcastRoomState(room);
+    return done(true);
   });
 
   socket.on('disconnect', (reason) => {
     logger.socket.disconnect(socket.id, reason);
+    // Capture host authority before migration so we can notify clients if it
+    // moves. Single source of truth: room.hostId.
+    let oldHostId = null;
+    for (const r of rooms.values()) {
+      if (r.players.find(p => p.id === socket.id)) { oldHostId = r.hostId; break; }
+    }
     const room = playerDisconnected(socket.id);
     if (room) {
+      const migrated = !!oldHostId && oldHostId === socket.id && room.hostId && room.hostId !== socket.id;
+      if (migrated) {
+        const newHost = room.players.find(p => p.id === room.hostId);
+        io.to(room.code).emit('host-changed', { newHostId: room.hostId, newHostName: newHost?.name || 'a player' });
+        logger.info('host_migrated', { roomCode: room.code, from: socket.id, to: room.hostId });
+      }
       broadcastRoomState(room);
       // Don't delete immediately: a backgrounded phone drops its socket for
       // seconds at a time. playerDisconnected scheduled deletion after
@@ -1309,6 +1819,8 @@ io.on('connection', (socket) => {
     if (!checkRateLimit(socket.id)) return socket.emit('error', 'Too many requests');
     if (!playerName?.trim() || !roomCode?.trim()) return socket.emit('error', 'Name and code required');
     const code = roomCode.trim().toUpperCase();
+    const roomBefore = getRoom(code);
+    const oldHostId = roomBefore?.hostId || null;
     const result = rejoinRoom(code, socket.id, playerName.trim().substring(0, 20));
     if (result.error) {
       if (result.error === 'Room not found') {
@@ -1316,10 +1828,21 @@ io.on('connection', (socket) => {
       }
       return socket.emit('error', result.error);
     }
+    const room = result.room;
+    if (oldHostId && room.hostId && oldHostId !== room.hostId) {
+      const newHost = room.players.find(p => p.id === room.hostId);
+      io.to(room.code).emit('host-changed', { newHostId: room.hostId, newHostName: newHost?.name || 'a player' });
+    }
     logger.room.join(code, socket.id, { playerName: playerName.trim().substring(0, 20), rejoined: true });
     socket.join(code);
     socket.emit('room-joined', { roomCode: code, playerId: socket.id });
-    broadcastRoomState(result.room);
+    broadcastRoomState(room);
+    // Re-sync private per-player data that isn't part of the public state:
+    // role assignment and the round-reveal payload. Without these a restored
+    // tab can hang on "Calculating results…" or render a frozen game.
+    sendPrivateRole(socket, room);
+    const revealPayload = buildRevealPayload(room);
+    if (revealPayload) socket.emit('round-reveal', revealPayload);
   });
 
   // Fresh state pull (used after reconnects and visibility returns).
@@ -1334,6 +1857,11 @@ io.on('connection', (socket) => {
     // Full state to the requester — broadcast to ALL so everyone's view and
     // the slim mc-tick diff cache resync to the same point in time.
     broadcastRoomState(room);
+    // Re-send private per-player data to the requester so a restored tab
+    // doesn't lose its role or hang on the results screen.
+    sendPrivateRole(socket, room);
+    const reqRevealPayload = buildRevealPayload(room);
+    if (reqRevealPayload) socket.emit('round-reveal', reqRevealPayload);
   });
 });
 
@@ -1354,29 +1882,37 @@ setInterval(() => {
     for (const room of rooms.values()) {
       if (room.phase !== 'missile-command-play' || !room.missileCommandState) continue;
       if (room.missileCommandState.winnerId) continue;
-      const res = tickMissileRoom(room, now);
-      if (!res) continue;
-      const st = room.missileCommandState;
-      const inFlight = (st.missiles?.length ?? 0) > 0;
-      if (res.events.length > 0) {
-        room.missileLastBroadcastMs = now;
-        room.missileLastTickSentMs = now;
-        broadcastRoomState(res.room);
-      } else if (inFlight) {
-        if (now - (room.missileLastTickSentMs ?? 0) >= 250) {
-          room.missileLastTickSentMs = now;
-          sendMcTick(room, now);
-        }
-      } else if (now - (room.missileLastBroadcastMs ?? 0) >= 1000) {
-        // Economy heartbeat: skip when nothing visibly changed — floored
-        // resources identical AND no pending building-dynamic diffs.
-        const pidA = st.sides?.top; const pidB = st.sides?.bottom;
-        const sig = `${Math.floor(st.resources[pidA] ?? 0)},${Math.floor(st.resources[pidB] ?? 0)},${mcPendingDiffCount(st, room.mcDyn ?? (room.mcDyn = mcDynSnapshot(st)))}`;
-        if (sig !== (room.mcLastEconSig ?? '')) {
-          room.mcLastEconSig = sig;
+      // Per-room isolation: one malformed room's tick must not stall every
+      // OTHER room's broadcast (the old loop-wide catch skipped the rest of
+      // the rooms for that tick — and every tick after it).
+      try {
+        const res = tickMissileRoom(room, now);
+        if (!res) continue;
+        const st = room.missileCommandState;
+        const inFlight = (st.missiles?.length ?? 0) > 0;
+        if (res.events.length > 0) {
           room.missileLastBroadcastMs = now;
-          sendMcTick(room, now);
+          room.missileLastTickSentMs = now;
+          broadcastRoomState(res.room);
+        } else if (inFlight) {
+          if (now - (room.missileLastTickSentMs ?? 0) >= 250) {
+            room.missileLastTickSentMs = now;
+            sendMcTick(room, now);
+          }
+        } else if (now - (room.missileLastBroadcastMs ?? 0) >= 1000) {
+          // Economy heartbeat: skip when nothing visibly changed — floored
+          // resources identical AND no pending building-dynamic diffs AND
+          // ship presence unchanged.
+          const pidA = st.sides?.top; const pidB = st.sides?.bottom;
+          const sig = `${Math.floor(st.resources[pidA] ?? 0)},${Math.floor(st.resources[pidB] ?? 0)},${mcPendingDiffCount(st, room.mcDyn ?? (room.mcDyn = mcDynSnapshot(st)))},${st.supplyShip ? 1 : 0}`;
+          if (sig !== (room.mcLastEconSig ?? '')) {
+            room.mcLastEconSig = sig;
+            room.missileLastBroadcastMs = now;
+            sendMcTick(room, now);
+          }
         }
+      } catch (roomErr) {
+        console.error('[missile-tick] room failed', room.code, roomErr);
       }
     }
   } catch (e) {

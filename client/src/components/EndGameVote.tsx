@@ -58,10 +58,10 @@ export default function EndGameVote({ roomState, myId, isHost, onRequest, onVote
       }}
     >
       <div style={{ fontWeight: 800, fontSize: '0.95rem', color: '#fff' }}>
-        🗳️ {vote.initiatorName} wants to end the game
+        {`🗳️ ${vote.initiatorName} wants to end the game`}
       </div>
       <p className="text-xs text-muted" style={{ margin: '4px 0 0' }}>
-        Return to lobby (scores reset) — needs everyone ({agreed.length}/{connected.length} agreed)
+        {`Return to lobby (scores reset) — needs everyone (${agreed.length}/${connected.length} agreed)`}
       </p>
       {!iAgreed && (
         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>

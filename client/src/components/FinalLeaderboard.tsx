@@ -6,6 +6,8 @@ interface Props {
   myId: string;
   isHost: boolean;
   onPlayAgain: () => void;
+  onRematch?: () => void;
+  onLeaveRoom?: () => void;
 }
 
 const MEDALS = ['🥇', '🥈', '🥉'];
@@ -22,7 +24,7 @@ function rankLabel(i: number): string {
   }
 }
 
-export default function FinalLeaderboard({ roomState, myId, isHost, onPlayAgain }: Props) {
+export default function FinalLeaderboard({ roomState, myId, isHost, onPlayAgain, onRematch, onLeaveRoom }: Props) {
   const sorted = [...roomState.players].sort((a, b) => b.score - a.score);
   const topScore = sorted[0]?.score ?? 0;
   const winners = sorted.filter(p => p.score === topScore);
@@ -82,8 +84,7 @@ export default function FinalLeaderboard({ roomState, myId, isHost, onPlayAgain 
             </div>
             <div className="heading-lg mb-4">{winner.name}</div>
             <div className="text-mono" style={{ fontSize: '2rem', color: 'var(--amber-400)', fontWeight: 700 }}>
-              {winner.score} pts
-            </div>
+              {`${winner.score} pts`}            </div>
           </div>
         )}
 
@@ -99,6 +100,7 @@ export default function FinalLeaderboard({ roomState, myId, isHost, onPlayAgain 
                 className={`leaderboard-row animate-fade-up ${i === 0 ? 'first' : ''}`}
                 style={{ animationDelay: `${i * 0.08}s` }}
                 id={`leaderboard-row-${i}`}
+                aria-label={`${rankLabel(i)} place, ${p.name}, ${p.score} points`}
               >
                 <div className="rank-num">
                   {i < 3 ? MEDALS[i] : <span className="text-muted">{rankLabel(i)}</span>}
@@ -116,6 +118,7 @@ export default function FinalLeaderboard({ roomState, myId, isHost, onPlayAgain 
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 600 }}>{p.name}</div>
                   {isMe && <div className="badge badge-cyan" style={{ fontSize: '0.6rem', marginTop: 2 }}>You</div>}
+                  {(roomState.hostId ? p.id === roomState.hostId : (p as { isHost?: boolean }).isHost) && <div className="badge badge-amber" style={{ fontSize: '0.6rem', marginTop: 2 }}>Host</div>}
                 </div>
                 <div className="score-big">{p.score}</div>
               </div>
@@ -139,25 +142,52 @@ export default function FinalLeaderboard({ roomState, myId, isHost, onPlayAgain 
           </div>
           <div className="flex items-center gap-12">
             <span style={{ fontSize: '1.4rem' }}>{myRank === 0 ? '🏆' : myRank === 1 ? '🥈' : myRank === 2 ? '🥉' : '🎮'}</span>
-            <span style={{ fontWeight: 600 }}>{rankLabel(myRank)} place</span>
+            <span style={{ fontWeight: 600 }}>{`${rankLabel(myRank)} place`}</span>
             <span className="text-mono" style={{ marginLeft: 'auto', color: 'var(--purple-400)', fontWeight: 700, fontSize: '1.2rem' }}>
-              {roomState.players.find(p => p.id === myId)?.score ?? 0} pts
-            </span>
+              {`${roomState.players.find(p => p.id === myId)?.score ?? 0} pts`}            </span>
           </div>
         </div>
 
-        {/* Back to Lobby — game is over, host resets straight to lobby */}
+        {/* Back to Lobby / Rematch — game is over, host resets straight to lobby or starts the same game again */}
         {isHost ? (
-          <button
-            className="btn btn-primary btn-lg btn-full"
-            onClick={onPlayAgain}
-            id="back-to-lobby-btn"
-          >
-            🏠 Back to Lobby
-          </button>
+          <div style={{ display: 'flex', gap: 8, flexDirection: 'column' }}>
+            <button
+              className="btn btn-primary btn-lg btn-full"
+              onClick={onRematch}
+              id="rematch-btn"
+              disabled={!onRematch}
+              title="Start the same game again with everyone in this room"
+            >
+              🔁 Rematch
+            </button>
+            <button
+              className="btn btn-secondary btn-full"
+              onClick={onPlayAgain}
+              id="back-to-lobby-btn"
+            >
+              🏠 Back to Lobby
+            </button>
+            <button
+              className="btn btn-secondary btn-full"
+              onClick={onLeaveRoom}
+              id="leave-room-btn"
+              disabled={!onLeaveRoom}
+            >
+              🚪 Leave Room
+            </button>
+          </div>
         ) : (
           <div className="glass text-center" style={{ padding: '20px', borderRadius: 'var(--radius-lg)' }}>
-            <p className="text-muted text-sm">Waiting for host to return to lobby...</p>
+            <p className="text-muted text-sm">Waiting for host to start a rematch or return to lobby...</p>
+            <button
+              className="btn btn-secondary btn-full mt-16"
+              onClick={onLeaveRoom}
+              id="leave-room-btn"
+              disabled={!onLeaveRoom}
+              style={{ marginTop: 12 }}
+            >
+              🚪 Leave Room
+            </button>
           </div>
         )}
       </div>

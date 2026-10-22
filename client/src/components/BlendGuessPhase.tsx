@@ -1,16 +1,21 @@
 import { useState, type FormEvent } from 'react';
 import type { RoomState } from '../types/game';
+import type { ActionAck } from '../hooks/useSocket';
 import TimerBar from './TimerBar';
 
 interface Props {
   roomState: RoomState;
   myId: string;
-  onSubmitGuess: (guess: string) => void;
+  // Task 1: promise-resolving submit — "Guess submitted!" renders only after
+  // the server acknowledges the requestId.
+  onSubmitGuess: (guess: string) => Promise<ActionAck>;
 }
 
 export default function BlendGuessPhase({ roomState, myId, onSubmitGuess }: Props) {
   const [guess, setGuess] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const blend = roomState.blendState;
   if (!blend) return null;
 
@@ -19,11 +24,18 @@ export default function BlendGuessPhase({ roomState, myId, onSubmitGuess }: Prop
     ? roomState.players.find(p => p.id === blend.accusedId)?.name ?? '???'
     : 'Nobody';
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!guess.trim() || submitted) return;
-    onSubmitGuess(guess.trim());
-    setSubmitted(true);
+    if (!guess.trim() || submitted || pending) return;
+    setPending(true);
+    setSendError(null);
+    const ack = await onSubmitGuess(guess.trim());
+    setPending(false);
+    if (ack.ok) {
+      setSubmitted(true);
+    } else {
+      setSendError(ack.error ?? 'Not confirmed by the server — try again');
+    }
   };
 
   return (
@@ -32,8 +44,7 @@ export default function BlendGuessPhase({ roomState, myId, onSubmitGuess }: Prop
         <div className="text-center mb-28">
           <div className="badge badge-amber">🦎 Chameleon caught — last chance!</div>
           <h1 className="heading-xl mt-16">
-            {accusedName} was <span className="gradient-amber">Accused</span>
-          </h1>
+            {`${accusedName} was `}<span className="gradient-amber">Accused</span>          </h1>
           <p className="text-muted text-sm mt-8">
             {amChameleon
               ? 'They caught you! Guess the secret word to steal the round (+2 pts).'
@@ -64,9 +75,21 @@ export default function BlendGuessPhase({ roomState, myId, onSubmitGuess }: Prop
                   autoFocus
                 />
               </div>
-              <button type="submit" className="btn btn-primary btn-lg" disabled={guess.trim().length === 0} id="submit-blend-guess-btn">
-                🦎 Guess the Word
+              <button type="submit" className="btn btn-primary btn-lg" disabled={guess.trim().length === 0 || pending} id="submit-blend-guess-btn">
+                {pending ? '🦎 Sending…' : '🦎 Guess the Word'}
               </button>
+              {sendError && (
+                <div
+                  role="alert"
+                  style={{
+                    padding: '10px 14px', borderRadius: 'var(--radius-md)',
+                    background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)',
+                    color: 'var(--rose-400)', fontWeight: 700, fontSize: '0.85rem', textAlign: 'center',
+                  }}
+                >
+                  {sendError}
+                </div>
+              )}
             </form>
           </div>
         ) : (

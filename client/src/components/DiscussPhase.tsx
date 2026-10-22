@@ -112,8 +112,9 @@ export default function DiscussPhase({ roomState, myId, myRole }: Props) {
               .sort((a, b) => b.score - a.score)
               .map((p, i) => {
                 const pIdx = roomState.players.findIndex(pl => pl.id === p.id);
+                const isHostP = roomState.hostId ? p.id === roomState.hostId : (p as { isHost?: boolean }).isHost;
                 return (
-                  <div key={p.id} className="score-row">
+                  <div key={p.id} className="score-row" aria-label={`${p.name}, ${p.score} points`}>
                     <div
                       className="player-avatar"
                       style={{ width: 32, height: 32, fontSize: '0.9rem', background: avatarColor(pIdx) }}
@@ -122,9 +123,10 @@ export default function DiscussPhase({ roomState, myId, myRole }: Props) {
                     </div>
                     <span className="text-sm" style={{ fontWeight: 600 }}>{p.name}</span>
                     {p.id === myId && <span className="badge badge-cyan" style={{ fontSize: '0.6rem' }}>You</span>}
+                    {isHostP && <span className="badge badge-amber" style={{ fontSize: '0.6rem' }}>Host</span>}
+                    {' '}
                     <span className="score-delta" style={{ color: 'var(--purple-400)', fontFamily: 'var(--font-mono)', fontWeight: 700 }}>
-                      {p.score} pts
-                    </span>
+                      {`${p.score} pts`}                    </span>
                   </div>
                 );
               })}

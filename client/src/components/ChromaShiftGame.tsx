@@ -1,12 +1,15 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { RoomState } from '../types/game';
+import type { ActionAck } from '../hooks/useSocket';
 import { TOTAL_ROUNDS } from '../constants';
 
 interface Props {
   roomState: RoomState;
   myId: string;
-  isHost: boolean;
-  onGuessTile: (tileIndex: number) => void;
+  isHost?: boolean;
+  // Task 1: promise-resolving tile submit — the "You found it" success flash
+  // only renders once the server acknowledges the tile was recorded.
+  onGuessTile: (tileIndex: number) => Promise<ActionAck>;
   onNextRound: () => void;
 }
 
@@ -104,7 +107,8 @@ const TileButton = memo(function TileButton({
   );
 });
 
-export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, onNextRound }: Props) {
+export default function ChromaShiftGame({ roomState, myId, isHost = false, onGuessTile, onNextRound }: Props) {
+  const isHostNow = roomState?.hostId != null ? roomState.hostId === myId : (isHost ?? false);
   const { chromaState, chromaOptions, round } = roomState;
   const difficulty = chromaOptions?.playerDifficulties?.[myId] || 'easy';
   const isExtreme = chromaOptions?.extremeMode ?? false;
@@ -115,6 +119,7 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
   const isReveal = roomState.phase === 'chroma-reveal';
   const [wrongFlash, setWrongFlash] = useState(false);
   const [correctFlash, setCorrectFlash] = useState(false);
+  const [toastText, setToastText] = useState('⚠️ Incorrect tile! -1 Point Penalty!');
   const [raceNow, setRaceNow] = useState(() => Date.now());
   const raceEndAt = chromaState?.raceEndAt ?? null;
   const isRace = !isReveal && raceEndAt !== null && raceEndAt !== undefined;
@@ -271,23 +276,42 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
     return () => cancelAnimationFrame(animId);
   }, [isReveal, chromaState?.shiftDurationSec, chromaState?.targetTileIndex, difficulty, physicsEnabled, useRepulsion, totalTiles, isCoarsePointer, isExtreme, round]);
 
-  // Click handler (server is source of truth for penalty)
-  const handleTileClick = (index: number) => {
+  // Click handler (server is source of truth for penalty AND success)
+  const handleTileClick = async (index: number) => {
     if (isReveal || iSolved) return;
-    if (chromaState && index === chromaState.targetTileIndex) {
-      // Optimistic success feedback: correct clicks otherwise wait a full
-      // server round-trip in silence while wrong clicks flash instantly.
-      setCorrectFlash(true);
-      setWrongFlash(false);
-      if (correctFlashTimer.current) window.clearTimeout(correctFlashTimer.current);
-      correctFlashTimer.current = window.setTimeout(() => setCorrectFlash(false), 2000);
-    } else if (chromaState) {
+    const clickedTarget = !!chromaState && index === chromaState.targetTileIndex;
+    if (!clickedTarget && chromaState) {
+      // Local wrong-click flash is a failure display; the authoritative
+      // penalty arrives with the next room-state broadcast anyway.
       setCorrectFlash(false);
       setWrongFlash(true);
       if (wrongFlashTimer.current) window.clearTimeout(wrongFlashTimer.current);
       wrongFlashTimer.current = window.setTimeout(() => setWrongFlash(false), 600);
     }
-    onGuessTile(index);
+    // Success flash is NOT optimistic: it only appears when the server acks
+    // the tile pick. A silent drop used to render "Found it!" the server
+    // never recorded (Task 1).
+    const ack = await onGuessTile(index);
+    if (clickedTarget) {
+      if (ack.ok) {
+        setCorrectFlash(true);
+        if (correctFlashTimer.current) window.clearTimeout(correctFlashTimer.current);
+        correctFlashTimer.current = window.setTimeout(() => setCorrectFlash(false), 2000);
+      } else {
+        // Rejected/lost: show the failure instead of a fake success, with a
+        // toast that matches the server's reason.
+        setCorrectFlash(false);
+        const err = (ack.error || '').toLowerCase();
+        let msg = '⚠️ Incorrect tile! -1 Point Penalty!';
+        if (err.includes('too late')) msg = '⏱️ Too late — the race ended';
+        else if (err.includes('not your round')) msg = '🚫 Not your round';
+        else if (err.includes('tile not accepted')) msg = '⚠️ Tile not accepted — round may have ended';
+        setToastText(msg);
+        setWrongFlash(true);
+        if (wrongFlashTimer.current) window.clearTimeout(wrongFlashTimer.current);
+        wrongFlashTimer.current = window.setTimeout(() => setWrongFlash(false), 1200);
+      }
+    }
   };
 
   const raceSecsLeft = isRace && raceEndAt ? Math.max(0, Math.ceil((raceEndAt - raceNow) / 1000)) : 0;
@@ -333,8 +357,9 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            {roomState.players.map((p) => {
+            {[...roomState.players].sort((a, b) => b.score - a.score).map((p) => {
               const pDiff = chromaOptions?.playerDifficulties?.[p.id] || 'easy';
+              const isHostP = roomState.hostId ? p.id === roomState.hostId : (p as { isHost?: boolean }).isHost;
               return (
                 <div
                   key={p.id}
@@ -348,14 +373,14 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
                   }}
                 >
                   <div className="text-xs text-muted" style={{ fontSize: '0.65rem', display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'center', whiteSpace: 'nowrap' }}>
-                    <span style={{ fontWeight: p.id === myId ? 700 : 400 }}>{p.name} {p.id === myId && '(You)'}</span>
-                    <span style={{ fontSize: '0.6rem' }}>
+                    <span style={{ fontWeight: p.id === myId ? 700 : 400 }}>{`${p.name}${p.id === myId ? ' (You)' : ''} `}</span>
+                    {isHostP && <span className="badge badge-amber" style={{ fontSize: '0.55rem' }}>Host</span>}
+                    <span style={{ fontSize: '0.6rem' }} aria-hidden="true">
                       {pDiff === 'easy' ? '🟢' : pDiff === 'medium' ? '🟡' : '🔴'}
                     </span>
                   </div>
                   <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '1rem', color: 'var(--amber-400)', marginTop: 1 }}>
-                    {p.score} pts
-                  </div>
+                    {`${p.score} pts`}                  </div>
                 </div>
               );
             })}
@@ -398,7 +423,7 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
               zIndex: 9999,
             }}
           >
-            ⚠️ Incorrect tile! -1 Point Penalty!
+            {toastText}
           </div>
         )}
 
@@ -416,7 +441,9 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
             {isReveal
               ? '🎉 Round Finished!'
               : isRace
-              ? `🏁 ${chromaState?.firstFinderName ?? 'Someone'} found it! ${raceSecsLeft}s left — find it too for half points!`
+              ? (myId === chromaState?.firstFinderId
+                  ? `🏁 You found it first! ${raceSecsLeft}s left for others to find it for half points!`
+                  : `🏁 ${chromaState?.firstFinderName ?? 'Someone'} found it! ${raceSecsLeft}s left — find it too for half points!`)
               : `Spot the single tile (among ${totalTiles} tiles) that is slowly changing color and click it first!`}
           </p>
           {isRace && (
@@ -432,11 +459,12 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
               }}
             >
               <div style={{ fontWeight: 800, fontSize: '1rem', color: '#fff' }}>
-                🎯 {chromaState?.firstFinderName} spotted the tile first (+{chromaState?.firstFinderPoints} pts)!
-              </div>
+                {`🎯 ${chromaState?.firstFinderName} spotted the tile first (+${chromaState?.firstFinderPoints} pts)!`}              </div>
               <p className="text-sm mt-8" style={{ color: 'var(--amber-400)', fontWeight: 700 }}>
                 {iSolved
-                  ? `You found it too (+${mySolverEntry?.points} pts)!`
+                  ? (myId === chromaState?.firstFinderId
+                      ? `You found it first (+${mySolverEntry?.points} pts)! Others have ${raceSecsLeft}s for half points.`
+                      : `You found it too (+${mySolverEntry?.points} pts)!`)
                   : `You have ${raceSecsLeft}s to find it for half points!`}
               </p>
               {solvers.length > 0 && (
@@ -511,7 +539,7 @@ export default function ChromaShiftGame({ roomState, myId, isHost, onGuessTile, 
                 ? `Awarded +${chromaState.pointsAwarded} point${chromaState.pointsAwarded !== 1 ? 's' : ''}!`
                 : 'No one scored this round.'}
             </p>
-            {isHost ? (
+            {isHostNow ? (
               <button
                 className="btn btn-lg btn-primary btn-full"
                 onClick={onNextRound}

@@ -4,12 +4,13 @@ import { TOTAL_ROUNDS, avatarColor, avatarInitial } from '../constants';
 interface Props {
   roomState: RoomState;
   myId: string;
-  isHost: boolean;
+  isHost?: boolean;
   isLastRound: boolean;
   onNextRound: () => void;
 }
 
-export default function BlendRevealPhase({ roomState, myId, isHost, isLastRound, onNextRound }: Props) {
+export default function BlendRevealPhase({ roomState, myId, isHost = false, isLastRound, onNextRound }: Props) {
+  const isHostNow = roomState?.hostId != null ? roomState.hostId === myId : (isHost ?? false);
   const blend = roomState.blendState;
   if (!blend) return null;
 
@@ -37,11 +38,11 @@ export default function BlendRevealPhase({ roomState, myId, isHost, isLastRound,
         >
           {blend.caught ? (
             blend.stealSuccess ? (
-              <div style={{ fontWeight: 700 }}>🤯 {blend.chameleonName} guessed “{blend.chameleonGuess}” and stole it! (+2 pts)</div>
+              <div style={{ fontWeight: 700 }}>{`🤯 ${blend.chameleonName} guessed “${blend.chameleonGuess}” and stole it! (+2 pts)`}</div>
             ) : (
               <div>
                 <div style={{ fontWeight: 700, marginBottom: 4 }}>
-                  🎯 {voters.length} player{voters.length === 1 ? '' : 's'} spotted the chameleon (+1 pt each)
+                  {`🎯 ${voters.length} player${voters.length === 1 ? '' : 's'} spotted the chameleon (+1 pt each)`}
                 </div>
                 <div className="text-xs text-muted">
                   {blend.chameleonGuess
@@ -52,7 +53,7 @@ export default function BlendRevealPhase({ roomState, myId, isHost, isLastRound,
             )
           ) : (
             <div style={{ fontWeight: 700 }}>
-              😎 {blend.chameleonName} blended in! {blend.accusedId ? `${nameOf(blend.accusedId)} took the blame.` : 'No majority accusation.'} (+2 pts)
+              {`😎 ${blend.chameleonName} blended in! ${blend.accusedId ? `${nameOf(blend.accusedId)} took the blame.` : 'No majority accusation.'} (+2 pts)`}
             </div>
           )}
         </div>
@@ -60,33 +61,36 @@ export default function BlendRevealPhase({ roomState, myId, isHost, isLastRound,
         <div className="glass p-24" style={{ borderRadius: 'var(--radius-xl)', marginBottom: 20 }}>
           <h2 className="heading-md mb-16">Votes & clues</h2>
           <div className="flex flex-col gap-8">
-            {roomState.players.map((p, i) => {
-              const clue = blend.clues.find(c => c.playerId === p.id)?.word ?? '…';
+            {[...roomState.players].sort((a, b) => b.score - a.score).map((p) => {
+              const clue = blend.clues.find(c => c.playerId === p.id)?.word ?? '— no clue —';
               const voted = blend.votes.find(v => v.playerId === p.id);
               const delta = blend.points[p.id] ?? 0;
               const isCham = p.id === blend.chameleonId;
+              const isHostP = roomState.hostId ? p.id === roomState.hostId : (p as { isHost?: boolean }).isHost;
+              const pIdx = roomState.players.findIndex(rp => rp.id === p.id);
               return (
                 <div key={p.id} className="score-row" style={isCham ? { background: 'rgba(251,191,36,0.06)', borderRadius: 'var(--radius-md)', border: '1px solid rgba(251,191,36,0.2)' } : {}}>
-                  <div className="player-avatar" style={{ width: 36, height: 36, fontSize: '0.9rem', background: avatarColor(i) }}>
+                  <div className="player-avatar" style={{ width: 36, height: 36, fontSize: '0.9rem', background: avatarColor(pIdx) }}>
                     {avatarInitial(p.name)}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: 6 }}>
                       {p.name}
                       {p.id === myId && <span className="badge badge-cyan" style={{ fontSize: '0.55rem' }}>You</span>}
+                      {isHostP && <span className="badge badge-amber" style={{ fontSize: '0.55rem' }}>Host</span>}
                       {isCham && <span className="badge badge-amber" style={{ fontSize: '0.55rem' }}>🦎 Chameleon</span>}
                     </div>
-                    <div className="text-xs text-muted">“{clue}” → voted {voted ? nameOf(voted.targetId) : '—'}</div>
+                    <div className="text-xs text-muted">{`“${clue}” → voted ${voted ? nameOf(voted.targetId) : '—'}`}</div>
                   </div>
                   <div className={`score-delta ${delta > 0 ? 'delta-pos' : 'delta-zero'}`}>+{delta}</div>
                 </div>
               );
             })}
           </div>
-          {iScored && <p className="text-center text-sm mt-16" style={{ color: 'var(--green-400)', fontWeight: 700 }}>+{blend.points[myId]} pts for you this round!</p>}
+          {iScored && <p className="text-center text-sm mt-16" style={{ color: 'var(--green-400)', fontWeight: 700 }}>{`+${blend.points[myId]} pts for you this round!`}</p>}
         </div>
 
-        {isHost ? (
+        {isHostNow ? (
           <button className="btn btn-lg btn-primary btn-full" onClick={onNextRound} id="next-blend-round-btn">
             {isLastRound ? '🏆 View Final Leaderboard' : 'Next Round ➔'}
           </button>

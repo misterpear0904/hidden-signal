@@ -5,12 +5,15 @@ interface Props {
   revealData: RoundRevealData;
   roomState: RoomState;
   myId: string;
-  isHost: boolean;
+  isHost?: boolean;
   isLastRound: boolean;
   onNextRound: () => void;
 }
 
-export default function RoundReveal({ revealData, roomState, myId, isHost, isLastRound, onNextRound }: Props) {
+export default function RoundReveal({ revealData, roomState, myId, isHost = false, isLastRound, onNextRound }: Props) {
+  // Host authority comes from the server's single source of truth (room.hostId),
+  // not from a per-player flag that can drift. Fall back to the prop for legacy.
+  const isHostNow = roomState?.hostId != null ? roomState.hostId === myId : isHost;
   const { hiddenPairIds, secretCode, roles, signals, guesses, scoreDeltas, players } = revealData;
 
   const myRole = roles.find(r => r.playerId === myId);
@@ -32,7 +35,7 @@ export default function RoundReveal({ revealData, roomState, myId, isHost, isLas
   } else if (isHidden) {
     const correctPartner = hiddenPairIds.find(id => id !== myId);
     const guessedOk = guesses.find(g => g.playerId === myId)?.guessedPartnerId === correctPartner;
-    myOutcomeLabel = guessedOk ? 'Found your partner! (+1 pt)' : 'Wrong partner choice (-3 pts)';
+    myOutcomeLabel = guessedOk ? 'Found your partner! (+2 pts)' : 'Wrong partner choice (-3 pts)';
     myOutcomeIcon = guessedOk ? '🎉' : '😬';
   } else {
     const myGuess = guesses.find(g => g.playerId === myId);
@@ -143,16 +146,19 @@ export default function RoundReveal({ revealData, roomState, myId, isHost, isLas
         <div className="glass p-24" style={{ borderRadius: 'var(--radius-xl)', marginBottom: 20 }}>
           <h2 className="heading-md mb-20">Round Breakdown</h2>
           <div className="flex flex-col gap-8">
-            {players.map(p => {
+            {[...players].sort((a, b) => (roomState.players.find(rp => rp.id === b.id)?.score ?? b.score) - (roomState.players.find(rp => rp.id === a.id)?.score ?? a.score)).map(p => {
               const pIdx = playerIndex(p.id);
               const sig = signals.find(s => s.playerId === p.id);
               const delta = scoreDeltas[p.id] ?? 0;
               const isHiddenP = isHiddenPlayer(p.id);
               const currentScore = roomState.players.find(rp => rp.id === p.id)?.score ?? p.score;
+              const hostEntry = roomState.players.find(rp => rp.id === p.id);
+              const isHostP = roomState.hostId ? p.id === roomState.hostId : (hostEntry as { isHost?: boolean } | undefined)?.isHost;
               return (
                 <div
                   key={p.id}
                   className="score-row"
+                  aria-label={`${p.name}, ${isHiddenP ? 'Hidden' : 'Neutral'}, ${delta > 0 ? `plus ${delta}` : delta < 0 ? `minus ${Math.abs(delta)}` : 'no change'}, ${currentScore} total`}
                   style={{
                     background: isHiddenP ? 'rgba(251,191,36,0.06)' : undefined,
                     borderRadius: 'var(--radius-md)',
@@ -167,6 +173,7 @@ export default function RoundReveal({ revealData, roomState, myId, isHost, isLas
                     <div style={{ fontWeight: 600, fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: 6 }}>
                       {p.name}
                       {p.id === myId && <span className="badge badge-cyan" style={{ fontSize: '0.55rem' }}>You</span>}
+                      {isHostP && <span className="badge badge-amber" style={{ fontSize: '0.55rem' }}>Host</span>}
                       <span className={`badge ${isHiddenP ? 'badge-amber' : 'badge-muted'}`} style={{ fontSize: '0.55rem' }}>
                         {isHiddenP ? 'Hidden' : 'Neutral'}
                       </span>
@@ -176,7 +183,7 @@ export default function RoundReveal({ revealData, roomState, myId, isHost, isLas
                     <div className={`score-delta ${delta > 0 ? 'delta-pos' : delta < 0 ? 'delta-neg' : 'delta-zero'}`} style={delta < 0 ? { color: 'var(--rose-400)' } : {}}>
                       {delta > 0 ? `+${delta}` : delta < 0 ? `${delta}` : '0'}
                     </div>
-                    <div className="text-xs text-muted">{currentScore} total</div>
+                    <div className="text-xs text-muted">{`${currentScore} total`}</div>
                   </div>
                 </div>
               );
@@ -185,7 +192,7 @@ export default function RoundReveal({ revealData, roomState, myId, isHost, isLas
         </div>
 
         {/* Next Round / Host Control */}
-        {isHost ? (
+        {isHostNow ? (
           <button
             className={`btn btn-lg btn-full ${isLastRound ? 'btn-amber' : 'btn-primary'}`}
             onClick={onNextRound}

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import type { RoomState } from '../types/game';
+import type { ActionAck } from '../hooks/useSocket';
 import { TOTAL_ROUNDS } from '../constants';
 import TimerBar from './TimerBar';
 import { PipDice, sortDiceAsc } from './Dice';
@@ -7,8 +8,10 @@ import { PipDice, sortDiceAsc } from './Dice';
 interface Props {
   roomState: RoomState;
   myId: string;
-  onBid: (qty: number, face: number) => void;
-  onCall: (kind: 'liar' | 'exact') => void;
+  // Task 1: promise-resolving actions — the UI reports server rejections for
+  // bids/challenges instead of silently assuming they landed.
+  onBid: (qty: number, face: number) => Promise<ActionAck>;
+  onCall: (kind: 'liar' | 'exact') => Promise<ActionAck>;
 }
 
 export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) {
@@ -19,6 +22,8 @@ export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) 
 
   const [qty, setQty] = useState(lastBid ? lastBid.qty : 1);
   const [face, setFace] = useState(1);
+  const [pending, setPending] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Sensible defaults whenever the opponent raises
   useEffect(() => {
@@ -38,6 +43,24 @@ export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) 
   const validBid = qty >= minQty && qty <= totalDice && face >= 1 && face <= 6 &&
     (!lastBid || qty > lastBid.qty || (qty === lastBid.qty && face > lastBid.face));
   const bumpQty = (d: number) => setQty(q => Math.max(minQty, Math.min(totalDice, q + d)));
+
+  const submitBid = async () => {
+    if (pending || !validBid) return;
+    setPending(true);
+    setActionError(null);
+    const ack = await onBid(qty, face);
+    setPending(false);
+    if (!ack.ok) setActionError(ack.error ?? 'Not confirmed by the server — try again');
+  };
+
+  const submitCall = async (kind: 'liar' | 'exact') => {
+    if (pending) return;
+    setPending(true);
+    setActionError(null);
+    const ack = await onCall(kind);
+    setPending(false);
+    if (!ack.ok) setActionError(ack.error ?? 'Not confirmed by the server — try again');
+  };
 
   return (
     <div className="page-top">
@@ -74,8 +97,8 @@ export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) 
           </div>
           <div className="text-xs text-muted mt-12">
             {isTwoPlayer && opponent
-              ? <>{opponent.name} holds <strong>{liar.diceEach} hidden dice</strong> · {totalDice} total in play</>
-              : <>{roomState.players.length - 1} opponents hold <strong>{liar.diceEach} hidden dice each</strong> · {totalDice} total in play</>}
+              ? <>{`${opponent.name} holds `}<strong>{`${liar.diceEach} hidden dice`}</strong>{` · ${totalDice} total in play`}</>
+              : <>{`${roomState.players.length - 1} opponents hold `}<strong>{`${liar.diceEach} hidden dice each`}</strong>{` · ${totalDice} total in play`}</>}
           </div>
         </div>
 
@@ -169,19 +192,31 @@ export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) 
               </div>
               <button
                 className={`btn btn-lg btn-full ${validBid ? 'btn-primary' : 'btn-secondary'}`}
-                disabled={!validBid}
-                onClick={() => validBid && onBid(qty, face)}
+                disabled={!validBid || pending}
+                onClick={submitBid}
                 id="liar-raise-btn"
                 style={{ marginBottom: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}
               >
-                <span>📣 Bid {qty} ×</span>
+                <span>{pending ? '📣 Sending bid…' : `📣 Bid ${qty} ×`}</span>
                 <PipDice value={face} size={34} />
               </button>
+              {actionError && (
+                <div
+                  role="alert"
+                  style={{
+                    marginBottom: 10, padding: '10px 14px', borderRadius: 'var(--radius-md)',
+                    background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)',
+                    color: 'var(--rose-400)', fontWeight: 700, fontSize: '0.85rem', textAlign: 'center',
+                  }}
+                >
+                  {actionError}
+                </div>
+              )}
               <div style={{ display: 'flex', gap: 10 }}>
                 <button
                   className="btn btn-secondary btn-full"
-                  disabled={!lastBid}
-                  onClick={() => onCall('liar')}
+                  disabled={!lastBid || pending}
+                  onClick={() => submitCall('liar')}
                   id="liar-call-btn"
                   title="Challenge: the bid is NOT true"
                 >
@@ -189,8 +224,8 @@ export default function LiarBidPhase({ roomState, myId, onBid, onCall }: Props) 
                 </button>
                 <button
                   className="btn btn-secondary btn-full"
-                  disabled={!lastBid}
-                  onClick={() => onCall('exact')}
+                  disabled={!lastBid || pending}
+                  onClick={() => submitCall('exact')}
                   id="liar-exact-btn"
                   title="Challenge: the count is EXACTLY right (+2 if correct)"
                 >

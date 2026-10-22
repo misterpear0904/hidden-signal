@@ -33,8 +33,8 @@ export function assignRoles(players) {
 
 /**
  * Calculates score deltas for a round.
- * Hidden pair: +1 to guesser on correct partner guess, partner gets +1
- * once per round max (prevents +2 when both guess correctly).
+ * Hidden pair: +2 to guesser on correct partner guess, partner gets +1
+ * once per round max.
  * Neutral: +1 if guessed player is in hidden pair, -3 if wrong.
  * Self-guesses score 0 (no exploit).
  * @param {Array} guesses - [{playerId, guessedId}] for neutral, [{playerId, guessedPartnerId}] for hidden
@@ -50,10 +50,10 @@ export function calculateScores(guesses, hiddenPairIds, roleMap) {
     const role = roleMap.get(guess.playerId);
 
     if (role === 'hidden') {
-      // Hidden pair: earn 1 point each (guesser & partner) if guessed correctly, lose 3 points for wrong guess
+      // Hidden pair: guesser earns 2 pts, partner earns 1 pt if guessed correctly, lose 3 points for wrong guess
       const partner = hiddenPairIds.find(id => id !== guess.playerId);
       if (guess.guessedPartnerId === partner) {
-        scores.set(guess.playerId, (scores.get(guess.playerId) || 0) + 1);
+        scores.set(guess.playerId, (scores.get(guess.playerId) || 0) + 2);
         if (partner && !partnerAwarded.has(partner)) {
           scores.set(partner, (scores.get(partner) || 0) + 1);
           partnerAwarded.add(partner);
