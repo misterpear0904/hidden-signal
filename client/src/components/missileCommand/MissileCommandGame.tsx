@@ -547,7 +547,7 @@ function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, o
     return coarse && (cores <= 4 || ram <= 4);
   }, []);
   const [lowFx, setLowFx] = useState(weakDevice);
-  // Long-press for mobile build menu (tap selects, long-press opens build)
+  // A hold is an alternative to the same single-tap build action.
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const LONG_PRESS_MS = 262; // ms to hold for build menu (25% under the old 350ms so it opens faster)
   const fullscreenSupported = typeof document !== 'undefined' &&
@@ -597,16 +597,13 @@ function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, o
   const [supplyToast, setSupplyToast] = useState<string | null>(null);
 
   const gestureRef = useRef({
-    // Per-pointer tracking: a stationary resting thumb must not cancel a
-    // quick tap from another finger. A tap = this finger was quick + still
-    // while every other active finger stayed still.
+    // Track movement independently so only a quick, still, single-pointer
+    // gesture becomes a tap.
     pointers: new Map<number, { x: number; y: number; downX: number; downY: number; downT: number; moved: boolean; tol: number; touch: boolean }>(),
     pinchDist: 0,
     pinchZoom: 1,
-    // True once a second finger joins. Lifts from real pinches must not
-    // tap — but a tap while another finger merely RESTS (still) is a
-    // legitimate tap, so the lift handler below qualifies on movement,
-    // not on this flag. Reset on the next fresh (zero-pointer) press.
+    // Once a second finger joins, all lifts belong to a pinch, even if
+    // one finger barely moves or lifts after the moving finger.
     hadMulti: false,
     // SVG client rect captured on the first move of a gesture. getBoundingClientRect
     // forces layout and this path runs ~60x/sec while panning, so it's read
@@ -1139,6 +1136,7 @@ function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, o
     const g = gestureRef.current;
     const me = g.pointers.get(e.pointerId);
     g.pointers.delete(e.pointerId);
+    const hadMulti = g.hadMulti;
     // Gesture over — drop the cached rect so the next one re-measures, and
     // release the pinch latch so one multi-touch can't wedge all tapping.
     if (g.pointers.size === 0) { g.rect = null; g.hadMulti = false; }
@@ -1154,15 +1152,9 @@ function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, o
     }
     const sw = swallowedPidRef.current;
     if (sw && sw.id === e.pointerId && Date.now() - sw.at < 500) return;
-    if (!me || Date.now() - me.downT >= TAP_MAX_MS) return;
-    // Tap = this finger was quick + still AND every remaining finger is
-    // also still. Real pinches always move ≥1 finger, so their lifts die
-    // here; a resting thumb doesn't block the tapping finger. (Judged on
-    // movement rather than the hadMulti latch so a parked finger can't
-    // wedge tapping forever.)
-    if (me.moved) return;
-    const othersStill = [...g.pointers.values()].every(p => !p.moved);
-    if (!othersStill) return;
+    if (e.type === 'pointercancel' || !me || Date.now() - me.downT >= TAP_MAX_MS) return;
+    // A cancelled press or either lift from a pinch must never open a menu.
+    if (me.moved || hadMulti) return;
     handleTap(me.downX, me.downY, me.touch);
   }
 
@@ -1230,7 +1222,7 @@ function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, o
   };
 
   return (
-    <div style={{
+    <div className="mc-shell" style={{
       position: 'fixed', inset: 0, zIndex: 1, display: 'flex', flexDirection: 'column',
       background: '#0a1628', overflow: 'hidden',
       userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none',
@@ -1240,6 +1232,40 @@ function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, o
     onContextMenu={(e) => e.preventDefault()}
     >
       <style>{`
+        .mc-shell {
+          color: #e6f6fb;
+          background: radial-gradient(ellipse at 50% 45%, #0b2940 0%, #071725 60%, #050f1b 100%) !important;
+          font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        .mc-shell .mc-hud-card {
+          background: linear-gradient(145deg, rgba(7, 25, 40, 0.96), rgba(5, 15, 27, 0.92)) !important;
+          border: 1px solid rgba(103, 232, 249, 0.24) !important;
+          border-radius: 13px !important;
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(207, 250, 254, 0.05);
+        }
+        .mc-shell .mc-hud-button {
+          transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease;
+          cursor: pointer;
+        }
+        .mc-shell .mc-hud-button:hover { background-color: rgba(34, 211, 238, 0.16) !important; border-color: rgba(103, 232, 249, 0.62) !important; }
+        .mc-shell .mc-hud-button:active { transform: translateY(1px); }
+        .mc-shell .mc-hud-button.mc-is-active, .mc-shell .mc-hud-button.mc-is-active:hover { background: rgba(74,222,128,0.15) !important; border-color: rgba(74,222,128,0.55) !important; }
+        .mc-shell button:focus-visible, .mc-shell [role="button"]:focus-visible { outline: 2px solid #67e8f9; outline-offset: 2px; }
+        .mc-shell .mc-action-card { transition: transform 140ms ease, border-color 140ms ease, background-color 140ms ease; }
+        @media (hover: hover) and (pointer: fine) {
+          .mc-shell .mc-action-card:hover:not(:disabled) { transform: translateY(-1px); border-color: rgba(103, 232, 249, 0.55) !important; }
+        }
+        .mc-shell [data-testid="launcher-dock"] > .mc-dock > div {
+          background: linear-gradient(160deg, rgba(7, 24, 39, 0.96), rgba(4, 14, 25, 0.95)) !important;
+          box-shadow: 0 8px 22px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(207, 250, 254, 0.04);
+        }
+        .mc-shell .mc-modal-surface {
+          background: linear-gradient(155deg, rgba(10, 30, 45, 0.99), rgba(5, 15, 27, 0.99)) !important;
+          box-shadow: 0 24px 80px rgba(0, 0, 0, 0.56), inset 0 1px 0 rgba(207, 250, 254, 0.06);
+        }
+        .mc-shell .mc-modal-surface > div:first-child { color: #f0fbff; letter-spacing: 0.01em; }
+        .mc-shell .mc-modal-surface .text-muted { color: #a5bdc9; }
+        .mc-shell .mc-data-row { background: rgba(103, 232, 249, 0.045) !important; box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.075); }
         @keyframes mc-pulse { 0%,100% { opacity: 0.55; } 50% { opacity: 1; } }
         .mc-beam { animation: mc-beam-flow 0.7s linear infinite; }
         @keyframes mc-beam-flow { to { stroke-dashoffset: -18; } }
@@ -1247,8 +1273,12 @@ function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, o
         @keyframes mc-march-flow { to { stroke-dashoffset: -38; } }
         @media (prefers-reduced-motion: reduce) {
           .mc-beam, .mc-march { animation: none !important; }
+          .mc-shell .mc-action-card, .mc-shell .mc-hud-button { transition: none !important; }
         }
         .mc-dock::-webkit-scrollbar { display: none; }
+        @media (max-width: 760px) {
+          .mc-shell .mc-dock-vertical { top: 112px !important; }
+        }
       `}</style>
 
       {/* ── Full-screen canvas ── */}
@@ -1261,22 +1291,26 @@ function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, o
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
+          // Mark the whole map as a tap target for mobile hit adjustment.
+          // Otherwise browsers can redirect a finger near the dock to its
+          // buttons even when the finger's center is over a grid square.
+          onClick={(e) => e.preventDefault()}
           onWheel={(e) => setZoom(z => clampZoom(z * (e.deltaY > 0 ? 0.9 : 1.1)))}
           onContextMenu={(e) => e.preventDefault()}
         >
           <defs>
-            <linearGradient id="mc-water" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#0c2340" />
-              <stop offset="50%" stopColor="#0a3a5c" />
-              <stop offset="100%" stopColor="#0c2340" />
+            <linearGradient id="mc-water" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor="#071827" />
+              <stop offset="48%" stopColor="#0b3046" />
+              <stop offset="100%" stopColor="#071522" />
             </linearGradient>
             <linearGradient id="mc-top" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#3f6212" />
-              <stop offset="100%" stopColor="#4d7c0f" />
+              <stop offset="0%" stopColor="#23483d" />
+              <stop offset="100%" stopColor="#17372f" />
             </linearGradient>
             <linearGradient id="mc-bottom" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#155e75" />
-              <stop offset="100%" stopColor="#0e7490" />
+              <stop offset="0%" stopColor="#174451" />
+              <stop offset="100%" stopColor="#123440" />
             </linearGradient>
             {/* Shield visuals — gradients, hex patterns, glow filters */}
             <linearGradient id="shieldGrad-Regular" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -1342,10 +1376,23 @@ function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, o
           {[420, 460, 500, 540, 580].map(y => (
             <line key={y} x1={-100} y1={y} x2={WORLD + 100} y2={y} stroke="rgba(56,189,248,0.15)" strokeWidth={2} strokeDasharray="24 18" />
           ))}
+          {/* Faint navigation marks give the channel a little depth without
+              adding animation or changing the map's interaction surface. */}
+          <g pointerEvents="none" fill="none" stroke="rgba(103,232,249,0.14)" strokeWidth={2}>
+            <path d="M80 492 H320 M680 508 H920" strokeDasharray="3 12" />
+            <circle cx={500} cy={500} r={58} strokeDasharray="2 10" />
+            <circle cx={500} cy={500} r={72} strokeDasharray="1 14" />
+            <path d="M490 500h20M500 490v20" />
+          </g>
 
           {/* Island bases */}
           <rect x={TOP_RECT.x} y={TOP_RECT.y} width={TOP_RECT.w} height={TOP_RECT.h} rx={40} fill="url(#mc-top)" stroke={mySide === 'top' ? '#a3e635' : '#fb7185'} strokeWidth={mySide === 'top' ? 5 : 3} />
           <rect x={BOTTOM_RECT.x} y={BOTTOM_RECT.y} width={BOTTOM_RECT.w} height={BOTTOM_RECT.h} rx={40} fill="url(#mc-bottom)" stroke={mySide === 'bottom' ? '#22d3ee' : '#fb7185'} strokeWidth={mySide === 'bottom' ? 5 : 3} />
+          <g pointerEvents="none" fill="none" stroke="rgba(186,230,253,0.18)" strokeWidth={2}>
+            <rect x={26} y={26} width={948} height={378} rx={30} strokeDasharray="5 12" />
+            <rect x={26} y={596} width={948} height={378} rx={30} strokeDasharray="5 12" />
+            <path d="M62 52h58m-58 8h32M880 390h58m-32-8h32M62 964h58m-58-8h32M880 610h58m-32 8h32" />
+          </g>
           {/* Island placards sit in the water between the two islands (the old
               labels were drawn on top of the grid cells and hid buildings).
               Each one hugs its own shore with a notch pointing at it. */}
@@ -1717,12 +1764,12 @@ function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, o
 
         {/* ── Top HUD overlay ── */}
         <div style={{ position: 'absolute', top: 8, left: 8, right: 8, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'stretch', pointerEvents: 'none' }}>
-          <div style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 12px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+          <div className="mc-hud-card" style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 12px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
             <div className="text-xs" style={{ fontWeight: 800, color: 'var(--amber-400)', fontSize: '1.05rem', lineHeight: 1.1 }}>{`💰 ${myResources}`}</div>
             <div className="text-xs text-muted" style={{ fontSize: '0.65rem' }}>{`+${myIncome}/s • ${roomState.code}`}{((mc.buildSurge?.[myId] ?? 0) > now) && <span style={{ color: '#4ade80', fontWeight: 800 }}>{` • ⚡2x ${Math.ceil(((mc.buildSurge?.[myId] ?? 0) - now) / 1000)}s`}</span>}</div>
           </div>
           {/* Perf box: render FPS + server updates/sec, each labeled. */}
-          <div style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 10px', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div className="mc-hud-card" style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 10px', display: 'flex', alignItems: 'center', gap: 10 }}>
             <span title="Frames drawn per second — how smooth motion looks. 'idle' just means nothing is animating right now.">
               <span className="text-xs text-muted" style={{ fontSize: '0.6rem', fontWeight: 700 }}>{`FPS `}</span>              <span style={{ fontWeight: 800, fontSize: '0.8rem', color: fps == null ? undefined : fps >= 25 ? '#4ade80' : fps >= 15 ? '#fbbf24' : '#fb7185' }}>{fps == null ? 'idle' : fps}</span>
             </span>
@@ -1730,13 +1777,13 @@ function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, o
               <span className="text-xs text-muted" style={{ fontSize: '0.6rem', fontWeight: 700 }}>{`NET `}</span>              <span style={{ fontWeight: 800, fontSize: '0.8rem' }}>{ups}/s</span>
             </span>
           </div>
-          <div style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 10px', flex: 1, minWidth: 120 }}>
+          <div className="mc-hud-card" style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 10px', flex: 1, minWidth: 120 }}>
             <div className="text-xs" style={{ fontWeight: 800, fontSize: '0.65rem' }}>{`⭐ YOU ${mySide === 'top' ? '🔼' : '🔽'} ${myCore ? `${Math.ceil(myCore.coreHp!)}/${myCore.maxCoreHp}` : ''}`}</div>
             <div style={{ height: 6, background: 'rgba(255,255,255,0.12)', borderRadius: 3, overflow: 'hidden', marginTop: 3 }}>
               <div style={{ width: `${myCorePct}%`, height: '100%', background: 'linear-gradient(90deg,#4ade80,#22d3ee)' }} />
             </div>
           </div>
-          <div style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 10px', flex: 1, minWidth: 120 }}>
+          <div className="mc-hud-card" style={{ ...overlayBox, pointerEvents: 'auto', padding: '6px 10px', flex: 1, minWidth: 120 }}>
             <div className="text-xs" style={{ fontWeight: 800, fontSize: '0.65rem' }}>{`⭐ ${enemyName.toUpperCase()} ${enemyCore ? `${Math.ceil(enemyCore.coreHp!)}/${enemyCore.maxCoreHp}` : ''}`}{enemyConnected === false && <span style={{ color: 'var(--amber-400)' }}>{` • ⚠ disconnected`}</span>}</div>
             <div style={{ height: 6, background: 'rgba(255,255,255,0.12)', borderRadius: 3, overflow: 'hidden', marginTop: 3 }}>
               <div style={{ width: `${enemyCorePct}%`, height: '100%', background: 'linear-gradient(90deg,#fb7185,#f43f5e)' }} />
@@ -1744,21 +1791,21 @@ function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, o
           </div>
           <div style={{ display: 'flex', gap: 6, pointerEvents: 'auto' }}>
             <button type="button" onClick={() => setLowFx(v => !v)} title={lowFx ? 'Low FX mode ON — tap for full effects' : `Full effects — tap for Low FX mode (smoother on weak hardware)${weakDevice ? ' · auto-enabled on this device, tap to override' : ''}`}
-              style={{ ...overlayBox, width: 40, height: 40, color: '#fff', fontSize: '1.1rem', fontWeight: 800, background: lowFx ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.05)', border: lowFx ? '1px solid rgba(74,222,128,0.4)' : 'var(--border)' }}>
+              className={`mc-hud-card mc-hud-button${lowFx ? ' mc-is-active' : ''}`} style={{ ...overlayBox, width: 40, height: 40, color: '#fff', fontSize: '1.1rem', fontWeight: 800, background: lowFx ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.05)', border: lowFx ? '1px solid rgba(74,222,128,0.4)' : 'var(--border)' }}>
               {lowFx ? '⚡' : '✨'}
             </button>
             <button type="button" onClick={() => setHelpOpen(true)} title="How to play"
-              style={{ ...overlayBox, width: 40, height: 40, color: '#fff', fontSize: '1.2rem', fontWeight: 800 }}>?</button>
+              className="mc-hud-card mc-hud-button" style={{ ...overlayBox, width: 40, height: 40, color: '#fff', fontSize: '1.2rem', fontWeight: 800 }}>?</button>
             {fullscreenSupported && (
               <button type="button" onClick={toggleFullscreen} title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-                style={{ ...overlayBox, width: 40, height: 40, color: '#fff', fontSize: '1.1rem', fontWeight: 800 }}>
+                className="mc-hud-card mc-hud-button" style={{ ...overlayBox, width: 40, height: 40, color: '#fff', fontSize: '1.1rem', fontWeight: 800 }}>
                 {isFullscreen ? '🗗' : '⛶'}
               </button>
             )}
             <button type="button" onClick={() => setZoom(z => clampZoom(z * 1.25))} title="Zoom in"
-              style={{ ...overlayBox, width: 40, height: 40, color: '#fff', fontSize: '1.2rem', fontWeight: 800 }}>+</button>
+              className="mc-hud-card mc-hud-button" style={{ ...overlayBox, width: 40, height: 40, color: '#fff', fontSize: '1.2rem', fontWeight: 800 }}>+</button>
             <button type="button" onClick={() => setZoom(z => clampZoom(z * 0.8))} title="Zoom out"
-              style={{ ...overlayBox, width: 40, height: 40, color: '#fff', fontSize: '1.2rem', fontWeight: 800 }}>−</button>
+              className="mc-hud-card mc-hud-button" style={{ ...overlayBox, width: 40, height: 40, color: '#fff', fontSize: '1.2rem', fontWeight: 800 }}>−</button>
           </div>
         </div>
 
@@ -1802,6 +1849,7 @@ function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, o
         {/* ── Launcher dock (toggleable horizontal/vertical) ── */}
         <div
           data-testid="launcher-dock"
+          className={dockVertical ? 'mc-dock-vertical' : undefined}
           style={{
             position: 'absolute',
             // Horizontal: spans the bottom edge. Vertical: a column pinned to
@@ -1983,6 +2031,7 @@ function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, o
               return (
                 <button
                   type="button"
+                  className="mc-action-card"
                   onClick={() => { if (!popupArmed()) return; onRebuild(buildCellRubble.id); setBuildCell(null); }}
                   disabled={!afford}
                   title="Restore the destroyed building instantly at level 1 for half price — or pick anything below at normal cost/time"
@@ -2014,6 +2063,7 @@ function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, o
                         <button
                           key={o.key}
                           type="button"
+                          className="mc-action-card"
                           onClick={() => { if (!popupArmed()) return; onBuild({ buildingType: o.buildingType, launcherType: o.launcherType, gx: buildCell.gx, gy: buildCell.gy }); setBuildCell(null); }}
                           disabled={!afford}
                           style={{
@@ -2083,7 +2133,7 @@ function MissileCommandGameBase({ roomState, myId, isHost, onBuild, onUpgrade, o
       {/* ── End overlay ── */}
       {roomState.phase === 'missile-command-end' && (
         <div style={{ position: 'absolute', inset: 0, zIndex: 600, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-          <div className="glass p-24 text-center animate-fade-up" style={{ borderRadius: 'var(--radius-xl)', maxWidth: 560, width: '100%', maxHeight: '88vh', overflowY: 'auto', background: 'linear-gradient(180deg, rgba(13,21,38,0.98) 0%, rgba(8,12,24,0.98) 100%)', border: `2px solid ${iWon ? 'rgba(74,222,128,0.5)' : 'rgba(244,63,94,0.5)'}` }}>
+          <div className="glass p-24 text-center animate-fade-up mc-modal-surface" style={{ borderRadius: 'var(--radius-xl)', maxWidth: 560, width: '100%', maxHeight: '88vh', overflowY: 'auto', background: 'linear-gradient(180deg, rgba(13,21,38,0.98) 0%, rgba(8,12,24,0.98) 100%)', border: `2px solid ${iWon ? 'rgba(74,222,128,0.5)' : 'rgba(244,63,94,0.5)'}` }}>
             <div style={{ fontSize: '3rem' }}>{mc.winReason === 'draw' ? '🤝' : iWon ? '🏆' : '💥'}</div>
             <h2 className="heading-lg">{mc.winReason === 'draw' ? 'DRAW — both Cores destroyed!' : iWon ? 'VICTORY! Enemy Core destroyed!' : `${winnerName ?? 'Enemy'} wins — your Core was destroyed`}</h2>
             <p className="text-muted text-sm">Your final credits: {myResources}</p>
@@ -2145,6 +2195,10 @@ function IslandPlacard({ y, name, mine, dir, color }: {
 }
 
 function Modal({ title, onClose, children, compact }: { title: string; onClose: () => void; children: React.ReactNode; compact?: boolean }) {
+  // Opening on pointerup can mount the scrim before the browser dispatches
+  // the touch's compatibility click. Only a new press on the scrim may
+  // dismiss it; the opening touch must not immediately close the menu.
+  const backdropPressRef = useRef(false);
   // Escape closes too (mobile hardware back / desktop keyboards).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -2153,7 +2207,13 @@ function Modal({ title, onClose, children, compact }: { title: string; onClose: 
   }, [onClose]);
   return (
     <div
-      onClick={onClose}
+      onPointerDown={(e) => { backdropPressRef.current = e.target === e.currentTarget; }}
+      onPointerCancel={() => { backdropPressRef.current = false; }}
+      onClick={(e) => {
+        const dismiss = backdropPressRef.current && e.target === e.currentTarget;
+        backdropPressRef.current = false;
+        if (dismiss) onClose();
+      }}
       style={{
         // Transparent scrim: still catches outside clicks to close, but does
         // NOT dim the map — you keep reading the board while inspecting a
@@ -2164,7 +2224,7 @@ function Modal({ title, onClose, children, compact }: { title: string; onClose: 
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="glass animate-fade-up"
+        className="glass animate-fade-up mc-modal-surface"
         style={{
           // Compact sheets (building dialog) stay small so most of the map
           // stays visible; full sheets (build menu, help) keep their size.
@@ -2265,7 +2325,7 @@ function BuildingPanel({ b, isMine, myResources, upgradeCost, coreIncome, pendin
       {!isMine && <div className="badge badge-rose" style={{ marginBottom: 8 }}>ENEMY BUILDING</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 10 }}>
         {rows.map(([k, v], i) => (
-          <div key={i} className="text-sm" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '6px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: 10, fontSize: '0.82rem' }}>
+          <div key={i} className="text-sm mc-data-row" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '6px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: 10, fontSize: '0.82rem' }}>
             <span className="text-muted">{k}</span><span style={{ fontWeight: 700, textAlign: 'right' }}>{v}</span>
           </div>
         ))}
